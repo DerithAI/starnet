@@ -33,7 +33,9 @@ const CloudSaveCore = (() => {
      from the fact that it did not answer: the disk is named only when the station said ENOSPC (diskFull) or EPERM/EACCES
      (diskDenied) — every failure streak used to read "check disk space" on machines with plenty of disk.
        offline           no answer (network, timeout, a reply that did not parse)
-       forbidden         401/403: the station refused this window's connection
+       forbidden         the station's gate refused this window's key: token_stale (a key from before a restart) or token_missing
+                         (no key rode) in X-StarNet-Code — a route's own 403 is not one. From a station that names no refusal (an
+                         older one): any 401/403
        tooLarge          413: the save is over the 16 MiB the station file takes (sidecar/save-wire.js)
        diskFull          the write failed with ENOSPC
        diskDenied        the write failed with EPERM / EACCES
@@ -46,11 +48,13 @@ const CloudSaveCore = (() => {
        refused           any other refusal (an answer without ok:true) */
   const CAUSES = Object.freeze(['offline', 'forbidden', 'tooLarge', 'diskFull', 'diskDenied', 'writeFailed', 'unreadable', 'conflict', 'degraded', 'growthStale', 'growthUnavailable', 'refused']);
   function isCause(c) { return CAUSES.indexOf(c) !== -1; }
-  // o: { answered: did the station reply at all, status: its HTTP status, body: its parsed JSON (or null) }
+  // o: { answered: did the station reply at all, status: its HTTP status, body: its parsed JSON (or null),
+  //      code: the station's own name for a failure (X-StarNet-Code; '' from an older station) }
   function causeOf(o) {
     o = o || {};
     if (!o.answered) return 'offline';
     const status = Number(o.status) || 0;
+    const code = typeof o.code === 'string' ? o.code.trim() : '';
     const b = o.body && typeof o.body === 'object' ? o.body : {};
     if (b.conflict === true) return 'conflict';
     if (b.degraded === true) return 'degraded';
@@ -60,7 +64,7 @@ const CloudSaveCore = (() => {
     if (b.unreadable === true) return 'unreadable';
     if (b.growthStale === true) return 'growthStale';
     if (b.growthUnavailable === true) return 'growthUnavailable';
-    if (status === 401 || status === 403) return 'forbidden';
+    if (code ? (code === 'token_stale' || code === 'token_missing') : (status === 401 || status === 403)) return 'forbidden';
     if (typeof b.code === 'string' && /^E[A-Z0-9]{2,20}$/.test(b.code)) return 'writeFailed';
     return 'refused';
   }
@@ -124,7 +128,24 @@ const CloudSaveCore = (() => {
      answer was lost, then a delete of the session it added, came back). */
   const MERGE_OWN = ['_saveRevision', '_saveClient', '_saveDirty', '_saveMerge', '_saveRestore', '_saveAdoptBy', 'updatedAt', 'workstreams'];
   function sessions(doc) { return doc && Array.isArray(doc.workstreams) ? doc.workstreams.filter(w => w && typeof w === 'object' && typeof w.id === 'string' && w.id) : []; }
-  function turns(w) { return Array.isArray(w && w.history) ? w.history : []; }
+  /* A HISTORY THAT NAMES ROWS BY REFERENCE (save v7, historyref.js): a session's turns here are its ROWS. A packed run is one element
+     for a hundred rows, and `bLen` (how many of the base's turns this window kept) is the count the station slices the window's
+     history by — in rows, exploded the same way on both sides (sidecar/save-merge.js), so a run that only grew is a window that only
+     added, whether or not either save packs it. historyref.js is loaded before this file by the page and required by node; a page
+     that has neither (the demo) reads every history as it always did. */
+  let HR;
+  function historyRef() {
+    if (HR !== undefined) return HR;
+    HR = null;
+    if (typeof HistoryRef !== 'undefined' && HistoryRef && typeof HistoryRef.explode === 'function') HR = HistoryRef;
+    else if (typeof module !== 'undefined' && module.exports && typeof require === 'function') { try { HR = require('./historyref.js'); } catch (e) { HR = null; } }
+    return HR;
+  }
+  function turns(w) {
+    const h = Array.isArray(w && w.history) ? w.history : [];
+    const H = historyRef();
+    return H && h.some(H.isRef) ? H.explode(h, { streamId: String(w.id) }) : h;
+  }
   function mergeDelta(base, mine, unsure) {
     const top = [], rows = [], gone = [];
     const b = base && typeof base === 'object' ? base : {}, m = mine && typeof mine === 'object' ? mine : {};

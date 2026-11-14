@@ -111,7 +111,8 @@ function boot(port, env, attemptsLeft) {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 9000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 
@@ -278,7 +279,7 @@ async function startSse(url) {
     const trav2 = await fetch(B + runPrefix(token, 'builder', '..') + 'builder/' + encodeURIComponent('..') + '/' + encodeURIComponent('..') + '/builder.workshop.json');
     A.ok(trav2.status === 403 || trav2.status === 404, 'W7: encoded ../ traversal is refused');
     const badAgent = await fetch(B + runPrefix(token, '../../etc', webRun) + '..%2f..%2fetc/' + webRun + '/index.html');
-    A.ok(badAgent.status === 403 || badAgent.status === 404, 'W7: a bad agentId segment is refused');
+    A.eq([badAgent.status, badAgent.headers.get('x-starnet-code'), (await badAgent.json()).code], [400, 'bad_agent_id', 'bad_agent_id'], 'W7: the decoded malformed agentId segment has the typed input refusal');
 
     // (4) NO DIRECTORY LISTING — requesting the run dir itself (a directory) 404s, never lists.
     const dirReq = await fetch(runBase + '/');

@@ -11,7 +11,8 @@ const { userWords } = require('./helpers/host-notes.js');   // the user's own wo
 const fs = require('node:fs');
 const path = require('node:path');
 const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
-const Pipeline = require('../frontend/app/pipeline.js');
+const { seedActiveStation } = require('./helpers/station.js');   // a crew lives on a founded station: before one, the roster is held, never written
+const { floorOf, publishFloor } = require('./helpers/saved-floor.js');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -54,6 +55,7 @@ test('a job that ships on LINE A rides on to LINE B by SEND TO', async () => {
     CUSTOM_OPENAI_KEY: 'direct-fixture', CUSTOM_OPENAI_BASE_URL: base + '/v1'
   } });
   try {
+    seedActiveStation(fixture.workspace);
     await fixture.start();
     const agents = [
       { agentId: 'alpha', name: 'Alpha', system: 'Line A', provider: 'custom', model: 'handoff-model' },
@@ -68,13 +70,8 @@ test('a job that ships on LINE A rides on to LINE B by SEND TO', async () => {
       { id: 'p5', t: 'bay', x: 3, y: 4, w: 1, h: 1, agentId: 'beta', role: 'WRITER', brief: 'Turn what you are handed into a haiku.' },
       { id: 'p6', t: 'outbox', x: 6, y: 4, w: 1, h: 1 }
     ], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })).concat([1, 2, 4, 5].map(x => ({ x, y: 4, dir: 'E' }))) });
-    const arm = async (geo) => {
-      const plan = Pipeline.compileRoutingPlan(geo);
-      for (const bay of plan.bays.concat(plan.dockBays)) bay.objects = ['computer', 'workbench'];
-      const r = await fixture.json('POST', '/api/routing', plan);
-      assert.equal(r.body.ok, true, JSON.stringify(r.body));
-      return plan;
-    };
+    // each floor is SAVED, then the page's hint of it is published: the station routes by what it saved
+    const arm = async (geo) => (await publishFloor(fixture, floorOf(geo, { equip: ['computer', 'workbench'] }))).plan;
     const plan = await arm(geoOf('p4'));
     const LA = plan.lineOfProp.p1, LB = plan.lineOfProp.p4;
     assert.ok(LA && LB && LA !== LB, 'two lines, never fused');
@@ -198,7 +195,8 @@ test('a job that ships on LINE A rides on to LINE B by SEND TO', async () => {
    POST /api/halt FIRST — src-tauri drain_and_kill_sidecar — so there handleHalt had already said them as "automation is stopped
    (E-STOP)", before and after this fix; that Quit says E-STOP because it really sends one.) After the restart LINE B has ONE failed
    "not sent on" record counting both, and each sending job on LINE A reads NOT sent on, with why — they used to vanish with no record
-   anywhere (A's jobs read DELIVERED with no "sent on" and no "NOT sent on"). The one that was running is said as interrupted. */
+   anywhere (A's jobs read DELIVERED with no "sent on" and no "NOT sent on"). Graceful shutdown now aborts and settles the active
+   owned run before exit. A separate abrupt-kill arm below proves boot still marks an unfinalized hand-off interrupted. */
 test('hand-offs waiting when the station quits are said, never lost', async () => {
   const held = [];
   const server = http.createServer((req, res) => {
@@ -229,22 +227,21 @@ test('hand-offs waiting when the station quits are said, never lost', async () =
     CUSTOM_OPENAI_KEY: 'direct-fixture', CUSTOM_OPENAI_BASE_URL: base + '/v1'
   } });
   try {
+    seedActiveStation(fixture.workspace);
     await fixture.start();
     const agents = [
       { agentId: 'alpha', name: 'Alpha', system: 'Line A', provider: 'custom', model: 'handoff-model' },
       { agentId: 'beta', name: 'Beta', system: 'Line B', provider: 'custom', model: 'handoff-model' }
     ];
     assert.equal((await fixture.json('POST', '/api/roster', { agents, updatedAt: Date.now() })).status, 200);
-    const plan = Pipeline.compileRoutingPlan({ props: [
+    const { plan } = await publishFloor(fixture, floorOf({ props: [
       { id: 'p1', t: 'intake', x: 0, y: 0, w: 1, h: 1, label: 'A' },
       { id: 'p2', t: 'bay', x: 3, y: 0, w: 1, h: 1, agentId: 'alpha', role: 'WRITER', brief: 'Answer briefly.' },
       { id: 'p3', t: 'outbox', x: 6, y: 0, w: 1, h: 1, sendTo: 'p4' },
       { id: 'p4', t: 'intake', x: 0, y: 4, w: 1, h: 1, label: 'B' },
       { id: 'p5', t: 'bay', x: 3, y: 4, w: 1, h: 1, agentId: 'beta', role: 'WRITER', brief: 'Work on what you are handed.' },
       { id: 'p6', t: 'outbox', x: 6, y: 4, w: 1, h: 1 }
-    ], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })).concat([1, 2, 4, 5].map(x => ({ x, y: 4, dir: 'E' }))) });
-    for (const bay of plan.bays.concat(plan.dockBays)) bay.objects = ['computer', 'workbench'];
-    assert.equal((await fixture.json('POST', '/api/routing', plan)).body.ok, true);
+    ], belts: [1, 2, 4, 5].map(x => ({ x, y: 0, dir: 'E' })).concat([1, 2, 4, 5].map(x => ({ x, y: 4, dir: 'E' }))) }, { equip: ['computer', 'workbench'] }));
     const LA = plan.lineOfProp.p1, LB = plan.lineOfProp.p4;
     const onB = async () => (await fixture.json('GET', '/api/line-jobs?line=' + encodeURIComponent(LB))).body.jobs;
     const sent = [];
@@ -262,6 +259,10 @@ test('hand-offs waiting when the station quits are said, never lost', async () =
     assert.equal((await fixture.json('POST', '/api/lifecycle/quit')).status, 202);
     await exited;
     await fixture.stop();
+    const quitJobs = JSON.parse(fs.readFileSync(path.join(fixture.workspace, 'line-jobs.json'), 'utf8')).jobs;
+    const settledAtQuit = quitJobs.find(j => j.id === before[0].id);
+    assert.deepEqual([settledAtQuit.status, settledAtQuit.outcome, settledAtQuit.stop && settledAtQuit.stop.code], ['stopped', 'stopped', 'stopped'],
+      'graceful shutdown durably settles the owned hand-off with its typed stop before any restart');
     for (const f of held.splice(0)) f();
     await fixture.start();
     const after = await onB();
@@ -278,7 +279,27 @@ test('hand-offs waiting when the station quits are said, never lost', async () =
     const first = (await fixture.json('GET', '/api/line-jobs/' + sent[0])).body.job;
     assert.ok(first.sentTo && first.sentTo.line === LB && !first.sentTo.refused, 'the first job was sent on (its B job ran)');
     const ran = after.find(j => j.id === first.sentTo.jobId);
-    assert.ok(ran && ran.status === 'interrupted', 'the hand-off that was running is said as interrupted: ' + JSON.stringify(ran && ran.status));
+    assert.deepEqual([ran && ran.status, ran && ran.outcome, ran && ran.stop && ran.stop.code], ['stopped', 'stopped', 'stopped'],
+      'restart preserves the already-settled graceful stop');
+
+    // An abrupt exit cannot run the owned finalizer. This is the distinct interrupted-at-boot contract.
+    const crashSend = await fixture.json('POST', '/api/routing/sample', { line: LA, text: 'Crash-only hand-off.', name: 'A' });
+    assert.equal(crashSend.status, 200, JSON.stringify(crashSend.body));
+    for (let k = 0; k < 100 && !held.length; k++) await sleep(50);
+    assert.equal(held.length, 1, 'the crash arm has an actual in-flight hand-off at the provider');
+    const crashJobs = await onB(), crashJob = crashJobs.find(j => j.status === 'running');
+    assert.ok(crashJob, 'the crash arm starts a distinct running B job');
+    const beforeCrash = JSON.parse(fs.readFileSync(path.join(fixture.workspace, 'line-jobs.json'), 'utf8')).jobs.find(j => j.id === crashJob.id);
+    assert.equal(beforeCrash.status, 'running', 'the unfinalized hand-off is actually durable before the abrupt exit');
+    const crashed = new Promise(resolve => fixture.child.once('exit', resolve));
+    fixture.child.kill('SIGKILL');
+    await crashed;
+    await fixture.stop();
+    for (const release of held.splice(0)) release();
+    await fixture.start();
+    const interrupted = (await fixture.json('GET', '/api/line-jobs/' + crashJob.id)).body.job;
+    assert.deepEqual([interrupted.status, interrupted.outcome], ['interrupted', 'interrupted'], 'actual abrupt death remains interrupted after boot');
+    assert.match(interrupted.error, /send it again/, 'the unfinished hand-off gives the existing recovery instruction');
   } finally {
     for (const f of held.splice(0)) f();
     await fixture.dispose();

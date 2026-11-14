@@ -106,6 +106,7 @@ const POSES = {
   stand: [['rot_south']],
   standN: [['rot_north', 'rot_south']],
   sitS: [['sit_south_4', 'rot_south']],
+  sitN: [['sit_north_4', 'rot_north', 'rot_south']],
   walkE: [1, 2, 3, 4, 5, 6].map(n => ['walk_east_' + n, 'rot_east', 'rot_south']),
   walkW: [1, 2, 3, 4, 5, 6].map(n => ['walk_west_' + n, 'rot_west', 'rot_south']),
   type: [1, 2, 3, 4].map(n => ['type_north_' + n, 'sit_north_4', 'rot_north', 'rot_south'])
@@ -116,19 +117,27 @@ const POSES = {
    stays empty, the feed's own by default); then StarNet's palette
    and Sixel. col: r,g,b per pixel; light: 0..1 per pixel. Shared by the camera feed and the FLOOR (bin/lib/floor.js). */
 function asciiSixel(col, light, W, H, vig, skip) {
+  return encodeSixel(asciiIdx(col, light, W, H, vig, skip), W, H, PALETTE);
+}
+/* asciiIdx(…, at) → one palette index per pixel. at: { x, y, W, H } when col/light are only a region (w × h) of a picture
+   W × H, at x, y (multiples of the glyph cell): the region comes out exactly as that part of the whole would (the FLOOR
+   draws again only what changed) */
+function asciiIdx(col, light, w, h, vig, skip, at) {
+  const ox = at ? at.x : 0, oy = at ? at.y : 0, W = at ? at.W : w, H = at ? at.H : h;
   // ---- ASCII: under-layer dimmed, the matched glyph over it in its cell's bright colour ----
-  const out = new Float32Array(W * H * 3);
-  for (let i = 0; i < W * H; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * LOOK.under;
-  const cols = Math.floor(W / CW), rows = Math.floor(H / CH);
+  const out = new Float32Array(w * h * 3);
+  for (let i = 0; i < w * h; i++) for (let q = 0; q < 3; q++) out[i * 3 + q] = 12 + (col[i * 3 + q] - 12) * LOOK.under;
+  // the whole picture's glyph cells that fall in the region
+  const cols = Math.min(Math.floor(W / CW) - ox / CW, Math.floor(w / CW)), rows = Math.min(Math.floor(H / CH) - oy / CH, Math.floor(h / CH));
   const mask = new Uint8Array(CW * CH);
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
     let sum = 0;
-    for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) sum += light[(r * CH + y) * W + c * CW + x];
+    for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) sum += light[(r * CH + y) * w + c * CW + x];
     const mean = sum / (CW * CH);
     if (mean < (skip == null ? LOOK.skip : skip)) continue;
     let bn = 0, dn = 0; const bc = [0, 0, 0], dc = [0, 0, 0];
     for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
-      const i = (r * CH + y) * W + c * CW + x, j = y * CW + x;
+      const i = (r * CH + y) * w + c * CW + x, j = y * CW + x;
       if (light[i] > mean) { mask[j] = 1; bn++; bc[0] += col[i * 3]; bc[1] += col[i * 3 + 1]; bc[2] += col[i * 3 + 2]; }
       else { mask[j] = 0; dn++; dc[0] += col[i * 3]; dc[1] += col[i * 3 + 1]; dc[2] += col[i * 3 + 2]; }
     }
@@ -140,22 +149,23 @@ function asciiSixel(col, light, W, H, vig, skip) {
     const gc = bA.map(v => Math.min(255, v * lift));
     for (let y = 0; y < CH; y++) for (let x = 0; x < CW; x++) {
       const a = gl[y * CW + x] / 255; if (!a) continue;
-      const i = (r * CH + y) * W + c * CW + x;
+      const i = (r * CH + y) * w + c * CW + x;
       for (let q = 0; q < 3; q++) out[i * 3 + q] = out[i * 3 + q] * (1 - a) + gc[q] * a;
     }
   }
   // the edges fade into the panel's own black: no box, the picture just gets darker toward its border
   const ex = Math.max(1, W * (vig ? vig[0] : LOOK.vigX)), ey = Math.max(1, H * (vig ? vig[1] : LOOK.vigY));
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    let v = Math.min(1, Math.min(x + 0.5, W - 0.5 - x) / ex, Math.min(y + 0.5, H - 0.5 - y) / ey);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const X = x + ox, Y = y + oy;
+    let v = Math.min(1, Math.min(X + 0.5, W - 0.5 - X) / ex, Math.min(Y + 0.5, H - 0.5 - Y) / ey);
     v = v * v * (3 - 2 * v);
     if (v >= 1) continue;
-    const i = (y * W + x) * 3;
+    const i = (y * w + x) * 3;
     for (let q = 0; q < 3; q++) out[i + q] = 12 + (out[i + q] - 12) * v;
   }
-  const idx = new Int16Array(W * H);
-  for (let i = 0; i < W * H; i++) idx[i] = nearest(Math.round(out[i * 3]), Math.round(out[i * 3 + 1]), Math.round(out[i * 3 + 2]));
-  return encodeSixel(idx, W, H, PALETTE);
+  const idx = new Int16Array(w * h);
+  for (let i = 0; i < w * h; i++) idx[i] = nearest(Math.round(out[i * 3]), Math.round(out[i * 3 + 1]), Math.round(out[i * 3 + 2]));
+  return idx;
 }
 
 function makeCamFeed() {
@@ -209,7 +219,7 @@ function makeCamFeed() {
     if (s.key !== key) { s.key = key; s.since = now; if (key === 'done') s.spot = null; }
     const dt = Math.min(0.25, Math.max(0, (now - s.last) / 1000));
     s.last = now;
-    const atDesk = key === 'working' || key === 'needs' || key === 'stopped';
+    const atDesk = key === 'working' || key === 'needs' || key === 'stopped' || key === 'asked' || key === 'unfinished' || key === 'failed';   // review r8: each ended outcome's posture
     if (atDesk) { s.tx = SEAT.x; s.ty = SEAT.y; s.spot = null; }
     else if (s.sat) { s.sat = false; s.tx = s.x - 26; s.ty = s.y + 4; s.spot = null; s.dwellUntil = now + (key === 'done' ? 2600 : 600); s.arrived = false; }   // it stands up first
     else if (s.arrived && now > s.dwellUntil) {
@@ -249,7 +259,7 @@ function makeCamFeed() {
     else if (s.at) p = pose(set, s.at.pose, 0) || pose(set, 'stand', 0);
     else p = pose(set, 'stand', 0);
     if (!p) return null;
-    const rimKey = key === 'working' ? 'w' : key === 'needs' ? (still || Math.floor(t / 450) % 2 === 0 ? 'n' : 'n2') : key === 'stopped' ? 's' : (key === 'done' && t - s.since < 6000) ? 'd' : 'i';
+    const rimKey = key === 'working' ? 'w' : key === 'needs' ? (still || Math.floor(t / 450) % 2 === 0 ? 'n' : 'n2') : key === 'stopped' ? 's' : key === 'asked' ? 'n' : key === 'unfinished' ? 'u' : key === 'failed' ? 'f' : (key === 'done' && t - s.since < 6000) ? 'd' : 'i';
     const camX = Math.round(s.camX * k), camY = Math.round(s.camY * k);
     const ox = Math.round(W / 2 - camX), oy = Math.round(H / 2 - camY);
     const rk = [p.path, Math.round(s.x), Math.round(s.y), camX, camY, rimKey, W, H].join('|');
@@ -288,7 +298,7 @@ function makeCamFeed() {
     layers.sort((a, b) => a.y - b.y).forEach(l => l.draw());
 
     // ---- the desk monitor's light: it falls on the floor, the desk and whoever is near, in its state's colour ----
-    const glow = { w: [96, 14, 20], n: [96, 64, 10], n2: [40, 26, 4], s: [0, 0, 0], d: [16, 70, 36], i: [34, 6, 8] }[rimKey];
+    const glow = { w: [96, 14, 20], n: [96, 64, 10], n2: [40, 26, 4], s: [0, 0, 0], d: [16, 70, 36], i: [34, 6, 8], u: [70, 52, 20], f: [80, 24, 12] }[rimKey];
     const lightAt = new Float32Array(W * H);   // how much of the monitor's light reaches each pixel (0..1)
     if (glow[0] + glow[1] + glow[2] > 0) {
       const mx = Math.round(MONITOR.x * k) + ox, my = Math.round(MONITOR.y * k) + oy, R = MONITOR.r * k;
@@ -298,7 +308,7 @@ function makeCamFeed() {
       }
     }
     // ---- StarNet palette + the agent's rim (none while idle) ----
-    const RIM = rimKey === 'i' ? null : ({ w: ACCENT_RIM, n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168] }[rimKey]).map(v => v * LOOK.rimK);
+    const RIM = rimKey === 'i' ? null : ({ w: ACCENT_RIM, n: [255, 180, 58], n2: [150, 96, 20], s: [70, 52, 56], d: [93, 255, 168], u: [217, 169, 91], f: [255, 107, 61] }[rimKey]).map(v => v * LOOK.rimK);
     const col = new Float32Array(W * H * 3), light = new Float32Array(W * H);
     for (let i = 0; i < W * H; i++) {
       const r = buf[i * 4], g = buf[i * 4 + 1], b = buf[i * 4 + 2];
@@ -350,4 +360,4 @@ function setFor(agentId, skin, skins) {
   return skins[skin] || skins[''] || '';
 }
 
-module.exports = { makeCamFeed, parseSkins, setFor, setAccent, PALETTE, POSES, FURNITURE, RAMPS, ramp, LOOK, asciiSixel, accentRim: () => ACCENT_RIM.slice(), accentGen: () => ACCENT_GEN };
+module.exports = { makeCamFeed, parseSkins, setFor, setAccent, PALETTE, POSES, FURNITURE, RAMPS, ramp, LOOK, asciiSixel, asciiIdx, accentRim: () => ACCENT_RIM.slice(), accentGen: () => ACCENT_GEN };

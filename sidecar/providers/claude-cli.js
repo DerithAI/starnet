@@ -710,6 +710,10 @@
           let j = null;
           try { j = JSON.parse(out.trim()); } catch (_) { j = null; }
           const keyed = !!String(childEnv().ANTHROPIC_API_KEY || '').trim();   // only a key the CLI will actually see
+          if ((!j || typeof j.loggedIn !== 'boolean') && !keyed) {
+            return finish({ installed: true, loggedIn: false,
+              error: Object.assign(new Error('Claude Code returned no usable local sign-in status'), { code: 'status_unavailable' }) });
+          }
           const loggedIn = !!((j && j.loggedIn === true) || keyed);
           const st = { installed: true, loggedIn, authMethod: (j && j.authMethod && j.authMethod !== 'none') ? String(j.authMethod) : (keyed ? 'api_key' : '') };
           if (j && typeof j.email === 'string' && j.email) st.email = j.email.slice(0, 200);
@@ -790,7 +794,7 @@
       if (!st.ok) throw st.error;
       return MODELS.map(m => ({
         id: m.id, name: m.name, context_length: m.context || DEFAULT_CONTEXT, max_completion_tokens: null, pricing: null,
-        supportsTools: true, supportsReasoning: true, supported_parameters: ['tools', 'reasoning'], reasoningEfforts: EFFORTS.slice()
+        supportsTools: true, supportsReasoning: true, supported_parameters: ['tools', 'reasoning'], reasoningEfforts: EFFORTS.slice(), fallback: true
       }));
     }
 
@@ -993,7 +997,14 @@
       };
       const onAbort = () => { killTree(child); push(null); };
       try {
-        child = spawn(cmd.file, args, { env: childEnv(), cwd: os.tmpdir(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+        /* A CALL NOTHING READS AGAIN WRITES NO CACHE (issue #105). One toolless housekeeping prompt (ledger.js makeAuxMeter) was
+           written to the 1-hour cache and never read. DISABLE_PROMPT_CACHING is the CLI's documented switch
+           (code.claude.com/docs/en/env-vars). Probed on 2.1.316, subscription sign-in, Haiku, one ~17.8k-token prompt:
+           default = cache write 17,820 (all 1h), input 2; with it = input 17,824, cache write 0. What that does to a plan's
+           usage is not published, so nothing here claims a saving. Only this child gets it: agent-loop turns keep their cache. */
+        const env = childEnv();
+        if (req.neverReread === true) env.DISABLE_PROMPT_CACHING = '1';
+        child = spawn(cmd.file, args, { env, cwd: os.tmpdir(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (e) {
         removeFile(sysFile);
         throw notInstalled();
@@ -1433,6 +1444,15 @@
     return {
       stream,
       listModels,
+      async verifyCredential() {
+        // Local auth status proves a stored sign-in, not that the remote service accepted it. Never mint
+        // lastVerified from this or the curated model list (and never spend on a model just to show a badge).
+        const st = await host.authStatus();
+        const unavailable = st.error && st.installed !== false && st.error.code !== 'provider_not_configured';
+        return { ok: false, credentialVerified: false, status: unavailable ? 'unavailable' : st.loggedIn ? 'unverified' : 'missing', reachable: !!st.installed,
+          credentialPresent: !!st.loggedIn, error: unavailable ? 'local sign-in status unavailable' : st.loggedIn ? 'local sign-in present; remote credential not verified' :
+            st.installed ? 'Claude Code is not signed in' : 'Claude Code is not installed' };
+      },
       release,
       persistStats() {
         const closing = Array.from(ownedSessions).filter(s => s.closing);

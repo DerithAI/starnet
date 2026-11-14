@@ -19,6 +19,7 @@ const os = require('os');
 const { bootToken } = require('./_httpToken.js');
 const { makeRunJournal } = require('../sidecar/run-journal.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
+const { seedActiveStation } = require('./helpers/station.js');   // a crew lives on a founded station: before one, the roster is held, never written
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -51,12 +52,14 @@ function boot(port, workspaces, attemptsLeft) {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout; output:\n' + out)); } }, 30000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout; output:\n' + out)); } }, 30000).unref();
   });
 }
 
 (async () => {
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-cron-'));
+  seedActiveStation(ws);
   fs.mkdirSync(path.join(ws, 'channels'), { recursive: true });
   fs.writeFileSync(path.join(ws, 'channels', 'chatmap.json'), JSON.stringify({ version: 1, chats: { dev_target: { chatId: 'cron-dev', channel: 'dev', agentId: 'cron_brief' } } }), 'utf8');
   let booted = await boot(await allocatePort(), ws, 20);
@@ -93,13 +96,26 @@ function boot(port, workspaces, attemptsLeft) {
     A.eq(rosterDisk.agents[0].agentId, 'cron_brief', 'persisted roster carries the agentId');
     A.eq(rosterDisk.agents[0].provider, 'codex', 'persisted roster carries the selected provider');
 
-    // ---- create: a valid 5-field cron routine is accepted and armed ----
-    const cronExpr = await j('POST', '/api/cron', { name: 'Daily brief', prompt: 'daily summary', schedule: '0 9 * * *', agentId: 'cron_brief', provider: 'codex' });
+    // ---- create: a valid 5-field cron routine is accepted and armed; it pins a whole pair (provider AND model) ----
+    const cronExpr = await j('POST', '/api/cron', { name: 'Daily brief', prompt: 'daily summary', schedule: '0 9 * * *', agentId: 'cron_brief', provider: 'codex', model: 'gpt-5.5' });
     A.eq(cronExpr.status, 200, '5-field cron expr -> 200');
     A.eq(cronExpr.body.job.schedule.kind, 'cron', 'cron schedule stored as cron');
-    A.eq(cronExpr.body.job.provider, 'codex', 'cron routine can pin a provider');
+    A.eq(cronExpr.body.job.provider, 'codex', 'cron routine can pin a provider (with its model)');
+    A.eq(cronExpr.body.job.model, 'gpt-5.5', 'the pinned model is stored with its provider');
+    A.eq(cronExpr.body.job.wireMigration, undefined, 'a whole pair is stored as sent: no wire migration note');
     A.ok(cronExpr.body.job.nextRunAt, 'an enabled cron job is armed with a nextRunAt');
     const cronId = cronExpr.body.job.id;
+
+    // ---- create: a provider WITHOUT a model names no model, so it pins nothing (run-wire-resolver, RunWire.pairSavedWire):
+    // the create is kept, the provider is cleared so the routine follows its agent, and the note keeps what was sent ----
+    const halfPair = await j('POST', '/api/cron', { name: 'Half pair', prompt: 'p', schedule: 'every 1h', agentId: 'cron_brief', provider: 'codex' });
+    A.eq(halfPair.status, 200, 'a provider-only create -> 200 (kept, never refused)');
+    A.eq(halfPair.body.job && halfPair.body.job.provider, null, 'a provider-only routine is no pin: its provider is cleared and it follows its agent');
+    const halfNote = (halfPair.body.job && halfPair.body.job.wireMigration) || {};
+    A.eq(halfNote.was, { provider: 'codex', model: null }, 'the wire migration note keeps the provider the create sent');
+    A.eq(halfNote.now, { provider: null, model: null }, 'the wire migration note records the cleared provider');
+    A.eq(halfNote.reason, 'provider codex without a model is not a pin: the routine follows its agent', 'the note carries the resolver\'s reason');
+    if (halfPair.body.job) await j('POST', '/api/cron/remove', { id: halfPair.body.job.id });   // keeps the restart job count below exact
 
     // ---- create: an optional IANA tz is HONORED so a wall-clock cadence fires on LOCAL time (item #4, additive) ----
     const tzCreate = await j('POST', '/api/cron', { name: 'Local morning', prompt: 'brief', schedule: '0 9 * * *', agentId: 'cron_brief', provider: 'codex', tz: 'America/New_York' });
@@ -234,8 +250,17 @@ function boot(port, workspaces, attemptsLeft) {
     A.eq(scriptJob.lastOutput, 'script-only result', 'script-only stdout is durable for delivery/contextFrom');
     const delivered = await j('GET', '/api/dev/replies?chatId=cron-dev');
     A.ok((delivered.body.replies || []).some(x => String(x.text || '').includes('script-only result')), 'specific-target delivery carries the actual final output');
-    const continued = JSON.parse(fs.readFileSync(path.join(ws, 'channels', 'cron_brief.history.json'), 'utf8'));
-    A.ok((continued.messages || []).some(x => x.role === 'assistant' && x.content === 'script-only result'), 'delivered output is folded into channel history for continuation');
+    // The routine's words join the CHAT's canonical history (routine-delivery.js publishRecord, C9): one 'delivery' row in the stream
+    // that chat replays from (history-port.js resolveStream: 'channel_<channel>_<chatId>'), no longer a per-agent legacy file.
+    // It lands after the transport, so wait for it rather than reading once.
+    let continued = null;
+    for (let tries = 0; tries < 100 && !continued; tries++) {
+      const chatHistory = await j('GET', '/api/transcript?agent=cron_brief&stream=' + encodeURIComponent('channel_dev_cron-dev') + '&limit=20');
+      continued = ((chatHistory.body && chatHistory.body.turns) || []).find(x => x.role === 'assistant' && x.kind === 'delivery' && String(x.content || '').includes('script-only result'));
+      if (!continued) await sleep(100);
+    }
+    A.ok(continued, 'delivered output is published into the chat\'s canonical history for continuation');
+    A.eq(continued && continued.content, '✦ Script health\n\nscript-only result', 'the published row is exactly what the chat received');
     const scriptTranscript = await j('GET', '/api/transcript?agent=cron_brief&stream=' + encodeURIComponent('cron-' + scriptJob.lastRunId) + '&limit=20');
     A.ok((scriptTranscript.body.turns || []).some(t => t.role === 'assistant' && t.content === 'script-only result'), 'script-only output is recoverable in its continuable cron session');
     await j('POST', '/api/cron/remove', { id: scriptCreate.body.job.id });
@@ -255,7 +280,7 @@ function boot(port, workspaces, attemptsLeft) {
     A.eq(after.body.jobs.length, 2, 'the routines persisted across a restart');
     A.ok(after.body.jobs.some(job => job.name === 'Renamed brief'), 'the edited name persisted');
     A.ok(after.body.jobs.some(job => job.schedule && job.schedule.kind === 'cron'), 'the cron routine persisted');
-    A.ok(after.body.jobs.some(job => job.provider === 'codex'), 'the routine provider persisted');
+    A.ok(after.body.jobs.some(job => job.provider === 'codex' && job.model === 'gpt-5.5'), 'the routine\'s provider and model pair persisted');
     const recoveries = await j('GET', '/api/run-recoveries');
     const interruptedCron = (recoveries.body.recoveries || []).find(row => row.runId === 'interrupted-cron-run');
     A.ok(interruptedCron, 'an interrupted scheduled run is discoverable after host restart');

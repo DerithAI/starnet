@@ -38,8 +38,10 @@
      quoted the start row's internals to the Commander). The handle it needs to watch, steer or stop the worker (id +
      generation), who it is and its state — nothing else. The run ids, the prompt it just wrote and the empty event log stay
      in the durable record, where team.subagents reads them when they are asked for. A row with no id (a refused worker)
-     passes through whole: its reason is the message. */
-  const startedHandle = v => (v && v.id) ? { id: v.id, agentId: v.agentId, status: v.status, generation: v.generation } : v;
+     passes through whole: its reason is the message. A worker its lead bounded says so (BOUNDED_LABEL). */
+  const startedHandle = v => (v && v.id)
+    ? Object.assign({ id: v.id, agentId: v.agentId, status: v.status, generation: v.generation }, v.bounded === true ? { bound: BOUNDED_LABEL } : {},
+      v.onlyHost ? { onlyHost: v.onlyHost } : {}) : v;
   /* A worker the way the briefing SHOWS it: the crew list prints "id (Name) — role", and small local models
      (2026-10-11 report: a Qwen lead that "would not delegate") answer with "Researcher" or "researcher (Ada)"
      and got a bare "no such live worker" back, so they gave up and did the work themselves. An UNAMBIGUOUS
@@ -108,15 +110,37 @@
   const BUILDER_KIT = [{ instanceId: 'builder_lent', objectType: 'builder' }];
   const kitFor = lent => (lent ? WORKER_KIT.concat(BUILDER_KIT) : WORKER_KIT);
   const canLendBuilder = ctx => { try { const r = ctx && typeof ctx.canUse === 'function' ? ctx.canUse({ name: 'station.build' }) : null; return !!(r && r.ok); } catch (_) { return false; } };
-  // isFile: the worker run's own file probe (deps.fileProbe) — the dispatcher and the worker's run answer ONE way.
-  // Only a PURE one-host read is bounded (starnet-releases#5): a brief that also asks the worker to write, fix, test,
-  // run, save, build or implement keeps the ordinary worker budgets — 3 tools and 45s cut engineering work off mid-job.
-  const boundedDomainTask = (text, isFile) => {
-    try {
-      const policy = domainTask && typeof domainTask.classify === 'function' ? domainTask.classify(text, isFile ? { isFile } : undefined) : null;
-      return policy && policy.pureRead ? policy : null;
-    } catch (_) { return null; }
+  /* A BOUND IS THE LEAD'S CALL (starnet-releases#5). bounded:true on a team.dispatch worker or a team.spawn task holds
+     that one worker to a quick one-page read: DomainTask's WORKER_MAX_ITERS turns and WORKER_MAX_TOOLS tool calls, plus
+     WORKER_MAX_MS of wall clock on dispatch (spawn and resume never had a clock). The brief's wording never bounds
+     anyone: the dispatcher used to classify each brief and cut every one-host "read" to 3 turns / 3 tools / 45s unasked,
+     so delegated security, QA and automation work came back as broken workers, and a resumed worker re-read the cut from
+     its prompt. The record keeps the lead's flag (subagents.js), and every reader is told: the row, the tool summary,
+     the start handle, a timeout row and the run host's tool-budget refusal read BOUNDED_LABEL. */
+  const BOUNDED_LABEL = 'bounded read (requested by lead)';
+  const boundOf = item => (item && item.bounded === true && domainTask)
+    ? { maxIters: domainTask.WORKER_MAX_ITERS, maxTools: domainTask.WORKER_MAX_TOOLS, maxMs: domainTask.WORKER_MAX_MS } : null;
+  const boundNote = n => (n > 0 ? ', ' + n + ' ' + BOUNDED_LABEL : '');
+  // the parameter says the numbers it applies, from the same constants (clock: team.dispatch's wall clock). It and
+  // onlyHost ride every call that offers team.dispatch or team.spawn, so their words are few (payload.budget).
+  const boundedParam = clock => {
+    const b = boundOf({ bounded: true }) || {};
+    return { type: 'boolean', description: 'One-page read: ' + b.maxIters + ' turns, ' + b.maxTools + ' tool calls' + (clock ? ', ' + Math.round(b.maxMs / 1000) + 's' : '') + '.' };
   };
+  /* A SCOPE IS THE LEAD'S CALL TOO (gh#58, starnet-releases#5). onlyHost on a team.dispatch worker or a team.spawn task
+     confines that one worker's web reach to one host (DomainTask.scopeOf): the run host keeps web_search and delegation
+     off it, refuses other hosts and stops its tools on proven NXDOMAIN for that host. The normalized host rides the row,
+     the start handle and the subagent record, so team.resume re-applies it. A value that is not a host refuses that job
+     with a visible row — a worker never runs unscoped on a scope its lead asked for; an omitted or blank one is no scope. */
+  const hostScopeOf = item => {
+    const raw = item ? item.onlyHost : undefined;
+    if (raw == null || (typeof raw === 'string' && !raw.trim())) return { host: '' };
+    const scope = domainTask && typeof domainTask.scopeOf === 'function' ? domainTask.scopeOf(raw) : null;
+    return scope ? { host: scope.host }
+      : { error: 'onlyHost must be a host name such as example.com, not ' + JSON.stringify(String(raw).slice(0, 80)) + ': fix it, or send this worker without onlyHost' };
+  };
+  const ONLY_HOST_DESCRIPTION = 'Web: this host only.';   // one text for team.dispatch and team.spawn
+  const onlyHostParam = () => ({ type: 'string', description: ONLY_HOST_DESCRIPTION });
 
   // abort without ever throwing out of a timer callback (AbortController.abort(reason) is not universal).
   function abort(ac) { try { ac.abort(new Error('worker wall clock')); } catch (_) { try { ac.abort(); } catch (_) {} } }
@@ -166,6 +190,28 @@
   const AGG_SHORT_ROOM = 200;         // below this much kept text a shortened row carries the SHORT marker
   const { note: failNote } = (typeof require === 'function') ? require('../../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
   const RunPaths = (typeof require === 'function') ? require('../../run-paths.js') : null;
+  /* TYPED OUTCOMES: a worker's result is 'done' only when its run SUCCEEDED (frontend/app/runoutcome.js): a reply the provider
+     cut ends 'done' + finishReason 'length' and is PARTIAL work — the lead must never build on it as a finished hand-off, and the
+     dispatch's "N done" never counts it. The row names that outcome (outcome / finishReason) only when it is not a success, so a
+     clean worker's row is unchanged. */
+  const RunOutcome = (typeof require === 'function') ? require('../../../frontend/app/runoutcome.js') : (typeof globalThis !== 'undefined' ? globalThis.RunOutcome : null);
+  function workerOutcome(res) { return RunOutcome.resolve({ reason: res && res.reason, finishReason: res && res.finishReason }); }
+  function workerOk(row) { return !!row && (row.outcome ? row.outcome === 'succeeded' : workerOutcome(row).ok); }
+  function markWorkerOutcome(row, res) {
+    const oc = workerOutcome(res);
+    if (row.reason === 'done' && !oc.ok) { row.outcome = oc.outcome; if (res && res.finishReason) row.finishReason = String(res.finishReason); }
+    // review 8.1: a worker the provider's safety check REFUSED ends 'error' with the refusal's code — the row names it refused, so its
+    // delivery and its ledger record say the refusal (the delegated card's "the model declined the task"), never a failure
+    else if (row.reason === 'error' && res && res.failureCode && RunOutcome.resolve({ reason: 'error', failureCode: res.failureCode }).outcome === 'refused') {
+      row.outcome = 'refused'; row.failureCode = String(res.failureCode).slice(0, 80);
+    }
+    return row;
+  }
+  /* the reason a BACKGROUND worker's settled record keeps (review 4.3): RunOutcome.reasonOf — 'done' only for a worker that SUCCEEDED.
+     The record's status already read the outcome, but its reason stayed the loop's bare 'done', so the DELEGATED card said "failed ·
+     done", /api/overseer and the subagent_stop hook (child_reason) reported a cut worker as ended 'done'. A refused worker's record keeps
+     the refusal's own end word ('refusal', review 8.1): the ledger's 'refused' is a worker that could not start. */
+  function workerReason(row) { return (row && row.reason === 'error' && row.outcome === 'refused') ? 'refusal' : RunOutcome.reasonOf(row); }
   function aggregateBudget(ctx) {
     const n = Number(ctx && ctx.outputMax);
     return (Number.isFinite(n) && n > 0) ? Math.floor(n) : AGG_DEFAULT_BUDGET;
@@ -449,16 +495,6 @@
        lead VERIFIES a foreground team.dispatch: that path never enters the background registry, so team.subagents
        used to answer [] for real, recorded worker runs and the lead reported them as never having happened (#57). */
     const runRecord = (typeof deps.runRecord === 'function') ? deps.runRecord : null;
-    /* ONE BRIEF, ONE ANSWER (review 10-15). The worker's own run classifies its brief with the host's file probe (index.js
-       runFileExists: that worker's workspace + the project it runs in), so "check about.me" with about.me in its
-       workspace is not a one-host check there. The dispatcher classified the same brief on text alone and still capped
-       that worker at 3 turns / 3 tools / 45s. fileProbe(agentId, projectRoot) -> (name) -> boolean, asked with the
-       SAME agent id and project the worker run gets. No probe wired (bare/legacy host) -> text-only, as before. */
-    const fileProbeFor = (aid, projectRoot) => {
-      if (typeof deps.fileProbe !== 'function') return null;
-      try { const probe = deps.fileProbe(aid, projectRoot); return typeof probe === 'function' ? probe : null; }
-      catch (e) { failNote('dispatch.file-probe', e); return null; }
-    };
     // the LEAD's OWN base identity (system prompt), threaded from the run host so team.spawn can clone it. Empty
     // string when absent → a spawned subagent still runs, just without an inherited persona.
     const selfSystem = (typeof deps.selfSystem === 'string') ? deps.selfSystem : '';
@@ -552,7 +588,9 @@
         for (const f of files) reads.push(String(f.abs));
         const text = userTextOf(r).trim();
         const clipped = text.length > EARLIER_EACH_MAX ? text.slice(0, EARLIER_EACH_MAX) + ' …(cut — read the file for the rest)' : text;
-        blocks.push('— ' + workerName(r.agentId) + (r.reason === 'timeout' ? ' (UNFINISHED — ran out of time)' : '') + ':\n'
+        // UNFINISHED by its OUTCOME (review 5.2): a worker the provider cut ends 'done' too (its row's outcome cut_short) and left partial text
+        const unfinished = r.reason === 'timeout' ? 'ran out of time' : (workerOk(r) ? '' : RunOutcome.line(RunOutcome.ofRow(r)));
+        blocks.push('— ' + workerName(r.agentId) + (unfinished ? ' (UNFINISHED — ' + unfinished + ')' : '') + ':\n'
           + (clipped || '(returned no text)') + (files.length ? '\nFiles: ' + files.map(f => f.abs).join(', ') : ''));
       }
       return { text: blocks.join('\n\n').slice(0, EARLIER_MAX), reads, taint: taintOfRows(usable) || '' };
@@ -609,15 +647,35 @@
        both have to ask the live page. Absent (headless run, bare unit caller) -> session targeting is refused
        honestly rather than silently ignored. See sidecar/station-bridge.js. */
     const station = (deps.station && typeof deps.station.request === 'function') ? deps.station : null;
-    function workerWire(ident) {
+    /* THE WORKER'S OWN PAIR (run-wire-resolver lane): resolveWire(agentId) is the host's ONE {provider, model} resolution
+       (index.js runWireFor -> sidecar/run-wire.js) — the worker's pin, else the station default an unpinned agent follows on
+       every other surface. Without it an unpinned worker ran on the LEAD's model, so the same specialist answered a routine
+       on the station default and a team.dispatch on whatever its lead was pinned to. The credential rule is unchanged: a
+       pair on another provider runs only with that provider's own server-held credential (providerAuth), else the lead's
+       wire with an honest note. No resolveWire (a bare/legacy host) -> the roster-row rule below.
+       THE WORKER'S EFFORT is the same one rule (run-wire.js, wire.reasoningEffort): its own pin/class effort, the station's
+       when it follows the station, else the provider default — never the lead's. The lead's effort rides only a worker
+       that runs on the lead's own wire (after its own class effort), and a legacy host keeps its own-class-else-lead rule. */
+    const resolveWire = (typeof deps.resolveWire === 'function') ? deps.resolveWire : null;
+    function workerWire(ident, agentId) {
+      const w = (resolveWire && agentId) ? resolveWire(agentId) : null;
+      const leadEffort = (ident && ident.reasoningEffort) || reasoningEffort;   // Class Loadouts S1: its own class effort first
+      if (w && w.ok && w.model) {
+        const p = String(w.provider || '');
+        const effort = w.reasoningEffort || undefined;
+        if (!p || p === provider) return { provider, key, baseUrl, model: String(w.model), note: '', wireSource: w.source, reasoningEffort: effort };
+        const lent = providerAuth ? providerAuth(p) : null;
+        if (lent) return { provider: lent.provider || p, key: lent.key || '', baseUrl: lent.baseUrl || '', model: String(w.model), note: '', wireSource: w.source, reasoningEffort: effort };
+        return { provider, key, baseUrl, model, note: 'worker provider "' + p + '" has no credential on this station — ran on the lead\'s model instead', wireSource: 'lead', reasoningEffort: leadEffort };
+      }
       const wanted = (ident && ident.provider) ? String(ident.provider) : '';
       const ownModel = (ident && ident.model) ? String(ident.model) : '';
       if (!wanted || wanted === provider || !ownModel) {
-        return { provider, key, baseUrl, model: ownModel || model, note: '' };
+        return { provider, key, baseUrl, model: ownModel || model, note: '', reasoningEffort: leadEffort };
       }
       const auth = providerAuth ? providerAuth(wanted) : null;
-      if (auth) return { provider: auth.provider || wanted, key: auth.key || '', baseUrl: auth.baseUrl || '', model: ownModel, note: '' };
-      return { provider, key, baseUrl, model, note: 'worker provider "' + wanted + '" has no credential on this station — ran on the lead\'s model instead' };
+      if (auth) return { provider: auth.provider || wanted, key: auth.key || '', baseUrl: auth.baseUrl || '', model: ownModel, note: '', reasoningEffort: leadEffort };
+      return { provider, key, baseUrl, model, note: 'worker provider "' + wanted + '" has no credential on this station — ran on the lead\'s model instead', reasoningEffort: leadEffort };
     }
     // Opt-in ceiling only. Omitted/zero means dispatch every requested worker.
     const maxWorkers = (typeof deps.maxWorkers === 'number' && isFinite(deps.maxWorkers) && deps.maxWorkers > 0) ? Math.floor(deps.maxWorkers) : 0;
@@ -785,13 +843,23 @@
        durable record is true either way; this is what puts the worker's answer in front of the Commander, in the
        session they named. Failure is REPORTED on the row, never swallowed: a lead that says "it's in research"
        when the fold failed is the same lie as misfiling it. */
+    /* the reason a worker's DELIVERY carries (typed-outcomes): a 'done' end that did not SUCCEED names its outcome (a provider-cut reply
+       is 'cut_short'), so every reader of the delivery — the page's thread and its board chip and CREW row (stationcommands.js
+       noteOutcome), the persisted envelope, the away briefing, team.subagents — sees it was not a finished answer. ONE rule for the
+       durable half (finalizeWorkerDelivery) and the visible half (deliverToSession). */
+    function deliveryReasonOf(row) {
+      // (review 8.1: a refused worker's row ends 'error' with outcome 'refused' — its delivery says the refusal's own end word, as workerReason)
+      if (row.reason === 'error' && row.outcome === 'refused') return 'refusal';
+      return (row.reason === 'done' && row.outcome && row.outcome !== 'succeeded') ? row.outcome : (row.reason || 'error');
+    }
     async function deliverToSession(job, row) {
       if (!station || !job.streamId) return;
       let out = null;
+      const why = deliveryReasonOf(row);
       const args = {
         streamId: job.streamId, sessionTitle: job.sessionTitle || job.session || '',
-        agentId: job.agentId, runId: row.runId || '', prompt: job.prompt, text: userTextOf(row), reason: row.reason || '',
-        dispatchDelivery: { state: 'final', text: userTextOf(row), reason: row.reason || 'error', repairRunId: row.repairRunId || '' },
+        agentId: job.agentId, runId: row.runId || '', prompt: job.prompt, text: userTextOf(row), reason: row.reason ? why : '',
+        dispatchDelivery: { state: 'final', text: userTextOf(row), reason: why, repairRunId: row.repairRunId || '' },
         parentStreamId: job.parentStreamId || undefined   // a fresh child thread the page may not have adopted yet
       };
       try { out = await station.request('station.deliver', args); }
@@ -806,7 +874,9 @@
     }
 
     async function finalizeWorkerDelivery(runId, row) {
-      const envelope = { state: 'final', text: userTextOf(row), reason: row.reason || 'error', repairRunId: row.repairRunId || '' };
+      // the delivery's reason names a worker's non-success OUTCOME when its end said 'done' (a provider-cut reply: 'cut_short'), so
+      // every reader of the delivery (the page's thread, the away briefing, team.subagents) sees it was not a finished answer
+      const envelope = { state: 'final', text: userTextOf(row), reason: deliveryReasonOf(row), repairRunId: row.repairRunId || '' };
       // a refused / never-admitted run filed no execution row: there is nothing to make recoverable
       const recorded = typeof deps.runRecord !== 'function' || !!deps.runRecord(runId);
       if (recorded && typeof deps.finalizeDispatchDelivery === 'function') {
@@ -842,7 +912,7 @@
       // beat in 'ask' mode (a session grant stops per-call fatigue), bypassed by Full Access — so a trusting
       // user keeps the frictionless flow by choosing it. Lead-only conferral + budget caps + the concurrency
       // ceiling + autonomous workers (default-deny) all still stand underneath.
-      name: 'team.dispatch', capability: 'orchestrator', scope: 'execute', requiresConsent: true,
+      name: 'team.dispatch', capability: 'orchestrator', impact: 'none', scope: 'execute', requiresConsent: true,
       /* INTO THIS CHAT IS NOT A DISPATCH (rc walk 10-14, Haiku 4.5 in ASK): "bring two crew in to help me write a launch post"
          and "add them into this chat" both went to team.dispatch — the lead even said "Bringing COPY and STRATEGY into this
          chat" while dispatching. This is the description the model reads when it picks; it now says where a worker works and
@@ -862,7 +932,9 @@
                 // in the current session — see resolveSessions for why an unmatched name never falls back to that.
                 session: { type: 'string' },
                 // THE LENT BUILDER: this worker gets station.map / plan / build for this job (BUILDER_KIT above)
-                builder: { type: 'boolean' }
+                builder: { type: 'boolean' },
+                bounded: boundedParam(true),   // the one way to bound a worker (boundOf above)
+                onlyHost: onlyHostParam()      // the one way to scope a worker to a host (hostScopeOf above)
               }
             }
           },
@@ -911,7 +983,9 @@
           // a lend never widens: a lead whose own run cannot build gets this worker refused, not silently sent toolless
           const builder = !!(w && w.builder === true);
           if (builder && !canLendBuilder(ctx)) return { agentId: aid, error: 'builder:true needs the station builder in YOUR run, and it is not granted here: dispatch this worker without builder, or do the floor change yourself' };
-          return { agentId: aid, prompt: String((w && w.prompt) || ''), context: handoffContext(w && w.context), ident: crew.get(aid), session: session, resultSchema: contract.schema, builder };
+          const scope = hostScopeOf(w);
+          if (scope.error) return { agentId: aid, error: scope.error };
+          return { agentId: aid, prompt: String((w && w.prompt) || ''), context: handoffContext(w && w.context), ident: crew.get(aid), session: session, resultSchema: contract.schema, builder, bounded: !!(w && w.bounded === true), onlyHost: scope.host };
         });
         markBatchQuality(jobs);
         // WHERE before WHO does the work: an unresolvable session marks its job failed here, so that worker is
@@ -929,7 +1003,7 @@
         const runWorker = async (job, o2) => {
           o2 = o2 || {};
           if (job.error) return { agentId: job.agentId, reason: 'error', result: job.error, usd: 0 };
-          const wire = workerWire(job.ident);   // the worker's OWN provider+model when resolvable (see workerWire)
+          const wire = workerWire(job.ident, job.agentId);   // the worker's OWN provider+model when resolvable (see workerWire)
           // PER-WORKER WALL CLOCK (2026-07-26 audit finding A). Before this, the ONLY clock was the registry's
           // tool timeout over the WHOLE dispatch: one slow worker ate the shared budget, the registry rejected, and
           // every ALREADY-COMPLETED worker's result was thrown away — the lead received the string "team.dispatch
@@ -938,12 +1012,14 @@
           // straggler is stopped ALONE and comes back as one honest `timeout` row while its siblings' work survives.
           // Background workers pass no wallMs — outliving the tool call is the whole point of background:true.
           const parentSignal = o2.signal || (ctx && ctx.signal);
-          const bounded = boundedDomainTask(job.prompt, fileProbeFor(job.agentId, projectOptions(job.sessionContext || ctx).projectRoot));
+          const bound = boundOf(job);   // the lead's bounded:true, never the brief's wording
           // minted up front (not inline in the runOnce call) so the row can carry the SAME id the run was filed
           // under — the page's delivery uses it to append the run to the session and to stay idempotent.
           const workerRunId = o2.runId || newId();
           const finish = async (row, deliver) => {
             row.runId = workerRunId;
+            if (bound) row.bound = BOUNDED_LABEL;   // every row of a bounded worker says who bounded it
+            if (job.onlyHost) row.onlyHost = job.onlyHost;   // ...and of a scoped one, the host its lead confined it to
             handedRoot.set(row, projectOptions(job.sessionContext || ctx).projectRoot || '');   // a later worker reads this one's files from ITS base
             const envelope = await finalizeWorkerDelivery(workerRunId, row);
             // The execution loop ending is not completion: validation and any bounded repair finish first.
@@ -961,11 +1037,10 @@
             return row;
           };
           const allottedWallMs = (typeof o2.wallMs === 'number' && isFinite(o2.wallMs) && o2.wallMs > 0) ? o2.wallMs : 0;
-          // A one-host inspection is never a ten-minute autonomous research job. Even if a lead explicitly
-          // delegates one (non-interactive callers can still do so), bind all three dimensions: turns, tools,
-          // and wall clock. The worker still gets a final synthesis turn after its direct fetch.
-          const wallMs = bounded
-            ? Math.min(allottedWallMs || bounded.workerMaxMs, bounded.workerMaxMs)
+          // A one-page read its lead bounded is never a ten-minute autonomous research job: bind all three dimensions,
+          // turns, tools and wall clock. The worker still gets a final synthesis turn after its direct fetch.
+          const wallMs = bound
+            ? Math.min(allottedWallMs || bound.maxMs, bound.maxMs)
             : allottedWallMs;
           const child = wallMs ? childAbort(parentSignal) : null;
           const ac = child && child.ac;
@@ -981,9 +1056,9 @@
             const row = {
               agentId: job.agentId, reason: 'timeout',
               result: (partial ? partial + '\n\n' : '')
-                + '[STOPPED — this worker used up its ' + Math.round(wallMs / 1000) + 's slice of the dispatch wall clock'
+                + '[STOPPED — ' + (bound ? BOUNDED_LABEL + ': ' : '') + 'this worker used up its ' + Math.round(wallMs / 1000) + 's slice of the dispatch wall clock'
                 + (partial ? '; the text above is its PARTIAL work' : ' before returning any text')
-                + '. Do not present it as complete: either re-dispatch this subtask alone, or tell the Commander this part is unfinished.]',
+                + '. Do not present it as complete: either re-dispatch this subtask ' + (bound ? 'without bounded' : 'alone') + ', or tell the Commander this part is unfinished.]',
               usd: (res && res.usd) || 0,
               taintedBy: taintOfRun(res) || undefined
             };
@@ -1008,10 +1083,10 @@
               // THE HAND-OFF: what the earlier workers read, this one inherits; the files they saved, it may read
               ...(handoff && handoff.taint ? { initialTaint: conn.initialTaint || handoff.taint } : {}),
               ...(handoff && handoff.reads && handoff.reads.length ? { handoffReads: handoff.reads.slice() } : {}),
-              key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
+              key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl, wireSource: wire.wireSource,
               // Class Loadouts S1: the WORKER runs at its OWN class-applied reasoning effort (roster record), not the
               // lead's — a dispatched specialist honors its loadout. Falls back to the lead's effort when unset.
-              reasoningEffort: (job.ident && job.ident.reasoningEffort) || reasoningEffort,
+              reasoningEffort: wire.reasoningEffort,   // the ONE effort rule (workerWire): its own, else the station's when it follows
               model: wire.model,
               system: workerSystem((job.ident && job.ident.system) || ''),
               messages: previousMessages.concat([{ role: 'user', content: contractedPrompt }]),
@@ -1042,8 +1117,9 @@
               detachedConsent: o2.background === true,
               extraObjects: kitFor(job.builder),   // + the LENT BUILDER when the lead dispatched it with builder:true
               maxCostUsd: perWorker,           // a runaway worker can't blow the lead's per-run ceiling
-              maxIters: bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters,
-              maxToolCalls: bounded ? bounded.workerMaxTools : undefined,
+              maxIters: bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters,
+              maxToolCalls: bound ? bound.maxTools : undefined,
+              onlyHost: job.onlyHost || undefined,   // the lead's host scope (hostScopeOf); the run host enforces it
               steer: typeof o2.steer === 'function' ? o2.steer : undefined
             });
           } catch (e) {
@@ -1069,8 +1145,8 @@
               repair = await runOnce({
                 outputOnly: true,
                 ...projectOptions(job.sessionContext || ctx), ...connectorOptions(ctx), ...repairPool.options,
-                key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
-                reasoningEffort: (job.ident && job.ident.reasoningEffort) || reasoningEffort,
+                key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl, wireSource: wire.wireSource,
+                reasoningEffort: wire.reasoningEffort,   // the ONE effort rule (workerWire)
                 model: wire.model, system: workerSystem((job.ident && job.ident.system) || ''),
                 messages: [{ role: 'user', content: contractedPrompt }, { role: 'assistant', content: firstText },
                   { role: 'user', content: '[STRUCTURED RESULT REPAIR] The prior result failed host validation:\n- ' + errors.slice(0, 20).join('\n- ') + '\nReturn ONLY strict JSON matching: ' + JSON.stringify(job.resultSchema) }],
@@ -1081,8 +1157,9 @@
                 dispatchDelivery: { state: 'internal' },
                 consent: ctx && ctx.consent, extraObjects: WORKER_KIT,
                 maxCostUsd: perWorker > 0 ? remaining : 0,
-                maxIters: lowerPositive(4, bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters),
-                maxToolCalls: bounded ? bounded.workerMaxTools : undefined,
+                maxIters: lowerPositive(4, bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters),
+                maxToolCalls: bound ? bound.maxTools : undefined,
+                onlyHost: job.onlyHost || undefined,
                 steer: typeof o2.steer === 'function' ? o2.steer : undefined
               });
             } finally { repairPool.end(); }
@@ -1100,7 +1177,7 @@
           const effective = repaired || result;
           const row = {
             agentId: job.agentId,
-            reason: effective.reason || 'done',
+            reason: effective.reason || 'error',   // a worker whose run reported no terminal reason proved no ending: never 'done' (typed-outcomes)
             result: contract.text,
             structuredResult: job.resultSchema ? contract.value : null,
             validation: contract.validation,
@@ -1108,11 +1185,12 @@
             usd: totalUsd,
             runId: workerRunId,
             model: effective.model || wire.model,
-            reasoningEffort: effective.reasoningEffort || ((job.ident && job.ident.reasoningEffort) || reasoningEffort),
+            reasoningEffort: effective.reasoningEffort || wire.reasoningEffort || null,
             toolsOk: (Number(result.toolsOk) || 0) + (Number(repaired && repaired.toolsOk) || 0),
             durationMs: (Number(result.durationMs) || 0) + (Number(repaired && repaired.durationMs) || 0),
             tokens: (Number(result.tokens) || 0) + (Number(repaired && repaired.tokens) || 0)
           };
+          markWorkerOutcome(row, effective);   // a cut-short worker's row says so (outcome cut_short): never handed on as finished
           const rowTaint = taintOfRun(result, repaired);
           if (rowTaint) row.taintedBy = rowTaint;
           if (wire.note) row.note = wire.note;   // honest credential-fallback disclosure (never silent)
@@ -1142,9 +1220,9 @@
             if (job.error) return { agentId: job.agentId, reason: 'error', result: job.error };
             // parentRunId: a CANCELLED lead run cancels this worker too (subagents.cancelChildren); a lead that ends
             // normally leaves it running — outliving the call is what background:true is for.
-            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema, builder: job.builder === true, originLimits: originLimitsOf(ctx) }, async (h) => {
+            return subagents.start({ ...projectOptions(job.sessionContext || ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', streamId: job.streamId || '', agentId: job.agentId, prompt: job.prompt, context: job.context, runId: newId(), resultSchema: job.resultSchema, builder: job.builder === true, bounded: job.bounded === true, onlyHost: job.onlyHost || '', originLimits: originLimitsOf(ctx) }, async (h) => {
               const r = await runWorker(job, { runId: h.runId, signal: h.signal, emit: h.emit, steer: h.steer, background: true, stall: h });
-              return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd || 0,
+              return { status: workerOk(r) ? 'done' : 'error', reason: workerReason(r), result: r.result, usd: r.usd || 0,
                 structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
                 taintedBy: r.taintedBy || '' };
             });
@@ -1152,7 +1230,8 @@
           const startedRows = started.map(startedHandle).concat(overflowRows());
           // revealTools: a crewless lead holds the background controls DEFERRED (index.js ZERO-CREW DIET) — the workers it just
           // started must be one call away from being watched/steered/stopped. A no-op wherever they are already advertised.
-          return { content: JSON.stringify(startedRows), summary: 'started ' + started.filter(r => r && r.id).length + ' background worker(s)' + overflowNote,
+          return { content: JSON.stringify(startedRows), summary: 'started ' + started.filter(r => r && r.id).length + ' background worker(s)'
+            + boundNote(started.filter(r => r && r.id && r.bounded === true).length) + overflowNote,
             control: { revealTools: BACKGROUND_CONTROLS.slice() } };
         }
 
@@ -1201,7 +1280,7 @@
         }
         out = out.concat(overflowRows());
 
-        const ok = out.filter(r => r.reason === 'done').length;
+        const ok = out.filter(workerOk).length;
         const late = out.filter(r => r.reason === 'timeout').length;
         const unrun = out.filter(r => r.reason === 'not-dispatched').length - overflow.length;
         // every worker's row survives the result cap: fair-share its text, spill the whole text per worker
@@ -1211,6 +1290,7 @@
           summary: 'dispatched ' + jobs.length + ' worker(s), ' + ok + ' done'
             + (late ? ', ' + late + ' out of time' : '')
             + (unrun > 0 ? ', ' + unrun + ' never started (wall clock)' : '')
+            + boundNote(out.filter(r => r.bound === BOUNDED_LABEL).length)
             + overflowNote + fitNote(fit)
         }, taintOfRows(out));
       }
@@ -1233,8 +1313,8 @@
       timeoutMs: dispatchBudgetMs,
       // CONSENT-GATED like team.dispatch (see its note): spawning clones fans out autonomous budget-spending
       // loops off text in the lead's context — 'ask' mode gets the APPROVAL beat, Full Access bypasses.
-      name: 'team.spawn', capability: 'orchestrator', scope: 'execute', requiresConsent: true,
-      description: 'Spawn EPHEMERAL sub-agents (clones of yourself) to work subtasks in parallel. Each runs its OWN agent loop on the one subtask you give it, returns its result, then vanishes (it is NOT added to your roster and cannot spawn sub-agents). Use it to decompose a task or fan out parallel work without summoning named crew first. Each task takes a prompt (the focused subtask) and an optional label. background:true spawns watchable workers while you keep working.',
+      name: 'team.spawn', capability: 'orchestrator', impact: 'none', scope: 'execute', requiresConsent: true,
+      description: 'Spawn EPHEMERAL sub-agents (clones of yourself) to work subtasks in parallel. Each runs its OWN agent loop on the one subtask you give it, returns its result, then vanishes (it is NOT added to your roster and cannot spawn sub-agents). Use it to decompose a task or fan out parallel work without summoning named crew first. background:true spawns watchable workers while you keep working.',
       schema: {
         type: 'object', required: ['tasks'], properties: {
           tasks: {
@@ -1243,7 +1323,9 @@
               properties: {
                 prompt: { type: 'string' }, label: { type: 'string' },
                 resultSchema: { type: 'object', description: 'Strict JSON result contract: invalid output gets one bounded repair and is never accepted as done.' },
-                context: { type: 'string', description: 'What YOU already established that this clone needs (file paths, findings, constraints, decisions), placed before the prompt as settled knowledge. Do not restate the subtask.' }
+                context: { type: 'string', description: 'What YOU already established that this clone needs (file paths, findings, constraints, decisions), placed before the prompt as settled knowledge. Do not restate the subtask.' },
+                bounded: boundedParam(false),   // turns and tool calls only: a clone never had a wall clock of its own
+                onlyHost: onlyHostParam()
               }
             }
           },
@@ -1259,12 +1341,15 @@
         const askedTasks = Array.isArray(args.tasks) ? args.tasks : [];
         const reqs = (maxWorkers ? askedTasks.slice(0, maxWorkers) : askedTasks).map((task, i) => {
           const contract = resultSchemaOf(task && task.resultSchema);
+          const scope = hostScopeOf(task);
           return {
             prompt: String((task && task.prompt) || ''),
             context: handoffContext(task && task.context),
             label: String((task && task.label) || ('subagent ' + (i + 1))).slice(0, 60),
             resultSchema: contract.ok ? contract.schema : null,
-            error: contract.ok ? '' : 'invalid result contract: ' + contract.error
+            bounded: !!(task && task.bounded === true),
+            onlyHost: scope.host || '',
+            error: !contract.ok ? 'invalid result contract: ' + contract.error : (scope.error || '')
           };
         });
         markBatchQuality(reqs);
@@ -1294,10 +1379,11 @@
             return { label, view: row, done: Promise.resolve(row), started: false };
           }
           const ephemeralId = ('sub-' + newId()).slice(0, 40);   // anonymous, ID_RE-valid; NEVER a roster agentId
-          let settle; const done = new Promise(res => { settle = res; });
+          const bound = boundOf(task);   // the lead's bounded:true, never the subtask's wording
+          // every row a bounded clone settles says who bounded it, and a scoped one the host its lead confined it to
+          let settle; const done = new Promise(res => { settle = r => res(Object.assign(r, bound ? { bound: BOUNDED_LABEL } : {}, task.onlyHost ? { onlyHost: task.onlyHost } : {})); });
           const runner = async (h) => {
             let result;
-            const bounded = boundedDomainTask(prompt, fileProbeFor(ephemeralId, projectOptions(ctx).projectRoot));
             const contractedPrompt = openingMessage(prompt, task.context, task.resultSchema);
             const watched = clonePool(h);
             try {
@@ -1317,8 +1403,9 @@
                 extraObjects: WORKER_KIT,                   // WORKBENCH only — NO 'lead' → no orchestrator object →
                                                             // team.spawn never exposed to it → FLAT DEPTH (no re-spawn)
                 maxCostUsd: perWorker,                       // a runaway clone can't blow the lead's per-run ceiling
-                maxIters: bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters,
-                maxToolCalls: bounded ? bounded.workerMaxTools : undefined,
+                maxIters: bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters,
+                maxToolCalls: bound ? bound.maxTools : undefined,
+                onlyHost: task.onlyHost || undefined,       // the lead's host scope (hostScopeOf)
                 steer: h.steer
               });
             } catch (e) {
@@ -1359,8 +1446,8 @@
                   signal: h.signal, runId: repairRunId, parentRunId: ctx && ctx.runId, delegatedBy: (ctx && ctx.agentId) || '',
                   trigger: 'directive', surface: 'autonomous', consent: ctx && ctx.consent,
                   extraObjects: WORKER_KIT, maxCostUsd: perWorker > 0 ? remaining : 0,
-                  maxIters: lowerPositive(4, bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters),
-                  maxToolCalls: bounded ? bounded.workerMaxTools : undefined, steer: h.steer
+                  maxIters: lowerPositive(4, bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters),
+                  maxToolCalls: bound ? bound.maxTools : undefined, onlyHost: task.onlyHost || undefined, steer: h.steer
                 });
               } finally { repairPool.end(); }
               return repair ? { text: lastAssistant(repair.messages), result: repair, runId: repairRunId } : null;
@@ -1369,7 +1456,7 @@
             const artifacts = [].concat(Array.isArray(result.artifacts) ? result.artifacts : [], Array.isArray(repaired && repaired.artifacts) ? repaired.artifacts : []);
             const r = {
               label, agentId: ephemeralId,
-              reason: task.resultSchema && !contract.ok ? 'invalid-result' : ((repaired || result).reason || 'done'),
+              reason: task.resultSchema && !contract.ok ? 'invalid-result' : ((repaired || result).reason || 'error'),   // no terminal reason is never 'done'
               result: task.resultSchema && !contract.ok ? 'Subagent output failed its result schema after one bounded repair attempt. No completion was accepted.' : contract.text,
               structuredResult: task.resultSchema && contract.ok ? contract.value : null,
               validation: contract.validation, repairRunId: contract.repairRunId || '',
@@ -1378,28 +1465,30 @@
             // ghost-file fix (same as runWorker): the clone's proven outputs, stamped with the owning workspace.
             if (artifacts.length) r.artifacts = artifacts.map(a => Object.assign({}, a, { agentId: ephemeralId, workspace: ephemeralId }));
             if (taintOfRun(result, repaired)) r.taintedBy = taintOfRun(result, repaired);
+            if (!(task.resultSchema && !contract.ok)) markWorkerOutcome(r, repaired || result);
             settle(r);
-            return { status: r.reason === 'done' ? 'done' : 'error', reason: r.reason, result: r.result, usd: r.usd,
+            return { status: workerOk(r) ? 'done' : 'error', reason: workerReason(r), result: r.result, usd: r.usd,
               structuredResult: r.structuredResult, validation: r.validation, repairRunId: r.repairRunId, artifacts: r.artifacts,
               taintedBy: r.taintedBy || '' };
           };
           // a FOREGROUND clone's result already went back to the lead inside its run: only a background one is the overseer's
           // to report on (parentStreamId set), or the Commander would get that result a second time
-          const view = subagents.start({ ...projectOptions(ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: args.background && deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema, originLimits: originLimitsOf(ctx) }, runner);
+          const view = subagents.start({ ...projectOptions(ctx), leadId, parentRunId: (ctx && ctx.runId) || '', parentStreamId: args.background && deps.coordinateResults === true && ctx && ctx.streamId !== 'global' ? ctx.streamId : '', agentId: ephemeralId, prompt: prompt, context: task.context, runId: newId(), resultSchema: task.resultSchema, bounded: task.bounded === true, onlyHost: task.onlyHost || '', originLimits: originLimitsOf(ctx) }, runner);
           return { label, view, done, started: true };
         };
 
         const spawned = reqs.map(spawnOne);
+        const boundedNote = boundNote(spawned.filter(s => s.started && s.view && s.view.bounded === true).length);
         if (args.background) {
           const rows = spawned.map(s => Object.assign({ label: s.label }, startedHandle(s.view))).concat(overflowRows());
           // revealTools: see team.dispatch background — a crewless lead's spawned background workers get their controls
-          return { content: JSON.stringify(rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s)' + overflowNote,
+          return { content: JSON.stringify(rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s)' + boundedNote + overflowNote,
             control: { revealTools: BACKGROUND_CONTROLS.slice() } };
         }
         const results = (await Promise.all(spawned.map(s => s.done))).concat(overflowRows());
-        const ok = results.filter(r => r.reason === 'done').length;
+        const ok = results.filter(workerOk).length;
         const fit = await fitAggregate(results, { budget: aggregateBudget(ctx), what: r => 'subagent ' + (r.label || r.agentId) + '\'s result', park: workerParker(ctx, 'team.spawn'), scrub: scrubTextOf(ctx) });
-        return withTaint({ content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + overflowNote + fitNote(fit) }, taintOfRows(results));
+        return withTaint({ content: JSON.stringify(fit.rows), summary: 'spawned ' + spawned.filter(s => s.started).length + ' subagent(s), ' + ok + ' done' + boundedNote + overflowNote + fitNote(fit) }, taintOfRows(results));
       }
     };
 
@@ -1422,7 +1511,7 @@
       // own wall-clock above the summon's 120s browser-ack backstop, so a stalled ack returns a clean "not
       // completed" instead of tripping the 30s fast-tool default mid-wait. The happy path acks in well under a second.
       timeoutMs: 180000,
-      name: 'team.summon', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'team.summon', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       briefExempt: true,   // hiring is station setup, not the deliverable: never held behind the Task Brief (taskbrief-policy canMutate)
       description: 'Summon a NEW specialist agent onto the crew for the Commander, live, as the Recruitment Bay does. Use it when the specialist you need does not exist yet; one already under YOUR TEAM takes work through team.dispatch. Pick a class with specId (one of: ' + SPEC_IDS + ') or describe a custom one with name + purpose. The station places the new agent\'s workstation with it, so never tell the Commander to go build it a desk. Returns the new agentId: bring it INTO this chat with station.control group.add, or hand it work with team.dispatch. In APPROVAL mode the Commander confirms the summon first.',
       schema: {
@@ -1488,18 +1577,23 @@
           + ' so a background worker still running is not here yet (check it with team.subagents by id).',
         summary: 'not found'
       };
-      const pick = ['runId', 'agentId', 'delegatedBy', 'parentRunId', 'reason', 'model', 'usd', 'tokens', 'turns', 'toolsOk', 'durationMs', 'startedAt', 'endedAt', 'streamId', 'sessionTitle'];
+      const pick = ['runId', 'agentId', 'delegatedBy', 'parentRunId', 'reason', 'outcome', 'failureCode', 'model', 'usd', 'tokens', 'turns', 'toolsOk', 'durationMs', 'startedAt', 'endedAt', 'streamId', 'sessionTitle'];
       const out = { recorded: true };
       for (const k of pick) if (row[k] !== undefined && row[k] !== '') out[k] = row[k];
       if (row.dispatchDelivery) out.dispatchDelivery = { state: row.dispatchDelivery.state, reason: row.dispatchDelivery.reason, repairRunId: row.dispatchDelivery.repairRunId };
-      const outcome = row.dispatchDelivery
-        ? (row.dispatchDelivery.state === 'final' ? row.dispatchDelivery.reason : 'delivery ' + row.dispatchDelivery.state)
-        : (row.reason || 'done');
+      // a final delivery's reason is outcome-aware at its source (deliveryReasonOf); a 'done' one with no repair run over a row that did not
+      // succeed (an envelope finalized before its settle site read the outcome: team.resume until review 5.1) reads as the row's outcome —
+      // the away briefing's rule (away-briefing.js)
+      const dd = row.dispatchDelivery;
+      const finalSaid = dd && (dd.reason === 'done' && !dd.repairRunId && !RunOutcome.ofRow(row).ok ? RunOutcome.reasonOf(row) : dd.reason);
+      const outcome = dd
+        ? (dd.state === 'final' ? finalSaid : 'delivery ' + dd.state)
+        : (RunOutcome.ofRow(row).ok ? 'done' : RunOutcome.line(RunOutcome.ofRow(row)));   // the row's recorded outcome, never a missing reason read as 'done'
       return { content: JSON.stringify(out), summary: 'recorded: ' + (row.agentId || 'worker') + ' ' + outcome };
     }
 
     const subagentsTool = {
-      name: 'team.subagents', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'team.subagents', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'List or inspect your BACKGROUND subagents (team.dispatch with background:true, and team.spawn). Pass id for one worker, or omit id to list recent workers for this lead. Returned records include the current generation, status, event tail, result, steering history, and whether they can be interrupted or resumed. Use the returned id + generation for team.steer. A normal (foreground) team.dispatch is NEVER in this list; to confirm one really ran, pass runId (from its dispatch result) and the station\'s run history answers.',
       schema: { type: 'object', properties: { id: { type: 'string' }, agentId: { type: 'string' }, status: { type: 'string' }, runId: { type: 'string', description: 'A worker runId from a team.dispatch result: look it up in the station\'s durable run history.' } } },
       run: async (args, ctx) => {
@@ -1526,7 +1620,7 @@
     };
 
     const steerTool = {
-      name: 'team.steer', capability: 'orchestrator', scope: 'write', requiresConsent: false,
+      name: 'team.steer', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: false,
       description: 'Send a follow-up instruction to one CURRENTLY RUNNING background subagent. First inspect it with team.subagents, then pass the exact id and generation shown there. The host durably queues the instruction for that generation only; a stale generation is rejected and can never land on a resumed worker.',
       schema: {
         type: 'object', required: ['id', 'generation', 'text'],
@@ -1547,9 +1641,9 @@
         const ident = crew.get(rec.agentId);
         if (!ident) return { status: 'error', reason: 'error', result: 'worker is no longer in the live roster', usd: 0 };
         const finish = async row => { await finalizeWorkerDelivery(h.runId, row); return row; };
-        const wire = workerWire(ident);   // same cross-provider resolution as a fresh dispatch
+        const wire = workerWire(ident, rec.agentId);   // same cross-provider resolution as a fresh dispatch
         let result;
-        const bounded = boundedDomainTask(rec.prompt || '', fileProbeFor(rec.agentId, projectOptions(ctx, rec).projectRoot));
+        const bound = boundOf(rec);   // the record keeps the lead's bounded:true (subagents.js); never re-read from rec.prompt
         // The durable record carries the lead's handoff `context`, so a resumed worker rebuilds the SAME
         // opening message a fresh dispatch would have — a restart never silently drops the handoff.
         const contractedPrompt = openingMessage(rec.prompt || '', handoffContext(rec.context), rec.resultSchema);
@@ -1558,8 +1652,8 @@
         try {
           result = await runOnce({
             ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...watched.options,
-            key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
-            reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,   // Class Loadouts S1: worker's own class effort (see runWorker)
+            key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl, wireSource: wire.wireSource,
+            reasoningEffort: wire.reasoningEffort,   // the ONE effort rule, as a fresh dispatch (workerWire)
             model: wire.model,
             system: workerSystem((ident && ident.system) || ''),
             messages: ((resumedSession && resumedSession.messages) || []).concat([{ role: 'user', content: contractedPrompt }]),
@@ -1578,8 +1672,9 @@
             // a worker the lead LENT the builder keeps it on resume, while the resuming lead can still build
             extraObjects: kitFor(rec.builder === true && canLendBuilder(ctx)),
             maxCostUsd: perWorker,
-            maxIters: bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters,
-            maxToolCalls: bounded ? bounded.workerMaxTools : undefined,
+            maxIters: bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters,
+            maxToolCalls: bound ? bound.maxTools : undefined,
+            onlyHost: rec.onlyHost || undefined,   // the record keeps the lead's host scope too (subagents.js)
             steer: h.steer
           });
         } catch (e) {
@@ -1598,8 +1693,8 @@
             repair = await runOnce({
               outputOnly: true,
             ...projectOptions(ctx, rec), ...resumeConnectorOptions(ctx, rec), ...repairPool.options,
-            key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl,
-            reasoningEffort: (ident && ident.reasoningEffort) || reasoningEffort,
+            key: wire.key, provider: wire.provider, baseUrl: wire.baseUrl, wireSource: wire.wireSource,
+            reasoningEffort: wire.reasoningEffort,   // the ONE effort rule (workerWire)
             model: wire.model, system: workerSystem((ident && ident.system) || ''),
             messages: [{ role: 'user', content: contractedPrompt }, { role: 'assistant', content: firstText },
               { role: 'user', content: '[STRUCTURED RESULT REPAIR] The prior result failed host validation:\n- ' + errors.slice(0, 20).join('\n- ') + '\nReturn ONLY strict JSON matching: ' + JSON.stringify(rec.resultSchema) }],
@@ -1609,8 +1704,8 @@
             parentRunId: ctx && ctx.runId, delegatedBy: (ctx && ctx.agentId) || '', trigger: 'directive', surface: 'autonomous',
             consent: ctx && ctx.consent, extraObjects: WORKER_KIT,
             maxCostUsd: perWorker > 0 ? remaining : 0,
-            maxIters: lowerPositive(4, bounded ? lowerPositive(workerMaxIters, bounded.workerMaxIters) : workerMaxIters),
-            maxToolCalls: bounded ? bounded.workerMaxTools : undefined, steer: h.steer
+            maxIters: lowerPositive(4, bound ? lowerPositive(workerMaxIters, bound.maxIters) : workerMaxIters),
+            maxToolCalls: bound ? bound.maxTools : undefined, onlyHost: rec.onlyHost || undefined, steer: h.steer
             });
           } finally { repairPool.end(); }
           return repair ? { text: lastAssistant(repair.messages), result: repair, runId: repairRunId } : null;
@@ -1618,21 +1713,27 @@
         const repaired = contract.repairResult || null;
         const artifacts = [].concat(Array.isArray(result.artifacts) ? result.artifacts : [], Array.isArray(repaired && repaired.artifacts) ? repaired.artifacts : []);
         const invalid = !!(rec.resultSchema && !contract.ok);
-        return finish({
-          status: invalid ? 'error' : (((repaired || result).reason || 'done') === 'done' ? 'done' : 'error'),
-          reason: invalid ? 'invalid-result' : ((repaired || result).reason || 'done'),
+        const row = {
+          // a resumed worker whose run reported no terminal reason proved no ending: an error, never 'done' (typed-outcomes)
+          status: invalid ? 'error' : (workerOutcome(repaired || result).ok ? 'done' : 'error'),   // a cut-short reply is not done
+          reason: invalid ? 'invalid-result' : ((repaired || result).reason || 'error'),
           result: invalid ? 'Worker output failed its result schema after one bounded repair attempt. No completion was accepted.' : contract.text,
           structuredResult: rec.resultSchema && contract.ok ? contract.value : null,
           validation: contract.validation, repairRunId: contract.repairRunId || '',
           usd: (Number(result.usd) || 0) + (Number(repaired && repaired.usd) || 0),
           artifacts: artifacts.map(a => Object.assign({}, a, { agentId: rec.agentId, workspace: rec.agentId })),
           taintedBy: taintOfRun(result, repaired)
-        });
+        };
+        // (review 5.1) the resumed generation settles as the background starts do: its row names a non-success outcome, so the record's
+        // reason (workerReason) and its durable delivery (deliveryReasonOf) read cut_short — a cut resume settled error / 'done'
+        if (!invalid) markWorkerOutcome(row, repaired || result);
+        row.reason = workerReason(row);
+        return finish(row);
       };
     }
 
     const interruptTool = {
-      name: 'team.interrupt', capability: 'orchestrator', scope: 'write', requiresConsent: false,
+      name: 'team.interrupt', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: false,
       description: 'Interrupt one of your running background subagents by id. This aborts its run and keeps its event/result record for inspection or resume.',
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
       run: async (args, ctx) => {
@@ -1643,7 +1744,7 @@
     };
 
     const resumeTool = {
-      name: 'team.resume', capability: 'orchestrator', scope: 'execute', requiresConsent: false,
+      name: 'team.resume', capability: 'orchestrator', impact: 'none', scope: 'execute', requiresConsent: false,
       description: 'Resume a stale/interrupted/failed background subagent by id. The worker restarts with the same prompt and appends to the same durable record.',
       preconditions: [{ code: 'inspect_before_resume', requiredTool: 'team.subagents', requiredState: 'stale_or_interrupted_or_failed' }],
       schema: { type: 'object', required: ['id'], properties: { id: { type: 'string' } } },
@@ -1663,7 +1764,7 @@
           error.precondition = { code: 'subagent_not_resumable', requiredTool: 'team.subagents', requiredState: 'stale_or_interrupted_or_failed' };
           throw error;
         }
-        return withTaint({ content: JSON.stringify(r), summary: 'resumed' }, taintOfRows([r && r.record]));
+        return withTaint({ content: JSON.stringify(r), summary: 'resumed' + (r.record && r.record.bounded === true ? ', ' + BOUNDED_LABEL : '') }, taintOfRows([r && r.record]));
       }
     };
 

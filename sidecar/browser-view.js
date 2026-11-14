@@ -205,10 +205,15 @@ function makeBrowserViews(deps) {
       if (attended) attended.prompt = loginPrompt;
       const c = chans.get('station'); if (c) c.pageAt = 0;
       if (typeof st.session.handTo !== 'function') return null;
-      return Promise.resolve(st.session.handTo({ downloadDir: downloadDirFor(me.agentId) })).catch(e => { failNote('view.hand-to', e); });
+      // agentId: a staged upload another agent selected in this browser is dropped as this one takes it (upload-stage.js)
+      return Promise.resolve(st.session.handTo({ downloadDir: downloadDirFor(me.agentId), agentId: me.agentId })).catch(e => { failNote('view.hand-to', e); });
     }
     return new Proxy({}, {
       get(_t, prop) {
+        /* PASSIVE (never takes the wheel): does this run's browser outlive the run? Not once it went private (that
+           browser closes with the run, releaseRun) or the run ended. browser.upload's receipt promises a submit after
+           the reply only when it does (run-paths-polish review round 1: it promised one from a browser closing at run end) */
+        if (prop === 'outlivesRun') return !me.private && !me.released;
         if (me.private) { const pv = me.private[prop]; return typeof pv === 'function' ? pv.bind(me.private) : pv; }
         const st = ensureStation();
         const v = st.session[prop];
@@ -220,7 +225,7 @@ function makeBrowserViews(deps) {
           return taking ? taking.then(() => ensureStation().session[prop](...args)) : v.apply(st.session, args);
         };
       },
-      has(_t, prop) { return prop in (me.private || ensureStation().session); }
+      has(_t, prop) { return prop === 'outlivesRun' || prop in (me.private || ensureStation().session); }
     });
   }
   function releaseRun(runId) {

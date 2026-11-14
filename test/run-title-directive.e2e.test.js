@@ -58,8 +58,8 @@ function startMock() {
   const core = sidecarTopLevelFunction('runOnceCore');
   const at = core.indexOf('const runDirective = latestUserText(');
   A.ok(at > 0 && at < core.indexOf('const _lineHop'), 'runOnceCore captures the directive before the loop');
-  A.ok(/const _lineHop = !!\(Pipeline\.isHandoff && Pipeline\.isHandoff\(runDirective\)\);/.test(core), 'the line-hop check reads the captured directive, never the post-loop messages');
-  A.ok(/runTranscript\.setDirective\(runDirective\)/.test(core), 'the transcript writes the same directive first');
+  A.ok(/const _lineHop = !!o\.lineHop \|\| !!\(Pipeline\.isHandoff && Pipeline\.isHandoff\(runDirective\)\);/.test(core), 'the line-hop check reads the host\'s hop flag, then the captured directive, never the post-loop messages');
+  A.ok(/TurnDirective\.install\(runTranscript, directive, runDirective, kinds\.directiveKind, attachReport, retryDirective\)/.test(core), 'the transcript writes the same directive first (a turn without files keeps runDirective\'s bytes as its content and the pre-expansion capture as its typed words; a turn with files its captured wording, each file a row beside it)');
 }
 
 (async () => {

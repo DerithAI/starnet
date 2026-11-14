@@ -11,13 +11,18 @@
    No function here ever fabricates a reason, a cost, or a reply. */
 'use strict';
 
+// TYPED OUTCOMES: how the run ended, read through the ONE resolver every surface shares (the station stamps it on agent.run.end)
+const RunOutcome = require('../../frontend/app/runoutcome.js');
+
 const EXIT = Object.freeze({
   OK: 0,          // agent.run.end{reason:'done'}
   RUN_FAILED: 1,  // agent.run.end{reason:'error'} or the stream dropped before a terminal event
   USAGE: 2,       // bad arguments
   STATION: 3,     // no station reachable / could not boot one / nothing runnable configured
-  CANCELLED: 4,   // Ctrl-C or --timeout (POST /api/cancel was sent)
-  STOPPED: 5,     // the run ended early for a reason that is not 'done': refusal, budget, max_iters, empty, clarifying
+  CANCELLED: 4,   // the run was STOPPED: Ctrl-C or --timeout (POST /api/cancel was sent), or a STOP / E-STOP (outcome 'stopped')
+  // review r8: NOT a stop — the run ended without finishing and without failing: it asked a question, the provider cut its reply, a spend or
+  // step limit ended it, it sent back an empty reply, it was refused or held (one POSIX code by contract; --json's `outcome` names which)
+  STOPPED: 5,
   NOTHING: 6      // approve/deny found no open ask to answer
 });
 
@@ -80,8 +85,9 @@ const USAGE = [
   '',
   'Run options:',
   '  --agent <id>       roster agent to run (default: "agent", else the first roster entry)',
-  '  --model <slug>     override the agent\'s model',
-  '  --provider <id>    override the agent\'s provider (openrouter, openai, anthropic, codex, …)',
+  '  --model <slug>     run this model instead of the agent\'s (on the agent\'s provider unless --provider names one)',
+  '  --provider <id>    the provider for --model (openrouter, openai, anthropic, codex, …); a provider alone names no',
+  '                     model, so it needs --model unless it is the provider the agent already runs on',
   '  --json             print one JSON object (result + run receipt) instead of streaming text',
   '  --cwd <dir>        the folder to work in (default: the one you are in, when it is a trusted project; a folder not',
   '                     trusted yet is asked about before the agent works in it)',
@@ -98,7 +104,8 @@ const USAGE = [
   '  --spawn            always boot a station for this run (never attach to a running one); StarNet\'s own station is',
   '                     never booted without its keys: plain starnet starts it, add --workspace <dir> for a separate one',
   '',
-  'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 cancelled · 5 stopped early · 6 nothing to answer',
+  'Exit codes: 0 done · 1 run failed · 2 usage · 3 no station / not configured · 4 stopped (Ctrl-C, --timeout, a STOP) · 5 did not finish (asked a',
+  '            question, cut short, a spend or step limit, an empty reply, refused — --json names which) · 6 nothing to answer',
   '',
   'Credentials are never taken on the command line. A spawned station reads them from the environment',
   '(STARNET_OPENROUTER_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, …) or from a ChatGPT/Codex sign-in already',
@@ -312,11 +319,25 @@ function joinOutcome(text, pid) {
 const APP_EXIT_START_CANCELLED = 3;
 
 // ---- agent selection ---------------------------------------------------------------------------
-/* GET /api/runtime/agent lists the roster ({agentId, name, model, provider}). Pick the run target:
-   --agent must exist; otherwise 'agent' (the hero); otherwise the first roster entry. --model / --provider
-   override the roster's. An empty roster is fine only when a model is given explicitly (the station runs a
-   bare 'agent' identity — same grace the cron driver has for a roster-less headless sidecar). */
+/* GET /api/runtime/agent lists the roster ({agentId, name, model, provider, wire}). Pick the run target:
+   --agent must exist; otherwise 'agent' (the hero); otherwise the first roster entry. The PAIR is the station's one
+   resolution (sidecar/run-wire.js): the row's `wire` — what that agent runs in COMMS, a routine or a channel — else, on an
+   older station without it, the raw row and then the station default (the top-level pair). --model / --provider are this
+   run's explicit level under the same rule: a bare --model runs on the agent's provider, and a bare --provider names no
+   model, so it is refused unless it is the provider the agent already runs on. An empty roster is fine only when a model
+   is given explicitly or the station reports one (the bare 'agent' identity — the cron driver's roster-less grace).
+   Provider ids resolve through the station's own alias map (sidecar/providers/registry.js), so `--provider openai-codex`
+   is the 'codex' the agent runs on. A --provider the registry does not know ('olama') is refused, with or without --model:
+   the station would otherwise run it on OpenRouter with its own key. A roster row's provider id is kept as typed.
+   Both station modules load on pickAgent's first call, never at CLI start: `starnet --version`, status, ls and every
+   other command that resolves no run wire load nothing from sidecar/ (test/cli-version.test.js runs --version on bin/
+   alone). Every bundle ships sidecar/ beside bin/ (src-tauri/tauri.conf.json resources), so a module missing here is a
+   broken install and its require throws — never a guessed provider. */
+function runWire() { return require('../../sidecar/run-wire.js'); }
+function providerRegistry() { return require('../../sidecar/providers/registry.js'); }
+function cliProviderId(p) { return providerRegistry().normalizeProviderId(p, '') || String(p || '').trim().toLowerCase(); }
 function pickAgent(runtime, want) {
+  const RunWire = runWire(), ProviderRegistry = providerRegistry();
   const rt = runtime || {};
   const w = want || {};
   const agents = Array.isArray(rt.agents) ? rt.agents : [];
@@ -328,10 +349,21 @@ function pickAgent(runtime, want) {
     rec = agents.find(a => a && a.agentId === DEFAULT_AGENT_ID) || agents[0] || null;
   }
   const agentId = rec ? rec.agentId : DEFAULT_AGENT_ID;
-  const model = String(w.model || (rec && rec.model) || rt.model || '').trim();
-  const provider = String(w.provider || (rec && rec.provider) || rt.provider || 'openrouter').trim();
-  if (!model) return { ok: false, error: 'no model to run: agent ' + JSON.stringify(agentId) + ' has none configured — pass --model <slug> (or set STARNET_DEFAULT_MODEL for a spawned station)' };
-  return { ok: true, agentId, name: rec ? rec.name : agentId, model, provider };
+  if (w.provider && !ProviderRegistry.normalizeProviderId(w.provider, '')) {
+    return { ok: false, error: '--provider ' + JSON.stringify(String(w.provider)) + ' is not a provider this station knows' };
+  }
+  const own = (rec && rec.wire && rec.wire.model) ? rec.wire : rec;
+  const wire = RunWire.resolveRunWire({
+    agentId: 'cli-target',   // not the hero's id: the row and the station default stay two levels
+    explicit: (w.model || w.provider) ? { provider: w.provider || '', model: w.model || '' } : null,
+    agent: own, hero: { provider: rt.provider || '', model: rt.model || '' },
+    normalizeProvider: cliProviderId
+  });
+  if (!wire.ok) return { ok: false, error: 'no model to run: agent ' + JSON.stringify(agentId) + ' has none configured — pass --model <slug> (or set STARNET_DEFAULT_MODEL for a spawned station)' };
+  if (w.provider && !w.model && wire.ignored.some(x => x.source === 'explicit')) {
+    return { ok: false, error: '--provider ' + w.provider + ' needs --model too: a provider alone names no model, and agent ' + JSON.stringify(agentId) + ' runs on ' + wire.provider + ' / ' + wire.model };
+  }
+  return { ok: true, agentId, name: rec ? rec.name : agentId, model: wire.model, provider: wire.provider || 'openrouter', wireSource: wire.source };
 }
 
 /* Task or talk? The station wires tools ONLY into a run marked isTask, and the page decides it with the shared
@@ -371,7 +403,7 @@ function makeRunTracker() {
   const st = {
     runId: '', started: false, sawEnd: false, reason: '', finishReason: '',
     text: '', turns: 0, usd: 0, tokensIn: 0, tokensOut: 0, model: '',
-    toolCalls: [], errors: [], events: 0, cancelRequested: false, timedOut: false,
+    toolCalls: [], errors: [], events: 0, cancelRequested: false, timedOut: false, end: null, lastError: null,
     budgetScope: '', budgetCapUsd: null, pendingTools: new Map()
   };
   function feed(ev) {
@@ -412,6 +444,7 @@ function makeRunTracker() {
         break;
       case 'agent.run.error':
         st.errors.push(String(p.message || 'run error'));
+        if (!st.runId || !p.runId || String(p.runId) === st.runId) st.lastError = p;   // the lead's own error (its code)
         actions.push({ kind: 'note', line: '! ' + String(p.message || 'run error') });
         break;
       case 'permission.prompt':
@@ -424,7 +457,11 @@ function makeRunTracker() {
         actions.push({ kind: 'note', line: '· provider fallback: ' + JSON.stringify(p).slice(0, 200) });
         break;
       case 'agent.run.end':
+        // a delegated worker's end rides this stream under ITS runId (orchestration.js FORWARD): it never ends the lead's run
+        // (the lead that never ended is failed / no_terminal_outcome, not the worker's 'done')
+        if (st.runId && p.runId && String(p.runId) !== st.runId) break;
         st.sawEnd = true;
+        st.end = p;   // the end as the station stamped it (outcome, failureCode)
         st.reason = RUN_STOP_REASONS.indexOf(p.reason) >= 0 ? p.reason : 'error';
         st.turns = Number(p.turns) || st.turns;
         if (Number.isFinite(Number(p.usd))) st.usd = Number(p.usd);
@@ -440,11 +477,19 @@ function makeRunTracker() {
     if (st.sawEnd) return st.reason;
     return st.cancelRequested ? 'cancelled' : 'error';
   }
+  /* THE RUN'S OUTCOME (typed-outcomes): the stamped end through RunOutcome — a reply the provider cut is cut_short, never ok;
+     an error the run raised outranks a 'done' end; no end is failed / no_terminal_outcome unless the CLI itself cancelled. */
+  function settledOutcome() {
+    const end = st.sawEnd ? st.end : (st.cancelRequested ? { reason: 'cancelled' } : null);
+    return RunOutcome.ofEnd(end, st.lastError);
+  }
   function summary() {
     const reason = settledReason();
+    const o = settledOutcome();
     return {
-      ok: reason === 'done',
+      ok: o.outcome === 'succeeded',
       reason,
+      outcome: o.outcome, failureCode: o.failureCode || undefined,
       proven: st.sawEnd,                 // false = the stream dropped before agent.run.end; `reason` is the CLI's honest fallback
       timedOut: st.timedOut,
       runId: st.runId, model: st.model, text: st.text, turns: st.turns, usd: st.usd,
@@ -460,11 +505,19 @@ function makeRunTracker() {
 
 function exitCodeForReason(reason, opts) {
   const o = opts || {};
+  // the run's OUTCOME decides when the caller has it (typed-outcomes): a provider-cut 'done' is not a success, and a provider
+  // safety block is a refusal (5: it did not finish), not a crash. A stop is 4; every other unfinished outcome shares 5 by contract (review r8)
+  if (o.outcome && RunOutcome.isOutcome(o.outcome)) {
+    if (o.outcome === 'succeeded') return EXIT.OK;
+    if (o.outcome === 'stopped') return EXIT.CANCELLED;
+    if (o.outcome === 'failed') return EXIT.RUN_FAILED;
+    return EXIT.STOPPED;
+  }
   if (reason === 'done') return EXIT.OK;
   if (reason === 'cancelled') return EXIT.CANCELLED;
   if (reason === 'error') return EXIT.RUN_FAILED;
   if (o.proven === false) return EXIT.RUN_FAILED;
-  return EXIT.STOPPED;   // refusal / budget / max_iters / empty / clarifying — the run ended, just not with 'done'
+  return EXIT.STOPPED;   // refusal / budget / max_iters / empty / clarifying — the run did not finish (never a stop: that is 4)
 }
 
 // ---- non-interactive bootstrap -----------------------------------------------------------------
@@ -473,8 +526,9 @@ function exitCodeForReason(reason, opts) {
    v5 — the same golden shape dev/fixtures/seed-workspace uses). The desktop's boot path sees a valid save and
    resumes it (or shows the RESUME connect screen when its keychain holds no key) — it never re-runs the
    first-run ceremony over it. approvalMode:'full' is the product law: full power from minute one.
-   Both files are STATE_EVIDENCE (workspace-lineage.js), so the sidecar's recovery gate treats this workspace
-   as a real station, not an empty one to recover into. */
+   Both files are proof of a station to the station record (sidecar/station-record.js: a save or roster under any of
+   its names always is), so the sidecar's recovery gate treats this workspace as a real station, not an empty one to
+   recover into. */
 function bootstrapDocs(input) {
   const o = input || {};
   const now = Number(o.now) || 0;
@@ -548,8 +602,9 @@ function jsonResult(summary, ctx) {
   return {
     ok: !!s.ok,
     reason: s.reason,
+    outcome: s.outcome, failureCode: s.failureCode,
     proven: s.proven,
-    exitCode: exitCodeForReason(s.reason, { proven: s.proven }),
+    exitCode: exitCodeForReason(s.reason, { proven: s.proven, outcome: s.outcome }),
     text: s.text || '',
     runId: s.runId || '',
     agentId: c.agentId || '',

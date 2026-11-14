@@ -154,6 +154,15 @@ const CloudSave = (() => {
      answer neither resends nor merges a dirty cache (that would move the station under the live tab): its save is preserved,
      as before. No BroadcastChannel (an old webview, a test) = nobody answers. */
   let pagesChannel = null;
+  let latePing = null;   // the ping openJournal sent after taking the page lock's word that it is alone (see otherLockHolders)
+  let lateMoves = 0;     // how many times that ping's answer moved this page (the seeded test proves the path runs)
+  // this page gives up the journal it took (another live page writes it): a key of its own, carrying the save it already holds
+  function moveToOwnJournal() {
+    const old = journalKey, fresh = JOURNAL_PREFIX + clientId;
+    useJournal(fresh);
+    try { if (typeof sessionStorage !== 'undefined' && sessionStorage) sessionStorage.setItem(JOURNAL_NOTE_KEY, fresh); } catch (_) {}
+    try { const raw = localStorage.getItem(old); if (raw != null) localStorage.setItem(fresh, raw); } catch (_) {}
+  }
   try {
     if (typeof BroadcastChannel === 'function') {
       pagesChannel = new BroadcastChannel('starnet-pages');
@@ -161,6 +170,11 @@ const CloudSave = (() => {
         const m = e && e.data;
         // the journal this page writes (null while it is still booting: it owns none yet)
         if (m && m.ping && m.from !== clientId && !retired) { try { pagesChannel.postMessage({ pong: m.ping, from: clientId, journal: journalKey }); } catch (_) {} }
+        // a page the page lock could not show (see otherLockHolders) answered after all, and it writes the journal this page took: move
+        if (m && m.pong && m.pong === latePing && journalKey && !retired) {
+          const theirs = Object.prototype.hasOwnProperty.call(m, 'journal') ? m.journal : LEGACY_KEY;
+          if (theirs === journalKey) { lateMoves++; moveToOwnJournal(); }
+        }
         // two pages that opened their journals at about the same moment can pick the same dead one: the page that picked it
         // FIRST keeps it (a page that was already running always wins over one still booting; a tie goes to the lower page id),
         // the other moves to a journal of its own (carrying the save it already holds), so no two live pages ever share one
@@ -169,10 +183,7 @@ const CloudSave = (() => {
         if (m && m.claim && m.from !== clientId && journalKey && m.claim === journalKey && !retired) {
           const theirs = num(m.at), first = theirs < journalAt || (theirs === journalAt && String(m.from) < clientId);
           if (first) {
-            const old = journalKey, fresh = JOURNAL_PREFIX + clientId;
-            useJournal(fresh);
-            try { if (typeof sessionStorage !== 'undefined' && sessionStorage) sessionStorage.setItem(JOURNAL_NOTE_KEY, fresh); } catch (_) {}
-            try { const raw = localStorage.getItem(old); if (raw != null) localStorage.setItem(fresh, raw); } catch (_) {}
+            moveToOwnJournal();
           } else {
             // this page keeps it: say so, so the other page (which may not have heard this page's own claim) moves
             try { pagesChannel.postMessage({ claim: journalKey, from: clientId, at: journalAt }); } catch (_) {}
@@ -181,6 +192,47 @@ const CloudSave = (() => {
       });
     }
   } catch (_) { pagesChannel = null; }
+  /* THE PAGE LOCK (0.14.3 boot lag). openJournal used to wait a fixed 250 ms on every launch and reload, because silence on the
+     channel is the only way the ping can say "nobody else is here", and the desktop app's one window never hears an answer. Every
+     page now holds a shared Web Lock for its life, and the lock list answers the one question the boot acts on.
+       No other holder, and exactly ONE journal: no wait. The list cannot show a page of a build from before the lock, so it never
+       decides alone when there is another journal that such a page might be writing. With one journal, a live tab of an older build
+       can still be writing it: this page takes the key and boots that tab's unsent save as its own (and sends it, as its own work),
+       until the claim (0.14.2) or the ping sent after the journal is picked (latePing, 0.14.1 too) moves this page off the key. The
+       tab's journal is never removed, and no turn is lost, but this page opens on a save it did not write.
+       Another holder that did not answer the ping: the list can see a live page too busy to answer, but this code does not act on it,
+       and that page is read as dead, as in 0.14.2. The list cannot tell it from a dead page's lock the browser has not dropped yet, and
+       leaving journals unread on its word (tried for 0.14.3, backed out) let a boot reach first-run creation with the only save
+       unread, and wedged on a hung tab. That is more risk than the hazard it answers.
+     No Web Locks (an insecure origin, an old webview, a test), a lock list that does not answer in time, more than one journal, or
+     another holder: the ping alone, as before, and with it the old hazard: a live page that answers after the ping's time is read
+     as dead, and its journal merged while it runs. */
+  const PAGE_LOCK = 'starnet-page';
+  const PAGE_LOCK_READ_MS = 250;   // the boot path never hangs on the lock list: past this, the ping decides
+  let pageLock = null;             // resolves true once this page holds its lock, false when it could not take one
+  try {
+    const locks = typeof navigator !== 'undefined' && navigator ? navigator.locks : null;
+    if (locks && typeof locks.request === 'function' && typeof locks.query === 'function') {
+      pageLock = new Promise(resolve => {
+        Promise.resolve(locks.request(PAGE_LOCK, { mode: 'shared' }, () => { resolve(true); return new Promise(() => {}); })).catch(() => resolve(false));
+      });
+    }
+  } catch (_) { pageLock = null; }
+  // how many OTHER pages hold the page lock right now; null = the list cannot say (no lock of this page's, no answer in time)
+  function otherLockHolders() {
+    if (!pageLock) return Promise.resolve(null);
+    const read = pageLock.then(held => (held ? navigator.locks.query() : null))
+      .then(s => {
+        if (!s || !Array.isArray(s.held)) return null;
+        const n = s.held.filter(l => l && l.name === PAGE_LOCK).length;
+        return n >= 1 ? n - 1 : null;   // this page's own lock is on the list, or the list is not to be believed
+      })
+      .catch(() => null);
+    return new Promise(resolve => {
+      const t = setTimeout(() => resolve(null), PAGE_LOCK_READ_MS);
+      read.then(v => { clearTimeout(t); resolve(v); });
+    });
+  }
   function anotherPageOpen(ms) {
     if (!pagesChannel) return Promise.resolve(false);
     return new Promise(resolve => {
@@ -201,7 +253,7 @@ const CloudSave = (() => {
   // StarNet and MUST NOT be adopted into the cache (that would clobber the local doc with fields this code
   // can't read). Mirror Save.CURRENT when available; fall back to a literal only if Save hasn't loaded yet.
   // The literal IS save.js CURRENT (test/cloudsave-version-fallback.test.js): a stale one called this build's own saves newer.
-  function currentVersion() { return (typeof Save !== 'undefined' && Number.isFinite(Save.CURRENT)) ? Save.CURRENT : 6; }
+  function currentVersion() { return (typeof Save !== 'undefined' && Number.isFinite(Save.CURRENT)) ? Save.CURRENT : 7; }
   function isFutureSave(d) { return isSave(d) && num(d.version) > currentVersion(); }
   // the sentinel reconcile hands the boot path when a durable remote is from a newer build. Distinct object
   // (never a real save envelope) so the boot path can raise the honest "update the app" gate. localStorage is
@@ -212,6 +264,12 @@ const CloudSave = (() => {
   // save" when the harness proved no such thing (the July-19 incident: a 403'd pull rendered genesis over an
   // intact 200KB save). Distinct object, never a real save envelope.
   function unknownSentinel(reason) { return { __saveUnknown: true, reason: String(reason || 'unreachable') }; }
+  // the station's own name for a failure it answered (X-StarNet-Code, sidecar/respond.js: a lower-case code); '' from an older station
+  function stationCodeOf(r) {
+    let c = '';
+    try { c = String((r && r.headers && typeof r.headers.get === 'function' && r.headers.get('X-StarNet-Code')) || '').trim(); } catch (_) { c = ''; }
+    return /^[a-z][a-z0-9_]{0,63}$/.test(c) ? c : '';
+  }
 
   // NOTE: no `keepalive` here — browsers cap a keepalive body at 64KB, and a save with workstreams + station
   // can exceed that. The normal debounced flush is a plain fetch; the unload path uses sendBeacon instead.
@@ -297,7 +355,8 @@ const CloudSave = (() => {
     const viaMerge = merging && !armed && !!base && !!(Core && Core.mergeDelta);
     // WHY this attempt failed, by name, from what the station answered (null until it fails; no answer at all = 'offline')
     let cause = null;
-    const causeOf = (status, body) => Core && Core.causeOf ? Core.causeOf({ answered: true, status, body }) : 'refused';
+    // (r: the station's answer — its status, and its own name for a failure, X-StarNet-Code)
+    const causeOf = (r, body) => Core && Core.causeOf ? Core.causeOf({ answered: true, status: r && r.status, body, code: stationCodeOf(r) }) : 'refused';
     let wire;
     try { wire = viaMerge ? mergeWire(doc) : (armed ? Object.assign({}, doc, { _saveRestore: true }) : doc); }
     catch (_) { wire = null; }
@@ -320,7 +379,7 @@ const CloudSave = (() => {
       if (kind === 'permanent') { merging = false; mergeRefused = true; }   // the plain save from here: its refusal stands, as before
       else if (kind === 'absent') merging = false;                          // no station file: the plain save puts this one there
       if (body && body.degraded === true) degraded = true;
-      return { ok: false, kind, cause: (r && r.ok === false) || (body && body.ok === false) ? causeOf(r && r.status, body) : 'refused', error: (body && body.error) || kind };
+      return { ok: false, kind, cause: (r && r.ok === false) || (body && body.ok === false) ? causeOf(r, body) : 'refused', error: (body && body.error) || kind };
     };
     const attempt = postNow(wire)
       .then(({ response: r, body }) => {
@@ -333,7 +392,7 @@ const CloudSave = (() => {
         // a non-ok HTTP status (e.g. 409 stale, 500) is a FAILURE, not a success — fetch only rejects on
         // network error, so we must inspect r.ok ourselves or we'd stamp health OK on a rejected write.
         // The body still names it: a 413 is "too large", an errno write failure carries its code (sidecar/save-wire.js).
-        if (r && r.ok === false) { cause = causeOf(r.status, body); throw new Error('save HTTP ' + r.status); }
+        if (r && r.ok === false) { cause = causeOf(r, body); throw new Error('save HTTP ' + r.status); }
         // EL-11 FIX 1 ("the worst lie class"): the sidecar answers REFUSALS as HTTP 200 { ok:false, ... }
         // (degraded workspace / stale stamp / unreadable prior) — the status line alone is NEVER proof the
         // write landed. Parse the body: ok:false is a FAILED push, and degraded:true latches its own state.
@@ -383,7 +442,7 @@ const CloudSave = (() => {
           // the station FOLDED ratings this save lacked into it (sidecar/growth-fold.js): the save landed; this page's own view
           // of growth catches up in the background (a failed catch-up retries on its own; the next save is folded again)
           if (body.ok === true && body.growthFolded != null) { try { requestRatingCatchUp(); } catch (_) {} }
-          if (body.ok === false) { cause = causeOf(r && r.status, body); throw new Error('save refused: ' + (body.error || (body.unreadable ? 'existing record unreadable' : body.stale ? 'stale write' : 'unknown'))); }
+          if (body.ok === false) { cause = causeOf(r, body); throw new Error('save refused: ' + (body.error || (body.unreadable ? 'existing record unreadable' : body.stale ? 'stale write' : 'unknown'))); }
         }
         if (!body || body.ok !== true) { cause = 'refused'; throw new Error('save acknowledgement missing'); }
         markOk();
@@ -446,8 +505,12 @@ const CloudSave = (() => {
   }
 
   // the wire body of a merge: this window's whole save, plus what it changed since the station last took its work
+  // (an older save retried after a newer one was written does not hold the newer save's sessions, and they are not gone: the station
+  // may already hold them from this window's journal, merged by a page that took it for dead, and this window may die before it sends again)
   function mergeWire(doc) {
-    return Object.assign({}, doc, { _saveMerge: Object.assign({ by: clientId }, Core.mergeDelta(base, doc, { doc: unsureDoc, ids: pushedIds })) });
+    const still = new Set(idsOf(latestLocal));
+    const ids = new Set(Array.from(pushedIds).filter(id => !still.has(id)));
+    return Object.assign({}, doc, { _saveMerge: Object.assign({ by: clientId }, Core.mergeDelta(base, doc, { doc: unsureDoc, ids })) });
   }
   // a merge landed: say so ONCE (the first time this window's saves are merged), and name every change of this window the
   // station could not take (a session or crew row another window deleted) once, with where its whole save is kept
@@ -575,8 +638,12 @@ const CloudSave = (() => {
     return fetch(ENDPOINT + '?agent=' + encodeURIComponent(AGENT_ID), { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
       .then(async r => {
         if (!r.ok) {
-          // an auth refusal is its own truth — the sidecar is ALIVE but rejected us (lost/stale launch token).
-          lastPullOutcome = (r.status === 401 || r.status === 403) ? 'forbidden' : 'unreachable';
+          // an auth refusal is its own truth — the sidecar is ALIVE but rejected us (lost/stale launch token). Its GATE says so by
+          // code (token_stale / token_missing: CloudSaveCore.causeOf's one rule); a route's own refusal is not that. A station
+          // that names no refusal (an older one) is read by its status, as before.
+          const gateRefused = Core && Core.causeOf ? Core.causeOf({ answered: true, status: r.status, body: null, code: stationCodeOf(r) }) === 'forbidden'
+            : (r.status === 401 || r.status === 403);
+          lastPullOutcome = gateRefused ? 'forbidden' : 'unreachable';
           if (r.status === 503) {
             try { if ((await r.json()).unreadable === true) lastPullOutcome = 'unreadable'; } catch (_) {}
           }
@@ -748,20 +815,27 @@ const CloudSave = (() => {
      once the station file has been read). */
   async function openJournal() {
     const keys = journalKeysNow();
-    const live = keys.length ? await livePages(250) : { journals: new Set(), any: false };
+    const others = (keys.length && pageLock) ? await otherLockHolders() : null;   // no lock: no await, the ping's schedule as before
+    const alone = others === 0 && keys.length === 1;   // the desktop app's one window: no wait (see otherLockHolders)
+    const live = (keys.length && !alone) ? await livePages(250) : { journals: new Set(), any: false };
     for (const k of heardClaims) live.journals.add(k);   // claimed by a page that booted alongside this one
-    const dead = keys.filter(k => !live.journals.has(k)).map(readJournal);
     // a RELOADED (or session-restored) tab continues ITS OWN journal: the key rides sessionStorage, which survives a reload
-    // and is this tab's alone (a duplicated tab copies it, but then the original answers for it: live, not taken)
+    // and is this tab's alone (a duplicated tab copies it, but then the original answers for it: live, not taken). The key stands even
+    // with no journal behind it: another page may have merged that journal, and this tab's turns are then in the station, not in the
+    // journal that looks free. (reconcileWith: when the station file turns out empty too, a dead journal is continued after all.)
     let remembered = null;
     try { remembered = (typeof sessionStorage !== 'undefined' && sessionStorage) ? sessionStorage.getItem(JOURNAL_NOTE_KEY) : null; } catch (_) { remembered = null; }
     const ownKey = remembered && (remembered === LEGACY_KEY || JOURNAL_RE.test(remembered)) && !live.journals.has(remembered) ? remembered : null;
+    // one journal, and this page takes it whatever it holds: no second parse of the whole save just to read its time
+    const sole = keys.length === 1 && !live.journals.has(keys[0]) && (ownKey === keys[0] || (!ownKey && keys[0] === LEGACY_KEY));
+    const dead = sole ? [] : keys.filter(k => !live.journals.has(k)).map(readJournal);
     let mine = null;
     if (!ownKey) for (const j of dead) if (isSave(j.doc) && (!mine || num(j.doc.updatedAt) > num(mine.doc.updatedAt))) mine = j;
     useJournal(ownKey || (mine ? mine.key : (live.journals.has(LEGACY_KEY) ? JOURNAL_PREFIX + clientId : LEGACY_KEY)));
     try { if (typeof sessionStorage !== 'undefined' && sessionStorage) sessionStorage.setItem(JOURNAL_NOTE_KEY, journalKey); } catch (_) {}
     journalAt = now();
     try { if (pagesChannel) pagesChannel.postMessage({ claim: journalKey, from: clientId, at: journalAt }); } catch (_) {}
+    if (alone && pagesChannel) { latePing = clientId + ':' + now() + ':late'; try { pagesChannel.postMessage({ ping: latePing, from: clientId }); } catch (_) {} }
     otherJournals = dead.filter(j => j.key !== journalKey);
     // the other dead windows' unsent work, into the station first
     for (const j of otherJournals) {
@@ -815,6 +889,20 @@ const CloudSave = (() => {
       // either, hand boot the save-unknown sentinel so it gates instead of onboarding over a possibly-intact
       // durable save it simply couldn't read.
       if (lastPullOutcome !== 'empty' && !isSave(local)) return unknownSentinel(lastPullOutcome);
+      // 'empty' with nothing of this page's own, and a dead window's journal beside it (this tab remembers a key it never wrote): a null
+      // here is the first-run ceremony over the only copy. This page continues that journal, as it would with no key to remember
+      if (!isSave(local)) {
+        let j = null;
+        for (const o of otherJournals) if (!o.settled && isSave(o.doc) && !isFutureSave(o.doc) && (!j || num(o.doc.updatedAt) > num(j.doc.updatedAt))) j = o;
+        if (j) {
+          otherJournals = otherJournals.filter(o => o !== j);
+          useJournal(j.key);
+          try { if (typeof sessionStorage !== 'undefined' && sessionStorage) sessionStorage.setItem(JOURNAL_NOTE_KEY, j.key); } catch (_) {}
+          journalAt = now();
+          try { if (pagesChannel) pagesChannel.postMessage({ claim: j.key, from: clientId, at: journalAt }); } catch (_) {}
+          local = (typeof Save !== 'undefined' && Save.load && Save.load()) || j.doc;   // up the migration ladder, and as it stands now
+        }
+      }
       // 'empty': seed the server. The copy keeps its own revision: the station file has none, and savestore takes a copy
       // over a truly missing file at a revision no other window holds (bug 5c019483), unless this computer's station was reset after
       // the copy's station was founded (then the reply is a conflict with reset:true). Otherwise best-effort (fails soft, retries).
@@ -1098,6 +1186,6 @@ const CloudSave = (() => {
     return j;
   }
   return { openJournal, journalKey: () => cacheKey(), localSnapshot: () => latestLocal, writerId, mergeNotice: () => lastMerge, onMerged, isMerging: () => merging, memorySave, reloadCurrent, conflicts, restoreConflict, revision: () => revision, push, pull, reconcile, flush, flushForUpdate, installUnloadFlush, health: healthNow, isFutureSentinel, isUnknownSentinel, markDegraded, recoveryNotice, lineage, ackRecovery, pullOutcome: () => lastPullOutcome, _isSave: isSave, _isFutureSave: isFutureSave,
-    _mergeState: () => ({ merging, base: !!base, mergeRefused }) };   // tests: whether a merge could run (test/save-interleave.seeded.test.js I5)
+    _lateMoves: () => lateMoves, _mergeState: () => ({ merging, base: !!base, mergeRefused }) };   // tests: whether a merge could run (test/save-interleave.seeded.test.js I5)
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = CloudSave;

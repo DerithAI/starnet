@@ -6,7 +6,8 @@
    once it answered, went on to its do + critique model calls (or, at reach >= sandbox, its whole build run) — paid,
    unattended work after the Commander withdrew permission. Only the E-STOP reached the beat. Now a posture write that
    no longer permits acting aborts the driver's in-flight beat, and the ledger records it ending undelivered.
-   Real sidecar; mock provider whose completion hangs (headers + one token, then silence). */
+   Real sidecar; mock provider whose completion hangs (headers + one token, then silence). The workspace holds a founded
+   station (test/helpers/station.js): the night-shift tick stands down on one with none. */
 'use strict';
 const A = require('./_assert.js');
 const http = require('http');
@@ -16,6 +17,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
+const { seedActiveStation } = require('./helpers/station.js');
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -58,13 +60,15 @@ function boot(port, env, attemptsLeft) {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 12000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 
 (async () => {
   const mock = await startMock();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-nsrevoke-'));
+  seedActiveStation(ws);
   const env = { SKYNET_WORKSPACES: ws, SKYNET_DEV: '1', SKYNET_OPENROUTER_BASE: mock.base, SKYNET_OPENROUTER_KEY: 'sk-or-v1-nsrevoke-fake', SKYNET_DEFAULT_MODEL: 'test/model',
     SKYNET_NIGHTSHIFT_AWAY_MS: '1', SKYNET_NIGHTSHIFT_TICK_MS: '300', SKYNET_NIGHTSHIFT_BEAT_MS: '1000', SKYNET_QUEST_REFRESH: '0' };
   const { child, port } = await boot(await allocatePort(), env, 20);

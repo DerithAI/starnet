@@ -1783,7 +1783,7 @@ const World = (() => {
      (they are motion now: a city sky with traffic driving never goes still). And the planted breath was counted as
      motion, so a scene with a standing body never went still — the breath is now drift (see AMBIENT in the STILL VERDICT: sub-pixel, drawn at its true phase).
      The final fixes (10-21): frameReviewRoom's camera cut (and init's resize) wake the floor, and every camera-writing export
-     is locked to the wrapper; a due change is met by rAF, never by a timer that can fire a Windows tick late (DUE LEAD); a
+     is locked to the wrapper; a due change is met by rAF, never by a timer that can fire a Windows tick late (THE STILL BOOKING); a
      layout edit (station.onChange) wakes; animation start stamps set between frames read the wall clock; the ocean's plate
      steps are due; a body napping in a bunk is rest and one boxing the heavy bag is motion; a dormant focus ease under a lock
      is not camera motion; PropSprites.pulsing reads one stamp. */
@@ -1794,31 +1794,52 @@ const World = (() => {
   let paceTimer = 0, paceLowRate = false, motionUntil = 0, pacedDraws = 0, simMs = 0;   // simMs: total simulated time advanced (renderPace readout)
   let vsyncMs = 0, lastRafAt = 0;   // the display's own frame interval, learned from back-to-back rAF callbacks (rounds the pace to whole vsyncs)
   // STILL state: the last verdict (still?), why not (the first motion source it found), the next known change, input stamp,
-  // and when a booked still timer fires (a verdict that finds an earlier change re-books)
+  // and when a booked still timer fires (the verdict re-books)
   let stillNow = false, stillWhy = 'boot', stillDue = Infinity, inputAt = -Infinity, paceTimerAt = 0, stillKick = false;
-  /* DUE LEAD (2026-10-21 final fixes): a timer is never trusted to hit a vsync. Windows (WebView2) timers can fire a whole
-     ~15.6 ms system tick late, so a timer booked 2 ms before a due change missed its vsync and the change drew a frame late.
-     The last vsync + 4 ms before a due change rides requestAnimationFrame (a skipped callback is cheap); the timer only
-     covers the long still wait before it. dueWatch is the change the last still verdict was waiting on: the draw that lands
-     it records how late it came (renderPace: dueDraws, dueLate — later than a vsync + 1 ms — dueLatMaxMs, dueLatAvgMs). */
-  const DUE_LEAD_SLACK_MS = 4;
-  let dueWatch = Infinity, dueDraws = 0, dueLate = 0, dueLatSum = 0, dueLatMax = 0;
-  function dueLeadMs() { return (vsyncMs || 17) + DUE_LEAD_SLACK_MS; }
+  /* THE STILL BOOKING (Andrew: exactly 30/s while still; a due change on its own vsync). Windows (WebView2) timers can fire up
+     to a whole ~15.6 ms system tick late (STILL_TIMER_LATE_MS), so a timer is never aimed AT a draw: it wakes a hair
+     (TICK_AFTER_VSYNC_MS) after a vsync and ONE rAF lands the draw. stillBookAt counts vsyncs from the last draw: kT is where
+     frame()'s own rule (drawSlackMs: the vsync NEAREST the pace) draws the 30/s tick, kD where a due change draws (stillDue, or
+     the visible pace once due). Tick only: the timer wakes at kT - 1. A change due first (kD <= kT): j vsyncs before kD, j =
+     what the timers have really been late needs to still land it (1 whenever they are on time, on any panel; a clock a whole
+     tick late: 1 at 60 Hz, and above it the last vsyncs ride rAF). A past aim, or none left (kD <= j), is one bare rAF now. So a
+     still draw costs one callback, never one per vsync it waited out; stillVerdict re-books from the FRESH verdict (frame() books
+     first, from the previous one).
+     THE TIMER MARGIN (idle renderer review): j came from the whole tick whatever the timers did, so a 144 Hz panel rode 3
+     callbacks and a 239 Hz one 4 for every due draw (P7's rafPerDraw <= 1.25 could not pass there). Each still booking's own
+     timer now reports how late it fired (noteTimerLate); the margin is the worst of the last TIMER_LATE_SAMPLES, never more than
+     the tick, and it starts AT the tick, so nothing is drawn late before the timers have been seen. A clock that gets worse is
+     believed by its first late timer (one draw in flight pays); one that gets better, once the late ones have turned over.
+     Only a booked timer measures: a probe armed beside a bare-rAF wait would read the clock while that rAF chain keeps the thread
+     awake (a due timer then runs at the next wake, whatever the tick does) and under-read it. So a floor whose every wait rides
+     rAF (a change due within j vsyncs of each draw) keeps the margin it has - the tick, until a quieter draw has taught it.
+     renderPace: timerLateMs (the margin in use), timerSamples (the timers it has seen). */
+  const STILL_TIMER_LATE_MS = 15.6, TICK_AFTER_VSYNC_MS = 0.5, TIMER_LATE_SAMPLES = 32;
+  const timerLate = new Array(TIMER_LATE_SAMPLES).fill(STILL_TIMER_LATE_MS);
+  let timerLateAt = 0, timerLateMax = STILL_TIMER_LATE_MS, timerSamples = 0;
+  function noteTimerLate(ms) {
+    timerLate[timerLateAt] = ms >= 0 ? Math.min(STILL_TIMER_LATE_MS, ms) : ms < 0 ? 0 : STILL_TIMER_LATE_MS;   // early: on time · unreadable: the worst case
+    timerLateAt = (timerLateAt + 1) % TIMER_LATE_SAMPLES; timerSamples++;
+    timerLateMax = Math.max.apply(null, timerLate);
+  }
+  /* dueWatch: the change the last still verdict waits on; the draw that lands it records how late it came (renderPace: dueDraws,
+     dueLate — later than a vsync + 1 ms — dueLatMaxMs, dueLatAvgMs). skippedFrames: callbacks the pace check sent back undrawn. */
+  let dueWatch = Infinity, dueDraws = 0, dueLate = 0, dueLatSum = 0, dueLatMax = 0, skippedFrames = 0;
   function noteDueDraw(now) {
     const l = now - dueWatch; dueWatch = Infinity;
     dueDraws++; dueLatSum += l; if (l > dueLatMax) dueLatMax = l;
     if (l > (vsyncMs || 17) + 1) dueLate++;
   }
-  /* THE STILL TICK'S TIMER (Andrew: exactly 30/s while still). A still frame is drawn on the vsync frame()'s own rule picks
-     (the first one at least pace - half a vsync after the last draw). The timer wakes a hair after the vsync BEFORE that one
-     and rAF lands the draw, so a timer up to a vsync late (a Windows tick, ~15.6 ms at 60 Hz) still makes it, and an on-time
-     one books one rAF callback per still draw, as before. It used to aim 2 ms before the draw: a timer over 2 ms late missed
-     the vsync and the still pace fell to 20/s. */
-  const TICK_AFTER_VSYNC_MS = 0.5;
   function drawSlackMs() { return Math.max(1, Math.min(vsyncMs || 2, 17) / 2); }   // frame()'s own slack: it draws on the vsync NEAREST the pace
-  function stillTickTimerAt(pace) {
-    const P = vsyncMs || 17, k = Math.max(1, Math.ceil((pace - drawSlackMs()) / P - 1e-9));
-    return lastDrawnAt + (k - 1) * P + TICK_AFTER_VSYNC_MS;
+  function stillBookAt(pace) {
+    const P = vsyncMs || 17, slack = drawSlackMs();
+    const kT = Math.max(1, Math.ceil((pace - slack) / P - 1e-9));
+    let aimK = kT - 1;
+    if (stillDue < Infinity) {
+      const kD = Math.max(1, Math.ceil(Math.max(stillDue - lastDrawnAt, Math.max(PACE_VISIBLE_MS, budgetMs()) - slack) / P - 1e-9));
+      if (kD <= kT) aimK = kD - Math.max(1, Math.ceil((timerLateMax + TICK_AFTER_VSYNC_MS) / P - 1e-9));
+    }
+    return aimK > 0 ? lastDrawnAt + aimK * P + TICK_AFTER_VSYNC_MS : 0;
   }
   function pageFocused() {
     try { return typeof document === 'undefined' || typeof document.hasFocus !== 'function' || document.hasFocus(); } catch (_) { return true; }
@@ -1882,9 +1903,9 @@ const World = (() => {
     if (paceTimer) { clearTimeout(paceTimer); paceTimer = 0; }
   }
   // the ONE place the next frame is booked: rAF at a draw-rate pace, a timer then rAF at a low one or the still pace. The
-  // still wait is a timer to just past the vsync before the still frame (THE STILL TICK'S TIMER) or a DUE LEAD before stillDue,
-  // then rAF (see DUE LEAD). A timer-booked callback is not a vsync sample: lastRafAt is cleared so a 33 ms gap can never be
-  // learned as the display's frame interval.
+  // still wait is stillBookAt (THE STILL BOOKING): a timer to just past the vsync before the one that draws, then rAF. A
+  // timer-booked callback is not a vsync sample: lastRafAt is cleared so a 33 ms gap can never be learned as the display's
+  // frame interval.
   // UI FIRST (2026-10-26): a window opening holds the floor's draws for a moment — see the note in frame()
   const YIELD_MAX_MS = 250;
   let yieldUntil = 0;
@@ -1895,10 +1916,14 @@ const World = (() => {
   function yieldWait(now, force) { return force === true || !(now < yieldUntil) ? 0 : yieldUntil - now; }
   function scheduleFrame(pace) {
     if (!running) return;
-    const now = performance.now(), still = pace < PACE_TIMER_MIN_MS && stillPaced(now), lead = dueLeadMs();
+    const now = performance.now(), still = pace < PACE_TIMER_MIN_MS && stillPaced(now);
     const wait = now < yieldUntil ? yieldUntil - now : pace >= PACE_TIMER_MIN_MS ? lastDrawnAt + pace - now - 2
-      : still && stillDue - now > lead ? Math.min(stillTickTimerAt(pace), stillDue - lead) - now : 0;
-    if (wait > 0) { lastRafAt = 0; paceTimerAt = still ? now + wait : 0; paceTimer = setTimeout(() => { paceTimer = 0; if (running && !raf) raf = requestAnimationFrame(frame); }, wait); }
+      : still ? stillBookAt(pace) - now : 0;
+    if (wait > 0) {
+      lastRafAt = 0; paceTimerAt = still ? now + wait : 0;
+      const meant = still && !(now < yieldUntil) ? now + wait : 0;   // a still booking's own timer is the one that tells how late timers run (a hold's is not)
+      paceTimer = setTimeout(() => { paceTimer = 0; if (meant) noteTimerLate(performance.now() - meant); if (running && !raf) raf = requestAnimationFrame(frame); }, wait);
+    }
     else raf = requestAnimationFrame(frame);
   }
   // focus / input / visible again: drop a pending low-rate wait and draw on the very next vsync
@@ -1933,8 +1958,10 @@ const World = (() => {
         : pace > PACE_VISIBLE_MS + 0.5 ? 'budget' : 'visible',
       still: stillNow, stillWhy: stillWhy || null, stillDueMs: stillDue < Infinity ? Math.max(0, Math.round(stillDue - now)) : null,
       stillFrames, stillWhyCounts: Object.assign({}, stillWhyN),   // cumulative: a bench window's still share and what kept it moving
-      // cumulative: the due changes a still floor waited on, how many drew later than a vsync (+1 ms), and how late (DUE LEAD)
-      dueDraws, dueLate, dueLatMaxMs: +dueLatMax.toFixed(1), dueLatAvgMs: dueDraws ? +(dueLatSum / dueDraws).toFixed(1) : null,
+      // cumulative: the due changes a still floor waited on, how many drew later than a vsync (+1 ms), and how late (THE STILL
+      // BOOKING), and the callbacks frame()'s pace check sent back undrawn (skippedFrames: a rAF per draw above ~1 is spin)
+      dueDraws, dueLate, dueLatMaxMs: +dueLatMax.toFixed(1), dueLatAvgMs: dueDraws ? +(dueLatSum / dueDraws).toFixed(1) : null, skippedFrames,
+      timerLateMs: +timerLateMax.toFixed(1), timerSamples,   // THE TIMER MARGIN: the lateness a still booking allows for (the tick until seen), and the timers it has seen
       drawCostMs: +drawCostMs.toFixed(2), budgetMs: +budgetMs().toFixed(1), strained, strainProbeMs: +strainProbeMs.toFixed(1),
       draws: pacedDraws, simMs: Math.round(simMs), timerWait: !!paceTimer, yieldMs: Math.max(0, Math.round(yieldUntil - now)) };
   }
@@ -2022,7 +2049,8 @@ const World = (() => {
      wait out a still interval. Mirrors maybeGlance's own gates, in its order. */
   function heroGlanceAt(b, now) {
     if (activity === 'talk' || b.state === 'walk' || GLANCE_NONE[b.goal]) return Infinity;   // talk: listening glances ride the mic (input)
-    const t = Math.max(b.glance ? b.glance.until : 0, b.glanceCd || 0);
+    if (b.restSettled && b.stilling) return Infinity;                                         // THE CREW SETTLE: maybeGlance holds a settled hero still until the wake (input / a run)
+    const t =Math.max(b.glance ? b.glance.until : 0, b.glanceCd || 0);
     if (b.goal === 'use' || b.working) return Math.max(t, b.nextFidget || 0);
     if (b.goal == null || GLANCE_TAIL[b.goal] || GLANCE_BRANCH[b.goal] || b.stilling) return t;
     // any other goal: only THE LOOK-UP can act (revisit / watch, off task); a box to track is a crate, motion already
@@ -2164,11 +2192,15 @@ const World = (() => {
     if (chatFocusId != null) noteDue(chatWarmUntil, now);   // the COMMS stare goes cold (chatStareHold)
     if (!linkStaleDim && lastSseEventAt) noteDue(lastSseEventAt + LINK_STALE_MS, now);   // the link goes stale: LINK DOWN, telemetry dims
     stillWhy = why; stillNow = !why; stillDue = stillDueAcc;
-    dueWatch = stillNow ? stillDue : Infinity;   // DUE LEAD: the draw that lands this change records how late it came
+    dueWatch = stillNow ? stillDue : Infinity;   // the draw that lands this change records how late it came
     if (stillNow) stillFrames++; else stillWhyN[why] = (stillWhyN[why] || 0) + 1;
-    // the next frame was booked before this one ran: a STILL wait that must not stand (motion, or an earlier change: its
-    // timer must fire a DUE LEAD before it) re-books
-    if (paceTimer && paceTimerAt && (!stillNow || stillDue - dueLeadMs() < paceTimerAt - 0.5)) paceWake();   // (a budget-floor timer is left to the budget)
+    // the next frame was booked before this one ran, from the PREVIOUS verdict (frame() books first, so a throw cannot kill the
+    // loop). Moving, or the change already due: a pending still wait must not stand (next vsync, normal pace). Still: book again
+    // from THIS verdict, so the one callback left alive lands the earliest drawing vsync (stillBookAt), not a bare rAF that
+    // frame() would only skip. (A budget-floor timer is left to the budget, and a capped floor is never re-booked.)
+    const booked = performance.now();
+    if (!stillNow || !stillPaced(booked)) { if (paceTimer && paceTimerAt) paceWake(); }
+    else if (paceTimer ? paceTimerAt : raf) { cancelScheduled(); scheduleFrame(paceMs(booked)); }
   }
   // ---- end STILL VERDICT
   /* OVERLAYS (HUD widget, 2026-09-30): the station's in-world readouts — run clocks, tool tickers, await tags,
@@ -2429,6 +2461,7 @@ const World = (() => {
      re-stamp camUserAt), the scripted awakening camera always wins, and reduced-motion users never get a
      self-panning camera. Runs once per frame from the camera block — every branch below is O(bodies). */
   function cinecamTick(now) {
+    if (idleRenderer && liveRunCount() > 0) runSeenAt = now;                      // IDLE RENDERER: the station is working (the rest waits CINE_REST_MS after)
     if (camLock && camLock.source !== 'cine') return;                             // an explicit session lock owns the camera
     // NOTE: no document.hidden gate — the rAF loop already pauses in hidden tabs, and embedded webviews
     // (the preview harness, some Tauri states) report hidden while still rendering, which would dead-gate this.
@@ -2436,6 +2469,7 @@ const World = (() => {
       if (camLock) camLock = null;                                                // conditions lapsed mid-shot → release; the manual camera resumes untouched
       return;
     }
+    if (cineRested(now)) { if (camLock) camLock = null; return; }                 // IDLE RENDERER (flag): truly idle → the director rests where it is
     const cands = [];
     if (agent && !agent.unplaced) cands.push(agent);
     for (const b of crew) if (b && !b.unplaced) cands.push(b);
@@ -2462,6 +2496,119 @@ const World = (() => {
   }
   const cameraMode = () => camLock ? (camLock.source === 'cine' ? 'auto' : 'lock') : 'manual';   // HUD/verify truth: what drives the camera RIGHT NOW
   function setCinecamIdle(ms) { cineIdleMs = Math.max(1000, +ms || CINE_IDLE_MS); }               // DEV knob (console/verify only): shrink the hands-off threshold; floor 1s
+  /* THE IDLE RENDERER (wave 5: gh#69, gh#114, bug 9256a771, email E55), BEHIND A FLAG until Andrew has A/B'd the look.
+     On:  ?idleRenderer=1, or localStorage 'starnet.idleRenderer' = '1' (World.setIdleRenderer(true) writes it).
+     Off: the default, and ?idleRenderer=0 wins over the stored value. Off, nothing below changes a single draw. */
+  /* THE CINECAM RESTS when the station is TRULY idle. The auto-director is for when the Commander is away and the crew is
+     living: it trails walkers and cuts between them, so the floor is never still and draws at the full visible pace for
+     as long as the window is left open (perf-idle-ab P6, "the true left-open state"). With the flag on it stands down
+     once nobody has touched the window for its takeover time PLUS CINE_REST_MS, and no run has been live and no wake event
+     has been heard for CINE_REST_MS (no hand, no live run, no wake event): the camera stays exactly where the last shot left it,
+     and the floor falls to the still pace Andrew approved on 10-21 (30 redraws/s of an unchanged scene; every moving thing
+     still draws at 60, 144 while panning). Any hand on the window, any live run or any wake event ends the rest: the director
+     comes back on its own rules. Nothing caps a frame rate here. */
+  const CINE_REST_MS = 5 * 60000;
+  let idleRenderer = false, runSeenAt = 0, cineRestMs = CINE_REST_MS;
+  function setCinecamRest(ms) { cineRestMs = Math.max(1000, +ms || CINE_REST_MS); }   // DEV knob (perf-idle-ab P7 only), like setCinecamIdle
+  try {
+    const q = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('idleRenderer') : null;
+    idleRenderer = q != null ? (q === '1' || q === 'on') : (typeof localStorage !== 'undefined' && localStorage.getItem('starnet.idleRenderer') === '1');
+  } catch (_) {}
+  function liveRunCount() { let n = 0; for (const runs of liveRunsByAgent.values()) n += runs.size; return n; }
+  // a pure read (cameraDbg calls it): cinecamTick stamps runSeenAt while a run is live, restWakeOn when a wake event is heard
+  function cineRested(now) {
+    if (!idleRenderer || liveRunCount() > 0) return false;   // a working station is not idle, whatever the camera says
+    return now - camUserAt >= cineIdleMs + cineRestMs && now - runSeenAt >= cineRestMs;
+  }
+  /* WHAT ELSE ENDS THE REST: news that starts no run. A live run ends the rest by being live (liveRunCount), but a channel
+     message the dish only pulses for, a permission prompt, a deliverable or an alert starts none, and on its own it left the
+     camera rested and every crew body settled while only the frame pace woke, for one frame. Every event name the world hears
+     is listed once below. WAKE ends the rest the way a run does: restWakeOn stamps runSeenAt (the rest returns CINE_REST_MS
+     later), wakeSettledCrew hands every settled body its next decision on the same tick, and the motionWake tap beside it draws
+     the next vsync. QUIET never does: it is run traffic liveRunCount already owns, housekeeping, or the work of a hand. Tying the
+     rest to motionWake itself is wrong: polls, reconciles and an SSE reopen call it all day, and the station would never rest.
+     The idle-renderer test walks every U.bus.on in this file, so a new event cannot reach the floor unclassified. */
+  const REST_WAKE_EVENTS = new Set([
+    'channel.inbound',       // a message arrived (the dish pulses even when no run starts)
+    'permission.prompt',     // somebody has to answer
+    'deliverable',           // a finished product landed
+    'workitem.placed',       // a crate was placed on the line (a summon)
+    'cron.result',           // a routine reported in
+    'capdenied',             // a capability was refused
+    'credits.low',           // an alert about the money
+    'budget.threshold',      // an alert about the money
+    'agent.run.error'        // a run failed
+  ]);
+  const REST_QUIET_EVENTS = new Set([
+    // run traffic: liveRunCount() holds the rest open while a run lives, and the last live frame stamped runSeenAt
+    'agent.run.start',       // the run is live from this event on (liveRunCount)
+    'agent.run.end',         // the rest waits CINE_REST_MS after the run's last live frame
+    'agent.tool_call',       // work inside a live run
+    'agent.tool_result',     // work inside a live run
+    'agent.token',           // every token of a live run (chatter)
+    'agent.cost',            // a live run's bill
+    'cost.estimate',         // a live run's running estimate
+    'provider.fallback',     // a live run changed provider
+    'taskbrief.settled',     // a live run's brief
+    'shell.exec',            // a tool's effect inside a live run
+    'verify.result',         // a tool's verdict inside a live run
+    'task',                  // progress of a task that is already running
+    // housekeeping: counters, receipts and bookkeeping, never news
+    'queue.status',          // backlog depth, repeated
+    'workitem.superseded',   // a crate replaced by a newer one
+    'workitem.delivered',    // the end of work a run owned
+    'channel.delivery',      // the receipt of an answer that was news when it was asked
+    'memory.recall',         // the memory's own bookkeeping
+    'memory.write',          // the memory's own bookkeeping
+    'memory.forget',         // the memory's own bookkeeping
+    // the work of a hand (camUserAt already ended the rest) or the answer to news
+    'checkpoint.restored',   // a hand rewound the station
+    'permission.response',   // the answer to a prompt that was news when it came
+    // link state
+    'channel.connect'        // a connector came or went
+  ]);
+  function restWakeOn(ev) { if (idleRenderer && REST_WAKE_EVENTS.has(ev)) runSeenAt = performance.now(); }   // the second U.bus.tap (connectChannelBridge)
+  /* THE CREW SETTLE (the idle renderer's second half: option A of the 11-02 design note, approved 11-03). A rested camera alone
+     left a P7 floor drawing ~47 times a second: the idle crew kept wandering and running their social life on screen, and every
+     on-screen body that moves books a full-pace frame. While the station rests (cineRested: ONE rule, so the flag, the hands-off
+     time and the no-live-run, no-wake-event window are the camera's), a body reaching its next idle decision starts nothing new
+     (no wander, quirk, nap, social beat, chase, mimic, rounds or gathering) and holds still where it stands (standStill: no glance,
+     no swivel). Whatever it was doing when the rest began, it finishes first. Blinks and clock-driven pose frames go on as single
+     due frames, so the floor falls to the still pace. The first hand on the window, a live run or a wake event (a message that
+     starts no run, a prompt, a deliverable, an alert: REST_WAKE_EVENTS) ends the rest, and wakeSettledCrew (run in the tick BEFORE
+     any body steps) hands every settled body its next idle decision on that same tick. While the station is in use nothing here
+     runs; with the flag off cineRested is never true, so nothing here ever changes a body. */
+  const CREW_REST_HOLD_MS = 30000;   // a settled body re-checks the rest this often (a wake never waits for it)
+  let crewSettling = false;          // some body may be settled: the wake loop runs only while this is set
+  function crewRestGate(now) {       // decideIdle's first word while the station rests (self = the deciding body)
+    if (!cineRested(now)) return false;
+    standStill(now);
+    self.idleUntil = now + CREW_REST_HOLD_MS;
+    self.restSettled = true; crewSettling = true;
+    return true;
+  }
+  function wakeSettledCrew(now) {
+    if (!crewSettling || cineRested(now)) return;
+    crewSettling = false;
+    const wake = b => { if (b && b.restSettled) { b.restSettled = false; b.stilling = false; if (b.idleUntil > now) b.idleUntil = now; } };
+    wake(agent);
+    for (const b of crew) wake(b);
+  }
+  // cameraDbg readout: bodies holding still for the rest right now
+  function crewSettledCount() {
+    let n = 0;
+    const settled = b => b && b.restSettled && b.stilling && b.goal == null && !b.unplaced;
+    if (settled(agent)) n++;
+    for (const b of crew) if (settled(b)) n++;
+    return n;
+  }
+  // persist:false (perf-idle-ab's own A/B) changes the live rule without touching the stored opt-in
+  function setIdleRenderer(on, persist) {
+    idleRenderer = !!on;
+    if (persist !== false) try { localStorage.setItem('starnet.idleRenderer', idleRenderer ? '1' : '0'); } catch (_) {}
+    motionWake();   // the next frame judges itself under the new rule
+    return idleRenderer;
+  }
   function fitCamera() {
     if (!cache) return;
     const W = cache.W, H = cache.H;
@@ -6467,6 +6614,7 @@ const World = (() => {
   function decideIdle(now) {
     self.stilling = false;                            // every fresh decision starts clean (standStill re-sets it)
     if (chatStareHold(now)) return;                   // TIER D · D1: the Commander has COMMS focus on this body → give it your attention, don't choose to wander (G2: chatStareHold self-gates OFF while activity==='task'/working, so a summon still wins)
+    if (crewRestGate(now)) return;                    // THE CREW SETTLE (idle renderer, flag): the station rests → start nothing new, hold still where it stands
     // The grief + novelty reflexes read the MODULE pendingMourn/novelty queues, which are the HERO's awareness
     // (scanNovelty/maybeMourn only run for the hero). A crew body must NOT consume the hero's queue (J2) — gate
     // both reflexes to self===agent so only the hero acts on them. Crew get their idle life from the want-engine below.
@@ -6581,7 +6729,8 @@ const World = (() => {
     }
     if (agent.state === 'walk') return;                              // walking owns the facing
     if (agent.goal === 'sleep') return;                             // dormant: hold dead still (no head-turns)
-    if (agent.goal === 'firstwake') return;                         // FIRST LIGHT: stepFirstWake is the SOLE facing driver — no random flicks polluting the deliberate sweep
+    if (agent.restSettled && agent.stilling) return;                // THE CREW SETTLE: held still for the station's rest — no look-up, no swivel, until the wake
+    if (agent.goal === 'firstwake') return;                        // FIRST LIGHT: stepFirstWake is the SOLE facing driver — no random flicks polluting the deliberate sweep
     if (agent.goal === 'mimic' || agent.goal === 'chase') return;   // TIER D · D4: stepMimic/stepChase is the SOLE facing driver — no cargo-track/ambient flick hijacking the cursor follow / pursuit-stare
     if (agent.glance && agent.glance.until > now) return;
     if (now < (agent.glanceCd || 0)) return;
@@ -6702,7 +6851,8 @@ const World = (() => {
        read of live state instead of a second bookkeeping surface that could drift out of date. */
     if (stationAttended(now) || cursorPresent(now)) stationBusyAt = now;
     stepGatheringStation(now);
-    if (!gathering) maybeGather(now);
+    wakeSettledCrew(now);                                         // THE CREW SETTLE: the rest just ended → every settled body decides again on THIS tick (before stepCrew and the hero below)
+    if (!gathering && !cineRested(now)) maybeGather(now);         // ...and a resting station calls no new gathering (one in progress runs out on its own rules)
     sweepChase(now);                                              // TIER D · D4: station-level chase sweep (G4) — a seized/despawned/chat-focused chaser ALWAYS frees the lock same-tick, independent of its own stepper
     decayHabits(now);                                             // habituation fades (see FORGET_MS) — a floor watched for an hour must not run out of things worth looking at
     tickNeeds(dt);                                              // the inner meters drain/refill by what it is doing
@@ -6865,8 +7015,9 @@ const World = (() => {
      render body can never permanently kill the loop), then runs the body in try/catch. A throwing frame is
      logged ONCE per distinct message (no per-frame spam); after RENDER_FAULT_LIMIT consecutive throws it paints
      an honest "RENDER FAULT" overlay while still attempting frames, and a single clean frame resets the counter.
-     frameBody() therefore NEVER reschedules rAF itself — the wrapper owns scheduling, so exactly one callback is
-     ever alive (double-scheduling was the old early-out bug). */
+     frameBody() therefore never ADDS a callback — the wrapper owns scheduling, so exactly one is ever alive
+     (double-scheduling was the old early-out bug). The one swap: stillVerdict, last in the body, cancels that
+     booking and books again from its fresh verdict. */
   let renderFaults = 0;         // consecutive throwing frames
   let lastFaultMsg = '';        // de-dupe console spam: only log a NEW error message
   const RENDER_FAULT_LIMIT = 30;
@@ -6906,9 +7057,9 @@ const World = (() => {
     if (yieldWait(now, force) > 0) { scheduleFrame(pace); return; }   // scheduleFrame books the first vsync after the hold
     paceLowRate = pace >= PACE_TIMER_MIN_MS;
     // RENDER PACING: not this vsync. Half a vsync of slack draws on the vsync NEAREST the pace (never a whole one late)
-    if (force !== true && now - lastDrawnAt < pace - Math.max(1, Math.min(vsyncMs || 2, 17) / 2)) { scheduleFrame(pace); return; }
+    if (force !== true && now - lastDrawnAt < pace - Math.max(1, Math.min(vsyncMs || 2, 17) / 2)) { skippedFrames++; scheduleFrame(pace); return; }
     lastDrawnAt = now; pacedDraws++;
-    if (dueWatch <= now) noteDueDraw(now);   // STILL: this draw lands the change the still floor waited on (DUE LEAD readout)
+    if (dueWatch <= now) noteDueDraw(now);   // STILL: this draw lands the change the still floor waited on (the dueWatch readout)
     scheduleFrame(pace);   // schedule next frame FIRST — a throw below can't kill the loop
     const drawStart = performance.now(), bakedBefore = cache;   // only rebake() (and loadStation) replace the bake
     const reviewStart=reviewPerformance.enabled?drawStart:0;
@@ -9784,7 +9935,7 @@ const World = (() => {
   }
   let floor = null, lastSlagAt = -1e9;   // FloorStats: the factory-floor economy fold + a fresh-slag pulse clock
   let slaglog = null, lastCacheFrac = null;   // SlagLog: wasted-spend post-mortems + the last reconciled cache ratio (for the diagnosis)
-  const slagErrText = new Map();              // runId -> its agent.run.error message, read (and dropped) at that run's end
+  const slagErrText = new Map();              // runId -> its agent.run.error { message, failureCode }, read (and dropped) at that run's end
 
   // a belt tile on/adjacent to a footprint (its tiles + a 1-tile ring), used as a box spawn point (local frame)
   function beltTileNear(tx, ty, tw, th) {
@@ -9836,37 +9987,84 @@ const World = (() => {
     postRoutingPlan(routingPlan);
     lineStatsSoon();   // LINE WATCH: the floor's lines changed — re-ask their numbers once the plan has landed
   }
-  /* PLAN-POSTER-BEGIN (extraction marker — test/plan-poster.test.js evals this block with injected deps;
-     keep it PURE: params + locals only, no module state, no direct fetch/console/setTimeout).
+  /* PLAN-POSTER-BEGIN (extraction marker — test/plan-poster.test.js and test/routing.page-publication.test.js eval this block with
+     injected deps; keep it PURE: params + locals only, no module state, no direct fetch/console/setTimeout).
 
-     Delivery of the compiled plan to /api/routing, with the hash committed ONLY on a server answer — the old
+     PUBLICATION of the drawn floor to /api/routing, with the hash committed ONLY on a server answer — the old
      fire-and-forget committed the dedupe hash BEFORE the fetch and swallowed every failure, so one dropped
      POST left the sidecar routing by a STALE floor forever while the world drew the new one (audit 2026-08-04).
+
+     THE SAVED FLOOR IS THE ROUTING AUTHORITY (lane saved-floor-routing-authority). The sidecar routes by the floor the user SAVED,
+     so this post installs nothing: it is a HINT, {version:1, plan, compilerLinks} (JSON drops the compiler's non-enumerable
+     links, so they ride beside the plan), and it asks "is this exactly the floor you hold?". Two consequences:
+       • the SAVE comes first. deps.saved() resolves true only when the station file holds this window's newest save
+         (floorSaved below). A save that did not land posts nothing, keeps the floor stale and warns; the retry asks the save
+         again. flush() — World.syncPlan — therefore resolves only after the save AND the station's verdict.
+       • a 409 is "not yet": the station holds some other floor (this change has not landed, or does not match it).
      Semantics:
-       • 200 → commit the hash (dedupe as before: same topology+caps never re-posts), clear staleness.
-       • 422 → the PLAN ITSELF is refused (cycle/orphan) — re-posting the same hash is pointless, so commit it
-         and record the refusal. Not stale: the sidecar holds (and persists) the CLEARED plan, and the floor
+       • 200 → the station holds exactly this floor and it routes: commit the hash (dedupe as before: the same floor, caps,
+         briefs, budget and SEND TO never re-post), clear staleness.
+       • 422 → the station holds exactly this floor and the compiler REFUSES it (cycle/orphan) — re-posting the same hash is
+         pointless, so commit it and record the refusal. Not stale: nothing routes from a refused floor and the floor
          already draws the same compiler errors as nags — live truth on both sides.
-       • network failure / other status → do NOT commit; bounded fixed-delay retries, then give up until the
-         next offer (rederive re-offers the uncommitted hash). `stale` stays true — server-side routing may
-         not match the drawn floor — and each failure warns via deps.warn.
+       • 409 → NOT YET (pending): never committed, `stale` stays true, the hash is recorded as unsavedHash, and delivery is
+         retried like a failure (bounded), because the save that makes it true may still be on its way.
+       • a save that did not land / network failure / any other status (503 = the saved floor is held) → do NOT commit;
+         bounded fixed-delay retries, then give up until the next offer (rederive re-offers the uncommitted hash). `stale`
+         stays true — server-side routing may not match the drawn floor — and each failure warns via deps.warn.
      A newer offer supersedes any pending retry (seq guard: a late stale response can never commit). */
+  // the body of a publication: the hint envelope. The compiler's links are a NON-ENUMERABLE property of its plan, which JSON
+  // drops, so they travel beside it (the saved floor's own projection keeps them the same way)
+  function envelopeOf(plan) { return { version: 1, plan: plan, compilerLinks: (plan && plan.links) || null }; }
+  /* The dedupe key of a floor: everything an edit can change that the station has to be told again. The compiled plan's hash is
+     the dispatch topology and nothing else, so the rest rides the key. */
+  function routingKeyOf(plan) {
+    if (!plan) return '';
+    // dedupe on topology hash + per-bay caps, so equipping a bay (a capability change with no belt change) still re-POSTs
+    const objKey = o => (o && typeof o === 'object') ? (o.objectType + '#' + (o.connectorId || '')) : o;   // connector objs carry a binding; stringify it so a re-bind re-POSTs
+    // dockBays BRIEFS ride the key too (step editor): a belt-hooked bay's brief already moves plan.hash
+    // (it compiles into `bays`), but a LONE dock's brief lives only in dockBays — outside the hash — and
+    // editing it must still reach the sidecar's copy or stageBrief() serves a stale duty line.
+    return (plan.hash || '') + '|' + (plan.bays || []).map(b => b.agentId + ':' + ((b.objects || []).map(objKey).join(','))).join(';')
+      + '|' + (plan.dockBays || []).map(b => b.propId + ':' + (b.brief || '')).join(';')
+      // LINE BUDGET rides the key too (2026-08-21): limits live on `lines`, outside plan.hash (policy, not
+      // topology — splitter balance must survive a cap edit), but the sidecar's copy must re-read them.
+      + '|' + JSON.stringify(plan.lineLimits || {}) + '|' + JSON.stringify((plan.lines || []).map(l => [l.lineId, l.projectRoot || '', l.name || '']))
+      // SEND TO rides the key too (2026-10-10): plan.sendTo is outside plan.hash (a hand-off is not dispatch topology), but the
+      // sidecar's handoff runner reads the posted copy — an edited SEND TO that never re-posted would hand work to the old line
+      + '|' + JSON.stringify(plan.sendTo || {});
+  }
+  /* The SAVE STEP of a publication (deps.saved is this, over CloudSave): a promise of true when the station file holds this window's
+     newest save — or nothing was waiting — and of false when that save was refused or could not be sent. CloudSave.flush() cannot say
+     which: it answers false both for "nothing pending" and for "the write failed". flushForUpdate() answers { ok, hadPending,
+     flushed }, and ok is exactly "the station file holds everything this window queued" (a standing conflict or a degraded station
+     is not ok). It runs one turn late on purpose: the app queues a change's persist with queueMicrotask (app.js watchStationSave),
+     and a page that publishes in the very turn it changed the floor (World.syncPlan after a build) must find that save queued, not
+     post before it. No CloudSave has nothing to wait for. A flush that rejects rejects this too: the poster reads a save that did
+     not land. */
+  function floorSaved(cloud) {
+    return Promise.resolve().then(() => (cloud && typeof cloud.flushForUpdate === 'function')
+      ? cloud.flushForUpdate().then(r => !!(r && r.ok))
+      : true);
+  }
   function makePlanPoster(deps) {
     const MAX_RETRIES = 3, RETRY_MS = 4000;   // bounded + fixed-delay (deterministic-friendly); rederive re-offers after
     let lastHash = null;      // last hash the server ANSWERED (200 committed / 422 refused) — never committed on a guess
     let refusedHash = null;   // the hash of the last 422-refused plan (refusal state, inspectable)
     let pendingHash = null;   // the hash currently being delivered (in flight or awaiting a retry tick)
+    let unsavedHash = null;   // the hash whose save did not land, or that the station answered 409 (pending) for: drawn here, not held there yet
     let inflight = false, timer = null, seq = 0;
     let sendingHash = null;   // the hash of the POST on the wire right now
     let queued = null;        // the NEWEST floor offered while a POST was on the wire — sent the moment it settles
     let stale = false;        // honest flag: the sidecar may still route by an older floor than the one drawn
     let waiters = [];         // flush() callers awaiting the NEXT server answer (run-now ordering, 2026-08-22)
-    function state() { return { lastHash: lastHash, refusedHash: refusedHash, pendingHash: pendingHash, inflight: inflight, retryPending: timer != null, stale: stale }; }
+    function state() { return { lastHash: lastHash, refusedHash: refusedHash, pendingHash: pendingHash, unsavedHash: unsavedHash, inflight: inflight, retryPending: timer != null, stale: stale }; }
     function settle() { const w = waiters; waiters = []; const s = state(); for (const f of w) { try { f(s); } catch (_) {} } }
     /* flush(): a promise of the poster's state once the in-flight delivery has a verdict — resolved at once
        when nothing is pending. A run trigger (sample / RUN NOW) awaits THIS before dispatching so the sidecar
-       routes the line the user just drew, not the last one it heard about. A failed attempt resolves too
-       (stale=true, retries continue in the background): the caller refuses rather than running a stale floor. */
+       routes the line the user just drew, not the last one it heard about. The delivery stays in flight while its
+       save is awaited, so this resolves only after the save AND the station's verdict. A failed attempt resolves
+       too (stale=true, retries continue in the background): the caller refuses rather than running a stale floor. */
     function flush() { return new Promise(resolve => { if (!inflight && timer == null) resolve(state()); else waiters.push(resolve); }); }
     /* ONE POST AT A TIME, IN ORDER (2026-10-08). Two POSTs on separate connections can ARRIVE out of order: the
        sidecar then kept the OLDER floor while this page committed the newer hash and believed it delivered — a
@@ -9880,31 +10078,42 @@ const World = (() => {
       if (hash === lastHash) return false;                                   // server already answered this exact floor
       if (hash === pendingHash && (inflight || timer != null)) return false; // same floor already being delivered
       if (timer != null) { deps.cancel(timer); timer = null; }               // a different floor supersedes the pending retry
-      pendingHash = hash;
+      pendingHash = hash; unsavedHash = null;
       send(plan, hash, 0, ++seq);
       return true;
     }
     function send(plan, hash, attempt, mySeq) {
-      const fail = why => {
+      const fail = (why, unsaved) => {
         if (mySeq !== seq) return;   // superseded — the newer offer owns delivery (and the flags) now
         inflight = false; sendingHash = null;
         if (drainQueued()) return;   // a NEWER floor was offered meanwhile: deliver it instead of retrying this one
-        stale = true;
+        stale = true; unsavedHash = unsaved ? hash : null;
         deps.warn('[routing] plan post failed (' + why + ') — sidecar routing may be stale' +
           (attempt < MAX_RETRIES ? '; retrying in ' + RETRY_MS + 'ms' : '; will retry on the next floor change'));
         if (attempt < MAX_RETRIES) timer = deps.delay(() => { timer = null; send(plan, hash, attempt + 1, mySeq); }, RETRY_MS);
         settle();
       };
-      let p = null;
+      // the hint goes out once the save it asks about has landed
+      const post = () => {
+        let p = null;
+        try { p = deps.post(envelopeOf(plan)); } catch (_) { fail('exception'); return; }
+        Promise.resolve(p).then(res => {
+          if (mySeq !== seq) return;   // superseded — never let a stale response commit or clear flags
+          inflight = false; sendingHash = null;
+          if (res && res.ok) { lastHash = hash; refusedHash = null; unsavedHash = null; if (drainQueued()) return; pendingHash = null; stale = false; settle(); return; }
+          if (res && res.status === 422) { lastHash = hash; refusedHash = hash; unsavedHash = null; if (drainQueued()) return; pendingHash = null; stale = false; settle(); return; }
+          if (res && res.status === 409) { fail('floor not saved yet', true); return; }   // the station holds another floor: not yet, never a commit
+          fail('http ' + (res ? res.status : '?'));
+        }, () => fail('network'));
+      };
       inflight = true; sendingHash = hash;
-      try { p = deps.post(plan); } catch (_) { fail('exception'); return; }
-      Promise.resolve(p).then(res => {
-        if (mySeq !== seq) return;   // superseded — never let a stale response commit or clear flags
-        inflight = false; sendingHash = null;
-        if (res && res.ok) { lastHash = hash; refusedHash = null; if (drainQueued()) return; pendingHash = null; stale = false; settle(); return; }
-        if (res && res.status === 422) { lastHash = hash; refusedHash = hash; if (drainQueued()) return; pendingHash = null; stale = false; settle(); return; }
-        fail('http ' + (res ? res.status : '?'));
-      }, () => fail('network'));
+      if (typeof deps.saved !== 'function') { post(); return; }   // a page with no durable save has nothing to wait for
+      let landed = null;
+      try { landed = deps.saved(); } catch (_) { fail('save did not land', true); return; }
+      Promise.resolve(landed).then(ok => {
+        if (mySeq !== seq) return;   // superseded while the save was awaited
+        if (ok === true) post(); else fail('save did not land', true);
+      }, () => fail('save did not land', true));
     }
     // the wire is free: send the newest floor offered while it was busy (unless the server already holds it)
     function drainQueued() {
@@ -9912,7 +10121,7 @@ const World = (() => {
       if (!q) return false;
       if (q.hash === lastHash) { pendingHash = null; return false; }
       if (timer != null) { deps.cancel(timer); timer = null; }
-      pendingHash = q.hash; stale = true;
+      pendingHash = q.hash; stale = true; unsavedHash = null;
       send(q.plan, q.hash, 0, ++seq);
       return true;
     }
@@ -9923,30 +10132,20 @@ const World = (() => {
   // an unreachable sidecar already raises the LINK DOWN chrome (linkDown/linkState — the one honest
   // connectivity signal), and _dbgBeltLegibility exposes planSync for the verify harness.
   const planPoster = makePlanPoster({
-    post: plan => fetch(apiUrl('/api/routing'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(plan || {}) }),
+    // the station answers from the floor it SAVED, so this window's save lands before the hint is asked about
+    saved: () => floorSaved(typeof CloudSave !== 'undefined' ? CloudSave : null),
+    // the poster hands over the hint envelope: JSON carries its links beside the plan
+    post: body => fetch(apiUrl('/api/routing'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     warn: m => { try { console.warn(m); } catch (_) {} },
     delay: (fn, ms) => setTimeout(fn, ms),
     cancel: id => clearTimeout(id)
   });
-  // post the plan to /api/routing when the floor TOPOLOGY actually changed (hash dedupe — rederive() also runs
-  // on pure camera/agent moves). The sidecar REFUSES a non-deployable plan (cycle/orphan) and falls back to its
-  // default resolution, so a broken floor disables routed-mode rather than stalling work.
+  // publish the drawn floor to /api/routing when it actually changed (key dedupe — rederive() also runs on pure camera/agent
+  // moves). The station answers from its SAVED floor and installs nothing from the post: a floor it cannot route (cycle/orphan) is
+  // refused there, so a broken floor disables routed-mode rather than stalling work.
   function postRoutingPlan(plan) {
     if (typeof fetch === 'undefined') return;
-    // dedupe on topology hash + per-bay caps, so equipping a bay (a capability change with no belt change) still re-POSTs
-    const objKey = o => (o && typeof o === 'object') ? (o.objectType + '#' + (o.connectorId || '')) : o;   // connector objs carry a binding; stringify it so a re-bind re-POSTs
-    // dockBays BRIEFS ride the key too (step editor): a belt-hooked bay's brief already moves plan.hash
-    // (it compiles into `bays`), but a LONE dock's brief lives only in dockBays — outside the hash — and
-    // editing it must still reach the sidecar's copy or stageBrief() serves a stale duty line.
-    const hash = plan ? ((plan.hash || '') + '|' + (plan.bays || []).map(b => b.agentId + ':' + ((b.objects || []).map(objKey).join(','))).join(';')
-      + '|' + (plan.dockBays || []).map(b => b.propId + ':' + (b.brief || '')).join(';')
-      // LINE BUDGET rides the key too (2026-08-21): limits live on `lines`, outside plan.hash (policy, not
-      // topology — splitter balance must survive a cap edit), but the sidecar's copy must re-read them.
-      + '|' + JSON.stringify(plan.lineLimits || {}) + '|' + JSON.stringify((plan.lines || []).map(l => [l.lineId, l.projectRoot || '', l.name || '']))
-      // SEND TO rides the key too (2026-10-10): plan.sendTo is outside plan.hash (a hand-off is not dispatch topology), but the
-      // sidecar's handoff runner reads the posted copy — an edited SEND TO that never re-posted would hand work to the old line
-      + '|' + JSON.stringify(plan.sendTo || {})) : '';
-    planPoster.offer(plan, hash);
+    planPoster.offer(plan, routingKeyOf(plan));
   }
   // junction props (splitter/filter/merger) keyed by tile — derived from the compiled plan so the VISUAL engine
   // animates filters + mergers (not just splitters) using the SAME config the dispatch router routes by.
@@ -10235,7 +10434,8 @@ const World = (() => {
     const width = Math.max(12, (d.w || 1) * T - 1), cx = (d.x + (d.w || 1) / 2) * T;
     return { left: cx - width / 2, top: d.y * T + 1 - 5.5, width, h: 11, cx };
   }
-  const LAMP = { idle: '#2e443b', working: '#ffb23e', waiting: '#cdb46a', failed: '#ff4a3d', paused: '#62d6e3' };
+  // review 9.3: UNFINISHED (a refusal, a spend cap, a step limit the bay holds) is the warn lamp, steady — FAILED's red blink is a failure's alone
+  const LAMP = { idle: '#2e443b', working: '#ffb23e', waiting: '#cdb46a', failed: '#ff4a3d', unfinished: '#ffe97a', paused: '#62d6e3' };
   function drawBayLamps(now) {
     if (lwDrawOff) return;
     const w = lineWatch();
@@ -10274,9 +10474,11 @@ const World = (() => {
     }
     return null;
   }
+  // a bay whose lamp holds a dead end for you — FAILED, or UNFINISHED (review 9.3) — clears on a click
   function failedBayAt(wp) {
     const d = boundBayAt(wp), w = lineWatch();
-    return (d && w && w.status(d.propId, lwNow()).state === 'failed') ? d : null;
+    const st = d && w ? w.status(d.propId, lwNow()).state : '';
+    return (st === 'failed' || st === 'unfinished') ? d : null;
   }
   function ackBay(d) {
     const w = lineWatch(); if (!w || !w.ack(d.propId)) return false;
@@ -10290,6 +10492,8 @@ const World = (() => {
     if (s.state === 'working') return { text: 'WORKING · ' + lwSecs(lwNow() - s.since) + (s.usd > 0 ? ' · ' + U.usd(s.usd) : ''), col: LAMP.working };
     if (s.state === 'waiting') return { text: 'WAITING · ' + s.queued + (s.queued === 1 ? ' CRATE' : ' CRATES') + ' QUEUED', col: LAMP.waiting };
     if (s.state === 'failed') return { text: 'FAILED · ' + String(s.reason || 'error').toUpperCase().replace(/_/g, ' ') + ' — CLICK TO CLEAR', col: LAMP.failed };
+    // review 9.3: a refusal, a spend cap or a step limit did not finish: its own word (RunOutcome.look) in the warn lamp, never "FAILED · BUDGET"
+    if (s.state === 'unfinished') return { text: 'DID NOT FINISH · ' + String(typeof RunOutcome !== 'undefined' ? RunOutcome.look(s.outcome).word : (s.outcome || 'unfinished')).toUpperCase().replace(/_/g, ' ') + ' — CLICK TO CLEAR', col: LAMP.unfinished };
     if (s.state === 'paused') return { text: 'PAUSED · STEP TEST WAITS HERE', col: LAMP.paused };
     return { text: 'IDLE', col: '#9fb0a8' };
   }
@@ -11407,7 +11611,9 @@ const World = (() => {
       html = esc(text);
     }
     tickerEl.innerHTML = html;
-    tickerEl.classList.toggle('cam-ticker--bad', cls === 'bad');
+    // review 9.3: a run's END wears its outcome's own tone (RunOutcome.look: ok · ask · stop · warn · bad) — the ticker had two, so a refusal, a
+    // cut reply and every limit painted the failure's red while a stop and a question painted a success's plain line
+    for (const t of TICKER_TONES) tickerEl.classList.toggle('cam-ticker--' + t, cls === t);
     // CRT blip: retrigger the one-step enter transition unless the OS asked for less motion.
     tickerEl.classList.remove('cam-ticker--on', 'cam-ticker--blip');
     if (!reduceMotion()) { void tickerEl.offsetWidth; tickerEl.classList.add('cam-ticker--blip'); }
@@ -11417,6 +11623,7 @@ const World = (() => {
     tickerFadeT = setTimeout(() => { if (tickerEl) tickerEl.classList.remove('cam-ticker--on', 'cam-ticker--blip'); tickerFadeT = 0; }, TICKER_IDLE_MS);
   }
 
+  const TICKER_TONES = ['ok', 'ask', 'stop', 'warn', 'bad'];   // RunOutcome.look's tones, each its own .cam-ticker--<tone> (style.css)
   // public entry: queue a line, coalescing bursts to ≤ ~2/sec and always ending on the latest event.
   function pushTicker(text, cls, suit) {
     if (!text) return;
@@ -11443,12 +11650,13 @@ const World = (() => {
     // STILL: every harness event that reaches a listener (SSE-bridged or the in-app run stream) wakes a still floor, so what
     // it starts — a body summoned, a crate placed, a desk lighting — is drawn on the next vsync
     if (typeof U.bus.tap === 'function') U.bus.tap(motionWake);
+    if (typeof U.bus.tap === 'function') U.bus.tap(restWakeOn);   // IDLE RENDERER (flag): and the few events that are news (REST_WAKE_EVENTS) end the rest as a run does; chatter never does
     setupTicker();   // join the .cam-hud overlay (starts empty — no fake backfill)
     // ── CAM-HUD ACTIVITY TICKER: narrate the latest REAL harness event as one diegetic camera line. ──
     U.bus.on('agent.run.start', p => {
       if (!p || !p.agentId) return;
       const trig = String(p.trigger || '').toLowerCase();
-      const tag = (trig === 'schedule') ? ' · ROUTINE' : (trig === 'event') ? ' · EVENT' : (trig === 'nightshift') ? ' · AUTONOMY' : '';
+      const tag = (trig === 'schedule') ? ' · ROUTINE' : (trig === 'manual') ? ' · RUN NOW' : (trig === 'event') ? ' · EVENT' : (trig === 'nightshift') ? ' · AUTONOMY' : '';
       pushTicker(tickerName(p.agentId) + ' ▸ RUN INITIATED' + tag, '', tickerSuit(p.agentId));
     });
     U.bus.on('agent.tool_call', p => {
@@ -11461,21 +11669,29 @@ const World = (() => {
     // research run probing a few blocked sites read as a station-wide malfunction. A negative tool result
     // is the agent working, and the next agent.tool_call line already shows it moving; the COMMS chips
     // keep the per-call truth one click away. Red on this HUD now means one thing: the run itself died.
+    // Review 9.3: the error's own CODE first (RunOutcome.ofEnd(null, error)). A provider safety block or a model refusal ends the run REFUSED: it
+    // declined the request, it did not break — "RUN DECLINED" in the warn tone, never "RUN FAULT" in the failure red (the end says it ended refused)
     U.bus.on('agent.run.error', p => {
       if (!p) return;
-      pushTicker(tickerName(p.agentId) + ' ▸ RUN FAULT · ' + tickerClip(p.message || 'error', 40).toUpperCase(), 'bad', tickerSuit(p.agentId));
+      const declined = typeof RunOutcome !== 'undefined' && RunOutcome.ofEnd(null, p).outcome === 'refused';
+      pushTicker(tickerName(p.agentId) + (declined ? ' ▸ RUN DECLINED · ' : ' ▸ RUN FAULT · ') + tickerClip(p.message || 'error', 40).toUpperCase(), declined ? 'warn' : 'bad', tickerSuit(p.agentId));
     });
     U.bus.on('agent.run.end', p => {
       if (!p) return;
       const turns = (p.turns | 0);
       const usd = +p.usd;
-      let line = tickerName(p.agentId) + ' ▸ RUN COMPLETE';
+      // RUN COMPLETE only for a run that SUCCEEDED (review r7): a stopped, cut, limited, empty or refused run raised no error event and
+      // read "RUN COMPLETE"; a failed one read "RUN FAULT" and then "RUN COMPLETE". Any other end says how it ended (RunOutcome.line).
+      const oc = typeof RunOutcome !== 'undefined' ? RunOutcome.ofEnd(p, null) : { ok: p.reason === 'done', outcome: p.reason === 'done' ? 'succeeded' : 'failed', failureCode: '' };
+      let line = tickerName(p.agentId) + ' ▸ ' + (oc.ok ? 'RUN COMPLETE' : 'RUN ENDED · ' + (typeof RunOutcome !== 'undefined' ? RunOutcome.line(oc) : String(p.reason || 'ended')).toUpperCase());
       if (turns > 0) line += ' · ' + turns + ' TURN' + (turns === 1 ? '' : 'S');
       if (isFinite(usd) && usd > 0) line += ' · ' + U.usd(usd);
       // a DONE run that PROVABLY WORKED (tool result / deliverable) is a shipped job: bump the pallet
       // + tell the day's score in the same breath. A clean-but-workless finish is just RUN COMPLETE.
-      if (p.reason === 'done' && runWorked(p)) line += ' · ' + bumpShipped() + ' SHIPPED TODAY';
-      pushTicker(line, '', tickerSuit(p.agentId));
+      // (typed-outcomes) only a SUCCEEDED run ships: a provider-cut 'done' is not a shipped job
+      if (oc.ok && runWorked(p)) line += ' · ' + bumpShipped() + ' SHIPPED TODAY';
+      // review 9.3: the end's own tone (RunOutcome.look), never 'bad' for every run that did not finish and the success's plain line for a stop
+      pushTicker(line, typeof RunOutcome !== 'undefined' ? RunOutcome.look(oc).tone : (oc.ok ? 'ok' : 'bad'), tickerSuit(p.agentId));
     });
     // PROVEN-WORK tracker (crate-honesty): what did the CURRENT run actually do? Reset on run.start;
     // successful tool results + deliverables accumulate; run.end consumers read it, then it's dropped.
@@ -11520,7 +11736,11 @@ const World = (() => {
     U.bus.on('agent.run.end', p => {
       if (!p || !p.agentId) return;
       const L = summonLinks.filter(k => k.toId === p.agentId && !k.endCol).pop();
-      if (L) L.endCol = p.reason === 'done' ? '#7fd6a4' : (/^(error|refusal|empty)$/.test(String(p.reason || '')) ? '#e06a5f' : '#d9a95b');
+      const SUMMON_END_COL = { ok: '#7fd6a4', ask: '#ffd34a', stop: '#9aa3ad', warn: '#d9a95b', bad: '#e06a5f' };
+      // (typed-outcomes) by the run's OUTCOME: delivered only when it succeeded; a failure, a refusal or an empty reply red; any other stop amber
+      const oc = typeof RunOutcome !== 'undefined' ? RunOutcome.ofEnd(p, null) : null;
+      // review r8: by RunOutcome.look's tone — a question (gold) and a stop (grey) no longer share the amber of a run that did not finish
+      if (L) L.endCol = oc ? SUMMON_END_COL[RunOutcome.look(oc).tone] : (p.reason === 'done' ? '#7fd6a4' : /^(error|refusal|empty)$/.test(String(p.reason || '')) ? '#e06a5f' : '#d9a95b');
     });
     U.bus.on('agent.tool_result', p => {
       if (!p || !p.agentId) return;
@@ -11576,20 +11796,25 @@ const World = (() => {
     U.bus.on('workitem.placed', p => { if (floor) floor.onEvent('workitem.placed', p, Date.now()); });
     U.bus.on('workitem.delivered', p => { if (floor) floor.onEvent('workitem.delivered', p, Date.now()); });
     // the run's own error text (agent.run.error lands before its run.end), so the post-mortem can name a KNOWN
-    // cause (empty provider wallet, unavailable model, …) instead of "send it again, report it if it repeats".
+    // cause (empty provider wallet, unavailable model, …) instead of "send it again, report it if it repeats". Its failure code
+    // rides with it (typed-outcomes): the code decides the kind, as COMMS reads it — a Codex 429 the station classed as a rate
+    // limit is never re-read from its words as a spent ChatGPT plan
     U.bus.on('agent.run.error', p => {
       if (!p || !p.runId) return;
-      slagErrText.set(p.runId, String(p.message || ''));
+      slagErrText.set(p.runId, { message: String(p.message || ''), failureCode: String(p.failureCode || '') });
       if (slagErrText.size > 64) slagErrText.delete(slagErrText.keys().next().value);
     });
     U.bus.on('agent.run.end', p => {
       if (floor) floor.onEvent('agent.run.end', p, Date.now());
       const r = p && p.reason;
-      const errText = (p && p.runId) ? slagErrText.get(p.runId) : undefined;
+      const runErr = (p && p.runId) ? slagErrText.get(p.runId) : undefined;
       if (p && p.runId) slagErrText.delete(p.runId);
       // A clean finish that PROVABLY WORKED ships: one product crate leaves the producing agent's bay
       // and rides to the OUTBOX. A done-but-workless run ("I couldn't do that") ships NOTHING.
-      if (r === 'done' && runWorked(p)) shipProductCrate(p);
+      // TYPED OUTCOMES: "clean" is the run's OUTCOME (RunOutcome.ofEnd, paired with its own error): a reply the provider cut, or a
+      // 'done' end an error the run raised outranks, never rides to the OUTBOX as a product crate
+      const oc = (p && typeof RunOutcome !== 'undefined') ? RunOutcome.ofEnd(p, runErr ? { failureCode: runErr.failureCode } : null) : null;
+      if ((oc ? oc.ok : r === 'done') && runWorked(p)) shipProductCrate(p);
       else if (r === 'done') {
         const work = dockWorkForRun(p), lineId = lineOfWork(work);
         // A talk-only sibling contributes observed cost, never proof that a job produced work.
@@ -11602,22 +11827,28 @@ const World = (() => {
         if (l) { const i = l.indexOf(k); if (i >= 0) l.splice(i, 1); if (!l.length) liveRunOrder.delete(p.agentId); }
       }
       if (p && p.runId) runUsdRecon.delete(p.runId);   // the ship decision above has read it — drop the cost fold
-      if (r !== 'max_iters' && r !== 'budget' && r !== 'error' && r !== 'refusal') return;
+      // the dead ends: a step limit, a spending limit, an error, a refusal — and a 'done' end whose run failed (the error it raised)
+      const dead = (r === 'max_iters' || r === 'budget' || r === 'error' || r === 'refusal') ? r : ((oc && oc.outcome === 'failed') ? 'error' : '');
+      if (!dead) return;
       // UNPRODUCTIVE RUN: pulse the SLAG cell, then turn the failed outcome into a lesson — a real post-mortem in the
       // notifications panel + a red-hot slag crate that rides off the line (if a desk belt exists). The
       // lesson lands regardless of belts; the belt only shows it.
       lastSlagAt = performance.now();
       if (!slaglog) return;
       let error = null;
-      if (r === 'error' && errText && typeof Friendly !== 'undefined' && Friendly.friendlyError) {
-        try { const v = Friendly.friendlyError(new Error(errText)); error = v ? { kind: v.kind, msg: v.userMessage } : null; } catch (_) { error = null; }
+      // the code decides the kind (as COMMS reads it): the run's error carries it, or — a stop that raised no error event (the
+      // compute gate's capdenied) — the run's own end does
+      const errCode = (runErr && runErr.failureCode) || (p && p.failureCode) || '';
+      const errWords = (runErr && runErr.message) || errCode;
+      if (dead === 'error' && errWords && typeof Friendly !== 'undefined' && Friendly.friendlyError) {
+        try { const v = Friendly.friendlyError(new Error(errWords), null, { code: errCode }); error = v ? { kind: v.kind, msg: v.userMessage } : null; } catch (_) { error = null; }
       }
-      const diag = slaglog.record(r, { cacheFrac: lastCacheFrac, turns: p && p.turns, usd: p && p.usd, error, agentId: p && p.agentId, atBalance: !!(p && p.budgetCapIsBalance === true), projected: !!(p && p.budgetProjected === true) });
+      const diag = slaglog.record(dead, { cacheFrac: lastCacheFrac, turns: p && p.turns, usd: p && p.usd, error, agentId: p && p.agentId, atBalance: !!(p && p.budgetCapIsBalance === true), projected: !!(p && p.budgetProjected === true) });
       // an 'error' run has ALREADY announced itself (⚠ error row, its own toast, the RUN FAULT tick,
       // the desk strobe) — a simultaneous SLAG toast made ONE failure read as two (2026-07-31). The
       // post-mortem record + slag crate below still happen for every dead reason; only the duplicate
       // toast is skipped. Budget/step-limit/refusal deaths keep it: nothing else announces those.
-      if (typeof StationUI !== 'undefined' && StationUI.notify && r !== 'error') {
+      if (typeof StationUI !== 'undefined' && StationUI.notify && dead !== 'error') {
         const clean = s => String(s || '').replace(/\bspend\b/ig, 'run resources').replace(/\bdollars?\b/ig, 'limits');
         StationUI.notify('⚠ a run ended with nothing to show · ' + clean(SlagLog.line(diag)), 'warn', undefined, { kind: 'alert', go: { term: 'agents', section: 'record' } });
       }
@@ -11662,7 +11893,26 @@ const World = (() => {
       // (2026-10-09) the notification opens the run ITSELF — its session holds the result — never the routines list,
       // where the result was one more click (and opening the session never settled the notification)
       const ses = p.runId ? { ws: 'cron-' + p.runId } : { term: 'automation', section: 'routines' };
-      if (p.outcome === 'failed') hudNote('✕ routine failed' + (p.reason ? ' — ' + p.reason : ''), 'warn', { kind: 'alert', go: ses });
+      // a stop someone made (Stop, pausing the routine mid-run, deleting it, E-STOP, a STOP on its work line) settles its fire 'stopped':
+      // no verdict, as its session keeps it (review 6.2) — never "routine failed". Review r7: cron.result says 'stopped' and carries the
+      // fire's own code (runOutcome); an older station said 'failed' beside a reason whose LEADING word is the stop's ('cancelled', or
+      // 'cancelled (stale-lease)' — resolving the whole suffixed string read it as no run reason at all and toasted a failure)
+      const why = String(p.reason || '');
+      const lead = why.split(' (')[0];
+      const stopped = p.outcome === 'stopped' || p.runOutcome === 'stopped'
+        || (p.outcome === 'failed' && !p.runOutcome && typeof RunOutcome !== 'undefined' && RunOutcome.resolve({ reason: lead }).outcome === 'stopped');
+      // the auto-pause rides its own field (pausedAfter): said as the pause, beside the failure's own reason
+      const pausedAfter = Number(p.pausedAfter) || 0;
+      const failedWhy = pausedAfter > 0 ? why.replace(/ \(paused: consecutive-failures x\d+\)/, '') + ' — paused after ' + pausedAfter + ' failures in a row' : why;
+      // review r8: cron.result's 'failed' covers every fire that did not succeed — its runOutcome (an older station's: the reason's leading word)
+      // says which. A question is no failure (it toasted "✕ routine failed — clarifying"), a cut reply or a limit did not finish, and only a
+      // FAILED fire is "✕ routine failed"; an auto-pause rides beside each, as itself
+      const fireOc = stopped || p.outcome !== 'failed' || typeof RunOutcome === 'undefined' ? '' : RunOutcome.isOutcome(p.runOutcome) ? p.runOutcome : RunOutcome.ofWord(lead).outcome;
+      const pausedNote = pausedAfter > 0 ? ' — paused after ' + pausedAfter + ' fires in a row that did not succeed' : '';
+      if (stopped) hudNote('■ routine stopped before it finished', '', { go: ses }, 'cronDigest');
+      else if (fireOc === 'asked') hudNote('▲ routine asked a question — answer it in its session' + pausedNote, 'warn', { kind: 'needs', go: ses });
+      else if (fireOc && fireOc !== 'failed') hudNote('⚠ routine did not finish — ' + RunOutcome.line({ outcome: fireOc, failureCode: p.failureCode || '' }) + pausedNote, 'warn', { kind: 'alert', go: ses });
+      else if (p.outcome === 'failed') hudNote('✕ routine failed' + (failedWhy ? ' — ' + failedWhy : ''), 'warn', { kind: 'alert', go: ses });
       // its result is in the routine's own session (and HISTORY under AUTOMATE › ROUTINES), never in DELIVERABLES › TO REVIEW
       else if (p.outcome === 'ok') hudNote('◷ routine completed', 'good', { go: ses }, 'cronDigest');
     });
@@ -11763,10 +12013,14 @@ const World = (() => {
     // agent.run.end (reason 'error') that loop.js guarantees after every run.error — consumed by the
     // serverLit / handoff run.end bindings above, so no body is ever left typing at a dead run.
     const ERROR_LINE = ['it broke', 'lost the thread', 'error state', 'something failed', '...no.'];
+    // Review 9.3: a REFUSAL (the error's code: a provider safety block, a model refusal) declined the request; it did not die. The desk flashes the
+    // warn tone and the agent says it declined, never the failure's red strobe and "something failed"
+    const DECLINED_LINE = ['declined', 'not that one', 'won’t do that one'];
     U.bus.on('agent.run.error', p => {
-      flashDesk(p && p.agentId, '#ff4a3d');
+      const declined = !!p && typeof RunOutcome !== 'undefined' && RunOutcome.ofEnd(null, p).outcome === 'refused';
+      flashDesk(p && p.agentId, declined ? '#ffe97a' : '#ff4a3d');
       const b = bodyForAgent(p && p.agentId);
-      if (b && !(b.say && b.say.text && b.say.until > performance.now())) sayAt(b, U.pick(ERROR_LINE));
+      if (b && !(b.say && b.say.text && b.say.until > performance.now())) sayAt(b, U.pick(declined ? DECLINED_LINE : ERROR_LINE));
     });
     // MEMORY: a recall fence was injected into this run's prompt — surface the count so recall feels ALIVE, not silent.
     U.bus.on('memory.recall', p => { const c = p && (p.count | 0); if (c > 0) hudNote('◈ recalled ' + c + ' memor' + (c === 1 ? 'y' : 'ies'), 'good'); });
@@ -12057,7 +12311,7 @@ const World = (() => {
           // Rows older than the toolsOk field count only via artifacts — under-claiming, never over.
           // A STEP TEST is not a shipment (2026-09-28 retest: the pallet said SHIPPED 1 after a test the panel said
           // "is not put in the OUTBOX") — the same rule the line plates keep (line-stats: stepTest rows are TESTS).
-          shipStats = { day: shipDay(), done: j.runs.filter(r => r && r.reason === 'done' && r.stepTest !== true && (((r.toolsOk | 0) > 0) || (Array.isArray(r.artifacts) && r.artifacts.length > 0))).length, known: true };
+          shipStats = { day: shipDay(), done: j.runs.filter(r => r && (typeof RunOutcome !== 'undefined' ? RunOutcome.ofRow(r).ok : r.reason === 'done') && r.stepTest !== true && (((r.toolsOk | 0) > 0) || (Array.isArray(r.artifacts) && r.artifacts.length > 0))).length, known: true };
         }).catch(() => {});
     } catch (_) {}
   }
@@ -12357,7 +12611,7 @@ const World = (() => {
        floor to the router. `station: false` = no floor loaded (nothing is known). */
     planStatus: () => Object.assign({ station: !!station, pending: !!(station && (geoDirty || !geo)),
       errors: (routingPlan && routingPlan.errors ? routingPlan.errors : []).filter(e => !e.warn), hash: routingPlan ? routingPlan.hash : null }, planPoster.state()),
-    loadStation, spawn, spawnAgent, despawnAgent, setSkin, relabel, setActivityFor, agentRunsLive, dropRun: dropRunFromPage, focusBody, lockBody, cameraMode, cameraState, restoreCamera, setFrameCap, yieldToUi, setOverlays, setCinecamIdle, setChatFocus, chatFocusPing, start, stop, setActivity, wakeIn, beginAwakening, playArrival, cancelArrival, setWakeProgress, igniteSpark, armKindle, kindleHold, camPushIn, camCreep, camPunch, camPullBack, awakenTurn, truthPulse, beginFlood, collapseFlood, endAwakening, releaseAwakening, awakeningHeld, say, focusAgent, getActivity: () => activity, getUse: () => (agent ? agent.usingProp : null), setOnClick, setOnArcade, setOnOutbox, setOnMissionBoard, setOnTrophyCase, setOnPluginTerminal, setOnDesk, setOnBayAssign, setOnIntakeFeed, setOnIntakeSample, refit, pauseBridge, resumeBridge, linkState, _dbgSeedRun, _dbgAgeRun, _dbgReconcile, _dbgSweep, _dbgSendTo, _dbgLinkState, _dbgDropBridge, _dbgCurveState, _dbgLoseCurveContext, _dbgLoseCanvases, _dbgCanvasLoss, _dbgKillStageContext, _dbgStageState, _dbgBeltLegibility, _dbgPropClientPoint, _dbgDeskClientPoint, _dbgSleep, _dbgUseProp, _dbgArrive, _dbgLeisure,
+    loadStation, spawn, spawnAgent, despawnAgent, setSkin, relabel, setActivityFor, agentRunsLive, dropRun: dropRunFromPage, focusBody, lockBody, cameraMode, cameraState, restoreCamera, setFrameCap, yieldToUi, setOverlays, setCinecamIdle, setCinecamRest, setIdleRenderer, idleRendererOn: () => idleRenderer, setChatFocus, chatFocusPing, start, stop, setActivity, wakeIn, beginAwakening, playArrival, cancelArrival, setWakeProgress, igniteSpark, armKindle, kindleHold, camPushIn, camCreep, camPunch, camPullBack, awakenTurn, truthPulse, beginFlood, collapseFlood, endAwakening, releaseAwakening, awakeningHeld, say, focusAgent, getActivity: () => activity, getUse: () => (agent ? agent.usingProp : null), setOnClick, setOnArcade, setOnOutbox, setOnMissionBoard, setOnTrophyCase, setOnPluginTerminal, setOnDesk, setOnBayAssign, setOnIntakeFeed, setOnIntakeSample, refit, pauseBridge, resumeBridge, linkState, _dbgSeedRun, _dbgAgeRun, _dbgReconcile, _dbgSweep, _dbgSendTo, _dbgLinkState, _dbgDropBridge, _dbgCurveState, _dbgLoseCurveContext, _dbgLoseCanvases, _dbgCanvasLoss, _dbgKillStageContext, _dbgStageState, _dbgBeltLegibility, _dbgPropClientPoint, _dbgDeskClientPoint, _dbgSleep, _dbgUseProp, _dbgArrive, _dbgLeisure,
     // AGENT GROWTH: XpStore pushes pre-computed Xp.compute() snapshots here; pulseLevelUp fires
     // the addressed body's gold ring. The colony headline is the top-bar STATION chip.
     setXp: (agentId, a) => {
@@ -12381,7 +12635,7 @@ const World = (() => {
     // read-only camera truth for the DEV verify harness (+ the war-room HUD chip): who drives the camera
     // ('manual' | 'lock' = session follow | 'auto' = idle cinecam), which body is locked, and how long the
     // Commander has been hands-off. Pure read, no side effects — the testapi idiom.
-    cameraDbg: () => ({ mode: cameraMode(), lockId: camLock ? camLock.id : null, source: camLock ? camLock.source : null, idleMs: Math.round(performance.now() - camUserAt), thresholdMs: cineIdleMs, scale: +scale.toFixed(3), panX: Math.round(panX), panY: Math.round(panY), gates: { anim: !!camAnim, frozen: awakeFrozen, cache: !!cache, reduceMotion: reduceMotion() } }),
+    cameraDbg: () => ({ mode: cameraMode(), lockId: camLock ? camLock.id : null, source: camLock ? camLock.source : null, idleMs: Math.round(performance.now() - camUserAt), idleRenderer, cineRested: cineRested(performance.now()), crewSettled: crewSettledCount(), thresholdMs: cineIdleMs, scale: +scale.toFixed(3), panX: Math.round(panX), panY: Math.round(panY), gates: { anim: !!camAnim, frozen: awakeFrozen, cache: !!cache, reduceMotion: reduceMotion() } }),
     // TEST/DEBUG ONLY — the D3 border-meeting pure geometry (sharedEdge/borderTileFor), exposed read-only for the
     // DEV harness. No world state touched (both are pure; borderTileFor takes an injected walkable predicate).
     // The headless coverage lives in test/social-border.test.js (extracts the D3-PURE-GEOMETRY block from source).

@@ -27,6 +27,12 @@ const pathDefault = require('path');
 const crypto = require('crypto');
 // failopen.note — the tagged SYNC swallow: a fail-open catch must never be invisible.
 const { note: failNote } = require('./failopen.js');
+// the quarantine, the repair temp's name and its sweep, and the evidence names are persist's (one grammar)
+const persist = require('./persist/index.js');
+// the bare attachment source, the one taint stamp that decays: analyze() must not let it hide a later source (taint-replay.js)
+const { ATTACHMENT_TAINT } = require('./taint.js');
+// the quote capacity and the one forget rule (frontend/app/turnkinds.js, the module the page and the store share)
+const TurnKinds = require('../frontend/app/turnkinds.js');
 
 const VERSION = 1;
 const MAX_STRING = 200000;
@@ -57,6 +63,32 @@ function isSecretKey(key) {
   return /^(?:password|passwd|passphrase|token|secret|api_key|authorization|cookie|credentials?|private_key)$/.test(norm)
     || /(?:^|_)(?:password|passwd|passphrase|token|secret|api_key|authorization|cookie|credentials?|private_key)(?:_|$)/.test(norm);
 }
+/* A 'quotes' RECORD (turn identity commit 11): the sessions a run has read, { streams: [{ id, at }], saturatedAt? }. A stream id is a
+   workstream id (validated, never a secret), so it is NOT run through the redactor that rewrites long token-shaped strings: a redacted
+   id would fail OPEN (a recovery that no longer recognises a deleted session). Anything that is not a valid id or time is dropped. */
+const QUOTE_SID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const isTime = v => Number.isSafeInteger(v) && v >= 0;
+function quotesPayload(payload) {
+  const out = {}, streams = [];
+  for (const e of Array.isArray(payload && payload.streams) ? payload.streams : []) {
+    const id = e && typeof e.id === 'string' ? e.id : '';
+    if (!QUOTE_SID_RE.test(id) || streams.length >= TurnKinds.QUOTES_MAX) continue;
+    streams.push({ id, at: isTime(e.at) ? e.at : 0 });
+  }
+  if (streams.length) out.streams = streams;
+  if (payload && isTime(payload.saturatedAt)) out.saturatedAt = payload.saturatedAt;
+  return out;
+}
+/* The ONE forget verdict of a journal's quotes: the state analyze() derived (quotes [{ id, at }], quotesSaturatedAt) against the
+   deleted-session ledger, by the same rule as a row's stamp (TurnKinds.quotesForgotten). A recovery continuation replays this run's
+   context, tool results included, so it is refused once any of it came from a session deleted since the read. */
+function quotesForgotten(state, deletedAt, latestDeleteAt) {
+  if (!state) return false;
+  const stamp = TurnKinds.quoteStamp(state.quotes);
+  if (isTime(state.quotesSaturatedAt)) { stamp.quotes = ['*']; stamp.quotesAt = [state.quotesSaturatedAt]; }
+  return TurnKinds.quotesForgotten(stamp, deletedAt, latestDeleteAt);
+}
+
 function cloneSafe(value, redact, depth, key) {
   if (depth > 20) return '[depth limit]';
   // Credential containers are as sensitive as credential scalars. Check the key before branching on value type.
@@ -123,6 +155,30 @@ function writeAll(fs, fd, data) {
     at += n;
   }
 }
+function closeNoted(fs, fd, tag) { try { fs.closeSync(fd); } catch (e) { failNote(tag, e); } }
+// The same owned, flushed copy as every forensic store: a failed open must never delete someone else's evidence.
+function copyEvidence(fs, from, to) {
+  const copied = persist.copyExclusive(fs, from, to);
+  if (copied === true) return;
+  if (copied === 'taken') throw Object.assign(new Error('run journal evidence already exists: ' + to), { code: 'EEXIST' });
+  throw copied.error;
+}
+// Windows may reject a replace-existing rename: rewrite the active file in place instead, so its discoverable pathname
+// is kept throughout; the evidence copy made first lets the next boot recover even if power fails during this rewrite
+function rewriteInPlace(fs, filePath, body) {
+  let active = null;
+  try {
+    active = fs.openSync(filePath, 'r+');
+    const bytes = Buffer.from(body, 'utf8');
+    let at = 0;
+    while (at < bytes.length) {
+      const n = fs.writeSync(active, bytes, at, bytes.length - at, at);
+      if (!(n > 0)) throw new Error('run journal repair short write');
+      at += n;
+    }
+    fs.ftruncateSync(active, bytes.length); fs.fsyncSync(active);
+  } finally { if (active != null) closeNoted(fs, active, 'run-journal.repair.close'); }
+}
 
 function makeFsIo(opts) {
   const fs = opts.fs || fsDefault;
@@ -149,7 +205,8 @@ function makeFsIo(opts) {
     read(runId) { return fs.readFileSync(file(runId), 'utf8'); },
     fileOf(runId) { return file(runId); },
     // Durable damage evidence left by an earlier repair of this journal: a `.corrupt*` sibling (forensic) or a
-    // `.torn-*` sibling (a torn tail was cut off; still actionable). Temp `.repair-*` leftovers are not evidence.
+    // `.torn-*` sibling (a torn tail was cut off; still actionable). Repair temps (persist's `.<pid>.<nonce>.tmp`, the
+    // legacy `.repair-*`) are not evidence.
     evidence(filePath) {
       const prefix = path.basename(filePath) + '.';
       const out = { corrupt: false, torn: false };
@@ -222,44 +279,40 @@ function makeFsIo(opts) {
         for (const n of fs.readdirSync(dir)) if (n.indexOf(prefix) === 0) fs.unlinkSync(path.join(dir, n));
       } catch (e) { failNote('run-journal.remove.torn-copy', e); }
     },
+    // A journal with no valid record moves to the first free <journal>.corrupt-<n> (persist: a second incident never
+    // replaces the first copy). null when it could not be moved: it stays where it was, and the next pass tries again.
     quarantine(filePath) {
-      const to = filePath + '.corrupt';
-      try { fs.renameSync(filePath, to); } catch (_) {}
-      return to;
+      const moved = persist.moveAside({ fs }, filePath, persist.names.LABELS.CORRUPT);
+      if (moved.ok) return moved.to;
+      if (!moved.absent) failNote('run-journal.quarantine', moved.error);
+      return null;
     },
     repair(filePath, records, kind) {
       const nonce = crypto.randomBytes(5).toString('hex');
-      // The sibling's NAME is the durable damage class: `.torn-*` (only the final record was cut off; the journal
-      // stays actionable) vs `.corrupt-*` (forensic-only). It is written before the active file is replaced, so a
-      // crash mid-repair can never leave an actionable journal whose damage evidence says otherwise.
-      const backup = filePath + (kind === 'torn' ? '.torn-' : '.corrupt-') + nonce;
-      const tmp = filePath + '.repair-' + nonce;
+      // The sibling's NAME is the durable damage class: `.torn-r*` (only the final record was cut off; the journal
+      // stays actionable) vs `.corrupt-r*` (forensic-only); the letter keeps it from ever reading as a numbered
+      // quarantine (persist names). It is written before the active file is replaced, so a crash mid-repair can never
+      // leave an actionable journal whose damage evidence says otherwise.
+      const backup = persist.names.evidenceFor(filePath, kind, nonce);
+      // persist's temp grammar (<journal>.<pid>.<nonce>.tmp): every failure below removes it, and a crashed repair's
+      // temp goes once its writer is dead (persist.sweep, after this attempt)
+      const tmp = persist.names.tempFor(filePath, process.pid, nonce);
       const body = records.map(r => JSON.stringify(r)).join('\n') + '\n';
-      let fd = null;
+      let pending = false;   // this repair's temp is on disk
       try {
-        fd = fs.openSync(tmp, 'wx'); writeAll(fs, fd, body); fs.fsyncSync(fd);
-      } finally { if (fd != null) { try { fs.closeSync(fd); } catch (_) {} } }
-      fs.copyFileSync(filePath, backup);     // preserve the forensic original without removing the active path
-      try {
-        fs.renameSync(tmp, filePath);        // atomic replacement on platforms that support replace-existing
-      } catch (_) {
-        // Windows may reject replace-existing rename. Keep the discoverable active pathname throughout the
-        // fallback; the forensic backup above lets the next boot recover even if power fails during this rewrite.
-        let active = null;
+        let fd = null;
+        try { fd = fs.openSync(tmp, 'wx', 0o600); pending = true; writeAll(fs, fd, body); fs.fsyncSync(fd); }
+        finally { if (fd != null) closeNoted(fs, fd, 'run-journal.repair.close'); }
+        copyEvidence(fs, filePath, backup);   // preserve the forensic original without removing the active path
         try {
-          active = fs.openSync(filePath, 'r+');
-          const bytes = Buffer.from(body, 'utf8');
-          let at = 0;
-          while (at < bytes.length) {
-            const n = fs.writeSync(active, bytes, at, bytes.length - at, at);
-            if (!(n > 0)) throw new Error('run journal repair short write');
-            at += n;
-          }
-          fs.ftruncateSync(active, bytes.length); fs.fsyncSync(active);
-        } finally {
-          if (active != null) { try { fs.closeSync(active); } catch (__) {} }
-          try { fs.unlinkSync(tmp); } catch (__) {}
+          fs.renameSync(tmp, filePath);        // atomic replacement on platforms that support replace-existing
+          pending = false;
+        } catch (renameError) {
+          rewriteInPlace(fs, filePath, body);
         }
+      } finally {
+        if (pending) { try { fs.unlinkSync(tmp); } catch (e) { if (!e || e.code !== 'ENOENT') failNote('run-journal.repair.temp', e); } }
+        try { persist.sweep({ fs, path }, filePath); } catch (e) { failNote('run-journal.repair.sweep', e); }
       }
       return backup;
     }
@@ -320,8 +373,22 @@ function analyze(records, corrupt, damage) {
   let finishPayload = null;
   let continuation = null;
   let taintedBy = '';           // first durable taint latch (a 'taint' record) — see makeRunJournal.taint
+  let otherTaint = '';          // the first one that is not the bare attachment stamp (taint.js ATTACHMENT_TAINT), which must not hide a later source
+  const quoted = new Map();     // streamId -> the earliest read epoch (the 'quotes' records)
+  let quotesSaturatedAt = null; // set once a 'quotes' record says the run could not record everything it read
   for (const r of records) {
-    if (r.type === 'taint' && !taintedBy && r.payload && r.payload.source) taintedBy = String(r.payload.source).slice(0, 200);
+    if (r.type === 'taint' && r.payload && r.payload.source) {
+      const source = String(r.payload.source).slice(0, 200);
+      if (!taintedBy) taintedBy = source;
+      if (!otherTaint && source !== ATTACHMENT_TAINT) otherTaint = source;
+    }
+    if (r.type === 'quotes' && r.payload) {
+      for (const e of Array.isArray(r.payload.streams) ? r.payload.streams : []) {
+        const id = e && typeof e.id === 'string' && QUOTE_SID_RE.test(e.id) ? e.id : '', at = e && isTime(e.at) ? e.at : 0;
+        if (id && (!quoted.has(id) || at < quoted.get(id))) quoted.set(id, at);
+      }
+      if (isTime(r.payload.saturatedAt)) quotesSaturatedAt = quotesSaturatedAt === null ? r.payload.saturatedAt : Math.min(quotesSaturatedAt, r.payload.saturatedAt);
+    }
     if (r.type === 'checkpoint') {
       if (r.payload && r.payload.phase === 'initial' && !baseCheckpoint) baseCheckpoint = r.payload;
       else {
@@ -379,6 +446,12 @@ function analyze(records, corrupt, damage) {
       uncertain.push(pending);
     }
   }
+  // more than the capacity can only be a saturated run: never a cut list
+  if (quoted.size > TurnKinds.QUOTES_MAX) {
+    const earliest = Math.min(...quoted.values());
+    quotesSaturatedAt = quotesSaturatedAt === null ? earliest : Math.min(quotesSaturatedAt, earliest);
+    quoted.clear();
+  }
   const terminal = finishPayload !== null;
   const transcriptAck = !!(terminal && finishPayload.transcriptAck === true);
   if (latestCheckpoint) {
@@ -409,6 +482,7 @@ function analyze(records, corrupt, damage) {
   // acknowledgement was durably recorded first (the same order finishAndRetire uses for an ordinary run).
   const continuationSettled = !!(exposedContinuation && exposedContinuation.state === 'finished'
     && exposedContinuation.transcriptAck === true);
+  const begun = first && first.type === 'begin' && first.payload && first.payload.initialTaint ? String(first.payload.initialTaint).slice(0, 200) : '';   // the taint the run STARTED with
   return {
     runId: first ? first.runId : '', records: records.length, corrupt: !!corrupt || deltaMismatch, terminal,
     damage: damageClass, forensic,
@@ -420,9 +494,13 @@ function analyze(records, corrupt, damage) {
       || (continuationSettled && (status === 'resolved' || status === 'resumable'))),
     meta: first && first.type === 'begin' ? first.payload : {},
     // UNTRUSTED-CONTENT TAINT the run carried (begin meta's initialTaint, else its first mid-run latch). A recovery
-    // continuation replays this run's context, so it must start with the same taint (index.js replayedTaint).
-    taintedBy: (first && first.type === 'begin' && first.payload && first.payload.initialTaint
-      ? String(first.payload.initialTaint).slice(0, 200) : '') || taintedBy || null,
+    // continuation replays this run's context, so it must start with the same taint (index.js replayedTaint). The bare
+    // attachment stamp never hides a later source: a run that began holding an attachment and then read a page reports the
+    // page (index.js latchRunTaint journals it), so the continuation's rows carry a stamp that does not decay.
+    taintedBy: (begun !== ATTACHMENT_TAINT && begun) || otherTaint || begun || taintedBy || null,
+    // THE SESSIONS THIS RUN READ ('quotes' records, written before the tool_result record they cover): [{ id, at }] and, once the run
+    // could not record everything it read, the time it saturated. A continuation seeds its latch from these; a delete since refuses it.
+    quotes: Array.from(quoted, ([id, at]) => ({ id, at })), quotesSaturatedAt,
     firstTs: first ? Number(first.ts) || 0 : 0, lastTs: last ? Number(last.ts) || 0 : 0,
     uncertain, replayableReads, replayablePrepared, completed, recoveryAttempts,
     baseCheckpoint: baseCheckpoint || {}, deltaCheckpoint: latestCheckpoint || {},
@@ -471,7 +549,7 @@ function makeRunJournal(opts) {
     if (!runId) throw new Error('run journal runId is required');
     if (!fresh && !live.has(runId)) adopt(runId);
     const prior = live.get(runId) || { seq: 0, hash: '' };
-    const r = { v: VERSION, runId, seq: prior.seq + 1, ts: now(), type, payload: cloneSafe(payload || {}, redact, 0), prev: prior.hash };
+    const r = { v: VERSION, runId, seq: prior.seq + 1, ts: now(), type, payload: type === 'quotes' ? quotesPayload(payload) : cloneSafe(payload || {}, redact, 0), prev: prior.hash };
     r.hash = hashRecord(r);
     const line = JSON.stringify(r);
     if (fresh) io.create(runId, line); else io.append(runId, line);
@@ -565,9 +643,27 @@ function makeRunJournal(opts) {
     heads.set(base, h);
     return h;
   }
+  /* A journal that cannot be READ right now (EBUSY/EACCES/EPERM: an antivirus scan or another process holds it, or it
+     is gone since it was listed) is not damage, so it is never repaired or moved aside: persist's errno policy, where
+     unreadable is never empty and never corrupt. It gets no live entry and keeps its cached head, and it carries no
+     identity, so the boot walk skips it and the next walk or listing reads it again. Every route that acts on a journal
+     refuses one with a repairError (resolve, continue, adopt), so it is listed for nothing until it reads. */
+  function unreadableState(file, err) {
+    const state = analyze([], false, 'none');
+    state.file = file;
+    state.unreadable = true;
+    state.readError = String((err && err.code) || (err && err.message) || err);
+    state.repairError = 'run journal could not be read (' + state.readError + '); left in place and read again on the next pass';
+    return state;
+  }
   function recoverFile(file, rawText, evidenceOf) {
+    let raw = rawText;
+    if (raw == null) {
+      try { raw = io.readFile(file); }
+      catch (e) { return unreadableState(file, e); }
+    }
     let parsed;
-    try { parsed = parseRecords(rawText != null ? rawText : io.readFile(file)); }
+    try { parsed = parseRecords(raw); }
     catch (_) { parsed = { records: [], corrupt: true, damage: 'corrupt' }; }
     const state = analyze(parsed.records, parsed.corrupt, parsed.damage);
     state.file = file;
@@ -598,6 +694,9 @@ function makeRunJournal(opts) {
     toolResult(runId, payload) { return record(runId, 'tool_result', payload); },
     // the run's taint latched mid-run (untrusted content entered its context); additive record type
     taint(runId, payload) { return record(runId, 'taint', payload); },
+    // the sessions this run has read ({ streams: [{ id, at }], saturatedAt? }); written BEFORE the tool_result record it covers, so a journal
+    // that holds a read's result always holds its quote (additive record type, index.js latchRunQuotes)
+    quotes(runId, payload) { return record(runId, 'quotes', payload); },
     finish(runId, payload) { return record(runId, 'finish', payload); },
     resolve(runId, payload) {
       payload = payload || {};
@@ -748,4 +847,4 @@ function makeRunJournal(opts) {
   };
 }
 
-module.exports = { makeRunJournal, makeFsIo, DISPATCH_BOUNDARY_MODEL, _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll, leafSignature, sameSignature } };
+module.exports = { makeRunJournal, makeFsIo, DISPATCH_BOUNDARY_MODEL, quotesForgotten, _internals: { parseRecords, analyze, hashRecord, runFileName, cloneSafe, writeAll, leafSignature, sameSignature } };

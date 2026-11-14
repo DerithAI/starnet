@@ -82,6 +82,12 @@
   'use strict';
   // plain words for an unclean end, the machine reason kept in brackets (sidecar/stop-reason.js)
   const incompleteRunMessage = (typeof require === 'function') ? require('./stop-reason.js').incompleteRunMessage : (r) => 'run ended without completion: ' + (r || 'missing terminal outcome');
+  // TYPED OUTCOMES: how an iteration ended, read through the ONE resolver every surface shares (frontend/app/runoutcome.js)
+  const RunOutcome = (typeof require === 'function') ? require('../frontend/app/runoutcome.js') : ((typeof globalThis !== 'undefined' && globalThis.RunOutcome) || null);
+  // one run's reply, joined the way every reply sink joins it (a steering echo reads '↪ <note>', never the raw marker). Pure.
+  const replyAssembler = (typeof require === 'function') ? require('./reply-assembler.js') : (root.SK && root.SK.replyAssembler);
+  // an error the router made for a saved floor that cannot be proved right now -> { status, why }, else null (routing/saved-hold.js, a leaf)
+  const holdOf = (typeof require === 'function') ? require('./routing/saved-hold.js').holdOf : (e) => (e && e.held === true ? { status: 'unreadable', why: String(e.why || 'the saved floor cannot be proved right now') } : null);
 
   const DEFAULT_MAX_PARALLEL = 0;          // unlimited; positive values opt into a ceiling
   const DEFAULT_MAX_RUN_MS = 900000;      // 15 min — the zombie-claim ceiling, extended by live heartbeats
@@ -162,7 +168,9 @@
        night-shift, workshop and interactive paths do. This is what makes an agent STAY LIT at its desk:
        GET /api/state/snapshot is built from that registry, and the world's reconnect reconcile clears any
        agent absent from it — so without this, reloading the app mid-iteration darkens an agent that is
-       genuinely still working. It also lets /api/cancel target a single loop pass. */
+       genuinely still working. It also lets /api/cancel target a single loop pass. A new host may return a
+       release callback from trackRun; that admission lasts through the actual context/run/check/harvest work.
+       Older hosts keep untrackRun's existing durable-settlement timing. */
     const trackRun = isFn(deps.trackRun) ? deps.trackRun : null;
     const untrackRun = isFn(deps.untrackRun) ? deps.untrackRun : null;
 
@@ -248,7 +256,7 @@
         return false;
       }
       leases.delete(loopId);
-      if (untrackRun && !(lease && lease.untracked)) { try { untrackRun(runId); } catch (_) {} }   // the desk goes quiet only when the pass really ends
+      if (untrackRun && !(lease && (lease.untracked || isFn(lease.releaseRun)))) { try { untrackRun(runId); } catch (_) {} }   // legacy host; returned registrations end with their physical pipeline below
       const loop = store.getLoop(next, loopId);
       const it = loop && (loop.iterations || []).slice().reverse().find(x => String(x.runId) === String(runId));
       note(result.status === 'ok' ? 'act' : 'decline', loop, {
@@ -312,6 +320,21 @@
         return false;
       }
 
+      /* THE ROOM IS NAMED BEFORE THE SLOT IS TAKEN. stationFor throws a typed hold when the saved floor cannot be proved right now. The host's precheck
+         usually stood this tick down already; this covers a floor that went held after it. Asked after the claim, the hold settled the pass as a FAILED
+         one (iteration failed before launch), and three of those PAUSED the objective: a hold is no failure, so the tick stands down here with no claim,
+         no iteration and nothing on the record, in the hold's own words. Any other throw is not ours to hide: it keeps its old place in launch, where it
+         fails the pass loudly. */
+      let station, stationFault = null;
+      if (deps.stationFor) {
+        try { station = deps.stationFor(loop.agentId); }
+        catch (e) {
+          const held = holdOf(e);
+          if (held) { noteStandDown('skip', loop, nowMs, { reason: 'precheck', binding: 'precheck', detail: { note: held.why } }); return false; }
+          stationFault = e;
+        }
+      }
+
       const runId = String(newId());
 
       // 1. durable claim, persisted BEFORE anything is launched.
@@ -330,12 +353,27 @@
       const fresh = store.getLoop(getLoops(), loop.id) || loop;
       const iterN = fresh.iterationCount;
       const ac = newAbort();
-      leases.set(loop.id, { runId: runId, abort: ac, startedAt: nowMs, beatAt: nowMs });
-      if (trackRun) { try { trackRun(runId, fresh.agentId, ac); } catch (_) {} }
+      const ownedLease = { runId: runId, abort: ac, startedAt: nowMs, beatAt: nowMs };
+      leases.set(loop.id, ownedLease);
+      if (trackRun) {
+        try { const release = trackRun(runId, fresh.agentId, ac); if (isFn(release)) ownedLease.releaseRun = release; }
+        catch (e) { note('decline', fresh, { runId, reason: 'track-run-failed', binding: 'internal', detail: { err: String((e && e.message) || e) } }); }
+      }
       // take the pre-iteration snapshot NOW (before any work), so the check can tell what THIS iteration
       // changed rather than inheriting every uncommitted edit from earlier iterations. A snapshot failure is
       // not fatal — it degrades the verdict to "cannot prove", which loopcheck already treats as unsafe.
       const beforeP = snapshot ? Promise.resolve().then(() => snapshot(fresh)).catch(() => null) : Promise.resolve(null);
+      let pipelineStarted = false;
+      function releaseTracked() {
+        if (!isFn(ownedLease.releaseRun) || ownedLease.trackingReleased) return;
+        ownedLease.trackingReleased = true;
+        // Snapshot work can outlive a failed context/model path. Keep that work counted, without changing
+        // settlement or blocking its caller. Capture this generation's lease, never the current map entry.
+        beforeP.then(() => {
+          try { ownedLease.releaseRun(); }
+          catch (e) { note('decline', fresh, { runId, reason: 'release-run-failed', binding: 'internal', detail: { err: String((e && e.message) || e) } }); }
+        });
+      }
 
       /* the per-run EMIT SINK, mirroring cron-driver's. It does three load-bearing jobs:
 
@@ -348,11 +386,12 @@
             the Commander to approve work that never happened.
          3. VISIBILITY. Forwards to the injected tee so an unattended iteration is observable live, in exactly
             the redacted shape the host already applies to other autonomous runs. */
-      // `buf` accumulates the streamed reply. runOnce does NOT return the assistant text (it resolves with
+      // The assembler keeps the streamed reply. runOnce does NOT return the assistant text (it resolves with
       // {reason, messages, usd, turns, …}), so the token stream is where the iteration's own account of its
       // work comes from — the same way cron-driver captures it. This is what the convergence reader and the
       // candidate title are read from, so without it every candidate is titleless and NOTHING-TO-DO is never seen.
-      const state = { buf: '', errMsg: null, reason: null, cancelled: false, toolsRan: 0 };   // toolsRan: an empty end after tool steps is not "nothing was done"
+      const state = { errMsg: null, reason: null, cancelled: false };
+      const assembler = replyAssembler.makeReplyAssembler();
       const sink = function (name, payload) {
         const p = payload || {};
         const lease = leases.get(loop.id);
@@ -363,12 +402,14 @@
             try { setLoops(store.renewHeartbeat(getLoops(), loop.id, { now: lease.beatAt })); } catch (_) {}
           }
         }
-        if (name === 'agent.token') { state.buf += (p.delta || ''); return; }   // accumulated here; never teed out
-        if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; }
-        if (name === 'agent.run.error') state.errMsg = p.message || 'run error';
+        if (assembler.feed(name, p) === 'token') return;   // accumulated there; never teed out
+        // the iteration's OWN run settles it (typed-outcomes, the /v1 rule): a worker it delegated to forwards its error/end here
+        const lead = !p.runId || String(p.runId) === String(runId);
+        if (name === 'agent.run.error') { if (lead) state.errMsg = p.message || 'run error'; }
         else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
-        else if (name === 'agent.run.end') {
+        else if (name === 'agent.run.end' && lead) {
           state.reason = p.reason;
+          state.end = p;   // the end as the station stamped it (outcome, finishReason)
           if (p.reason === 'cancelled') state.cancelled = true;
         }
         if (tee) { try { tee(name, p, { loopId: loop.id, runId: runId, iteration: iterN }); } catch (_) {} }
@@ -388,7 +429,10 @@
          blind "0 findings" would be counted as convergence. */
       // No context dep (or a loop with no folder) launches SYNCHRONOUSLY, exactly as before — the async hop
       // exists only where there is something real to resolve first, so the common path keeps its old timing.
-      if (!context) return launch('');
+      if (!context) {
+        try { return launch(''); }
+        finally { if (!pipelineStarted) releaseTracked(); }
+      }
 
       const ctxP = Promise.resolve().then(() => context(fresh))
         .catch(e => ({ reachable: false, why: 'project scan failed: ' + ((e && e.message) || e) }));
@@ -412,12 +456,13 @@
         note('decline', fresh, { runId: runId, reason: 'context-threw', binding: 'internal', detail: { err: String((e && e.message) || e).slice(0, 200) } });
         try { settle(loop.id, runId, { status: 'error', error: 'iteration failed before launch: ' + ((e && e.message) || e) }); }
         catch (_) { try { leases.delete(loop.id); } catch (__) {} }
-      });
+      }).finally(() => { if (!pipelineStarted) releaseTracked(); });
       return true;
 
       function launch(snapshotText) {
       const currentLease = leases.get(loop.id);
       if (!currentLease || currentLease.runId !== runId || (ac.signal && ac.signal.aborted)) return false;
+      if (stationFault) throw stationFault;   // a room read that failed for any reason but a hold (see above): the pass fails before launch, as it always did
       /* THE TOOLS WORK WHERE THE AGENT IS TOLD IT WORKS (run-paths lane). The project line tells the agent this loop
          works in its folder, but the run was never given that folder, so fs.* and shell.* resolved relative paths in
          the private workspace. The folder rides as the run's WORKDIR exactly when the host's projectLine names it (the
@@ -443,7 +488,7 @@
         streamId: 'loop-' + fresh.id,          // one durable stream per LOOP, so its iterations share a thread
         surface: 'autonomous',
         trigger: 'loop',
-        station: deps.stationFor ? deps.stationFor(fresh.agentId) : undefined,
+        station: station,   // read above, before the claim
         // a per-iteration USD ceiling, when the Commander set one. 0 = ungoverned (budgetcaps.js semantics).
         maxCostUsd: (fresh.budget && fresh.budget.perIterationUsd) || undefined,
         emit: sink
@@ -451,7 +496,8 @@
 
       let p;
       try { p = runOnce(opts); } catch (e) {
-        settle(loop.id, runId, { status: 'error', error: (e && e.message) || 'run host threw' });
+        try { settle(loop.id, runId, { status: 'error', error: (e && e.message) || 'run host threw' }); }
+        finally { releaseTracked(); }
         return false;
       }
 
@@ -459,6 +505,7 @@
       // SYNCHRONOUSLY rejects this link rather than escaping the chain — an escaped throw here would be an
       // unhandled rejection that takes down a 24/7 process. The trailing .catch is the last-resort net: a
       // driver whose bookkeeping throws must degrade to a stranded lease, never to a dead sidecar.
+      pipelineStarted = true;
       Promise.resolve(p)
         .then(
           (res) => {
@@ -472,14 +519,20 @@
             if (state.cancelled) return settle(loop.id, runId, { status: 'error', cancelled: true, error: 'cancelled' });
             if (state.errMsg) return settle(loop.id, runId, { status: 'error', error: state.errMsg });
             const terminalReason = String(state.reason || (res && res.reason) || '');
-            if (terminalReason !== 'done') {
+            // only a SUCCEEDED iteration reaches the check (RunOutcome): a provider-cut 'done' is unfinished work, not a candidate
+            const endSaid = state.end || (terminalReason ? { reason: terminalReason } : null);
+            const ended = RunOutcome ? RunOutcome.ofEnd(endSaid, null) : { outcome: terminalReason === 'done' ? 'succeeded' : 'failed' };
+            if (ended.outcome !== 'succeeded') {
+              // review r8: a pass whose run did not finish (asked, cut short, a limit, an empty reply, a refusal, a hold) settles as that
+              // outcome (unfinished), never a failed pass toward the failure pause; a stop stays cancelled, a failure failed
+              const unfinished = terminalReason !== 'cancelled' && ended.outcome !== 'failed' && ended.outcome !== 'stopped' ? ended.outcome : '';
               return settle(loop.id, runId, {
-                status: 'error', cancelled: terminalReason === 'cancelled',
-                error: incompleteRunMessage(terminalReason, { toolsRan: state.toolsRan || 0 })   // tools that ran: an 'empty' end may already have changed things
+                status: 'error', cancelled: terminalReason === 'cancelled', unfinished,
+                error: incompleteRunMessage(terminalReason, { toolsRan: assembler.toolsRan, finishReason: endSaid && endSaid.finishReason })   // tools that ran: an 'empty' end may already have changed things
               });
             }
             // hand the harvest the run result WITH the streamed text folded in (runOnce doesn't carry it).
-            const withText = Object.assign({}, res || {}, { text: (res && res.text) || state.buf });
+            const withText = Object.assign({}, res || {}, { text: (res && res.text) || assembler.text() });
             // RUN THE CHECK between the work and the settlement. A check that THROWS is not a pass and not a
             // silent skip — it becomes an explicit un-trusted verdict, because "we could not verify" must never
             // read as "verified fine".
@@ -525,7 +578,7 @@
           if (!live || live.runId !== runId) return;
           try { leases.delete(loop.id); } catch (_) {}
           note('decline', fresh, { runId: runId, reason: 'settle-threw', binding: 'internal', detail: { err: String((e && e.message) || e).slice(0, 200) } });
-        });
+        }).finally(releaseTracked);
       return true;
       }
     }

@@ -30,10 +30,10 @@ function removeTree(dir) {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
 }
 
-async function terminate(child, timeoutMs) {
+async function terminate(child, timeoutMs, signal) {
   if (!child || child.exitCode !== null || child.signalCode) return;
   const exited = new Promise(resolve => child.once('exit', resolve));
-  try { child.kill(); } catch (_) {}
+  try { child.kill(signal); } catch (_) {}
   await Promise.race([exited, sleep(timeoutMs || 1500)]);
   if (processAlive(child.pid)) {
     try { child.kill('SIGKILL'); } catch (_) {}
@@ -55,9 +55,11 @@ class SidecarFixture {
     this.entry = opts.entry || DEFAULT_ENTRY;
     this.args = Array.isArray(opts.args) ? opts.args.slice() : [];
     this.env = Object.assign({}, opts.env || {});
-    // Windows cold boots can exceed nine seconds while several isolated gates compete for disk.
-    // This bounds startup only; health/token checks and explicit timeout-failure scenarios still apply.
-    this.timeoutMs = Number(opts.timeoutMs) || (process.platform === 'win32' ? 30000 : 9000);
+    // A cold boot can exceed nine seconds while several isolated gates compete for disk, on any platform, so a rig naming a
+    // shorter limit still gets this one. Only a test of the timeout itself (timeoutUnderTest) goes under it. A child that dies
+    // fails at once whatever the limit. This bounds startup only; health/token checks still apply.
+    const askedMs = Number(opts.timeoutMs) || 0;
+    this.timeoutMs = opts.timeoutUnderTest ? askedMs : Math.max(askedMs, 30000);
     this.bindRetries = Number.isInteger(opts.bindRetries) ? Math.max(0, opts.bindRetries) : 3;
     this.portAllocator = opts.portAllocator || allocatePort;
     this.acquireToken = opts.acquireToken !== false;
@@ -97,7 +99,9 @@ class SidecarFixture {
     if (process.platform !== 'win32') hermeticProfile.HOME = this.profile;
     // A test-booted sidecar never makes the boot-time check of Microsoft's Edge voice (media-service.js
     // startFloorProbe): no live traffic from a gate. A test that wants the probe sets it back on in its env.
-    const quiet = { SKYNET_EDGE_TTS_PROBE: '0' };
+    // Readiness may ask the local CLI for auth status without a Settings page. Never discover a real
+    // installed account in a test fixture; callers testing CLI behavior can supply their fixture bin.
+    const quiet = { SKYNET_EDGE_TTS_PROBE: '0', STARNET_CLAUDE_BIN: path.join(this.profile, 'fixture-cli-absent.cmd') };
     const env = Object.assign({}, process.env, hermeticProfile, quiet, this.env, extraEnv || {}, {
       SKYNET_PORT: String(this.port),
       STARNET_PORT: String(this.port),
@@ -171,6 +175,14 @@ class SidecarFixture {
     const child = this.child;
     this.child = null;
     await terminate(child, 1500);
+  }
+
+  // A CRASH, not a stop. On POSIX stop() is SIGTERM: the sidecar's graceful shutdown ends and books every run, which leaves nothing
+  // to recover. On Windows both end the process outright. A scenario about an interrupted run calls this one.
+  async crash() {
+    const child = this.child;
+    this.child = null;
+    await terminate(child, 1500, 'SIGKILL');
   }
 
   async request(route, options) {

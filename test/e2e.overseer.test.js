@@ -6,7 +6,8 @@ const { SidecarFixture } = require('./helpers/sidecar-fixture.js');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 (async () => {
-  const provider = await require('./helpers/overseer-provider.js').startOverseerProvider({ reviewDelay: 1500 });
+  const providerOptions = { reviewDelay: 1500 };
+  const provider = await require('./helpers/overseer-provider.js').startOverseerProvider(providerOptions);
   const mock = provider.server;
   const fixture = SidecarFixture.create({ env: { SKYNET_OPENROUTER_BASE: 'http://127.0.0.1:' + mock.address().port + '/api/v1',
     SKYNET_OPENROUTER_KEY: 'sk-or-v1-local-proof', SKYNET_DEFAULT_MODEL: 'test/model', SKYNET_FULL_ACCESS: '1' } });
@@ -69,10 +70,21 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     assert.ok(runs.some(r => r.streamId === 'home' && /Reviewed findings/.test(r.deliveryText || '')), 'review delivered to original conversation');
     assert.equal(runs.find(r => r.streamId === 'home' && /Reviewed findings/.test(r.deliveryText || '')).deliveryPrompt, '', 'automatic review uses existing assistant delivery without a delegated-task marker');
     const childId = snapshot.threads.find(w => w.title === 'Research proof').id;
-    await fixture.restart(); await sleep(2600);
+    const publicReview = transcript.filter(m => m.kind === 'delivery' && m.sourceRunId === snapshot.reviews[0].reviewRunId);
+    assert.equal(publicReview.length, 1, 'the completed review has exactly one canonical public delivery');
+    // Crash after publication but before the done acknowledgement: restart must recover the same row.
+    await fixture.stop();
+    const firstStatePath = path.join(fixture.workspace, 'overseer.json');
+    const firstState = JSON.parse(fs.readFileSync(firstStatePath, 'utf8'));
+    firstState.value.reviews[0].status = 'reviewing';
+    fs.writeFileSync(firstStatePath, JSON.stringify(firstState));
+    await fixture.start(); await sleep(2600);
     snapshot = (await fixture.json('GET', '/api/overseer')).body;
     assert.ok(snapshot.threads.some(w => w.id === childId), 'child identity survives restart');
     assert.equal(snapshot.reviews[0].status, 'done'); assert.equal(provider.reviews(), 1, 'restart does not re-run completed review');
+    const restartedTranscript = (await fixture.json('GET', '/api/transcript?stream=home&limit=100')).body.turns;
+    assert.deepEqual(restartedTranscript.filter(m => m.kind === 'delivery' && m.sourceRunId === snapshot.reviews[0].reviewRunId), publicReview,
+      'lost done acknowledgement reuses the exact public row after process restart');
     const followup = await fixture.json('POST', '/api/run', { model: 'test/model', agentId: 'agent', streamId: 'home', isTask: true,
       messages: [{ role: 'user', content: 'Follow up in the existing research thread' }] });
     assert.equal(followup.status, 200);
@@ -145,12 +157,21 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     await fixture.stop();
     const beforeUpdate = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     beforeUpdate.value.paused = false;
+    // Two pending reviews, the provider holding any review it gets, and a forced prepare. The 2 s tick may start one before prepare
+    // arrives, and a live run rightly refuses a plain prepare: this test's red on a loaded box. One review runs at a time, so the
+    // held one keeps the other pending for as long as prepare takes, and that one is what polling must leave alone.
+    let releaseReviews;
+    providerOptions.reviewGate = new Promise(resolve => { releaseReviews = resolve; });
     beforeUpdate.value.reviews[0].status = 'pending';
+    beforeUpdate.value.reviews[beforeUpdate.value.reviews.length - 1].status = 'pending';
     fs.writeFileSync(statePath, JSON.stringify(beforeUpdate));
     await fixture.start();
-    const prepared = await fixture.json('POST', '/api/update/prepare', { targetVersion: '9.9.9' });
+    const prepared = await fixture.json('POST', '/api/update/prepare', { targetVersion: '9.9.9', force: true });
     assert.equal(prepared.body.ok, true, JSON.stringify(prepared.body));
     const frozenBytes = fs.readFileSync(statePath, 'utf8');
+    const frozenReviews = JSON.parse(frozenBytes).value.reviews.map(r => r.status);
+    assert.ok(frozenReviews.includes('pending'), 'a pending review is there for polling to start: ' + frozenReviews.join());
+    providerOptions.reviewGate = null; releaseReviews();
     await sleep(2600);
     assert.equal(fs.readFileSync(statePath, 'utf8'), frozenBytes, 'review polling cannot change state behind the pre-update snapshot');
     await fixture.json('POST', '/api/update/cancel', {});

@@ -29,6 +29,7 @@ function boot(opts) {
   Channels.reset();
   const page = { rail: 0, persisted: 0, loaded: [], delivered: [], repainted: 0, acks: [], save: null };
   const sandbox = {
+    TurnMerge: require('./helpers/turnmerge').TurnMerge,
     Workstreams, Channels,
     GoalLoop: require('../frontend/app/goalloop.js'),   // the shared goal-step predicate (org P29-sys wiring)
     App: {
@@ -41,7 +42,7 @@ function boot(opts) {
       pull: async () => opts.readBackFails ? null : page.save
     },
     Delegated: { repaint: () => page.repainted++ },
-    Chat: { deliverTurns: (ws, turns) => page.delivered.push({ id: ws.id, turns }), load: ws => page.loaded.push(ws.id), canFocusSession: opts.canFocusSession || (() => true) },
+    Chat: { deliverTurns: (ws, turns) => page.delivered.push({ id: ws.id, turns }), load: ws => page.loaded.push(ws.id), canFocusSession: opts.canFocusSession || (() => true), hydrateHistory: opts.hydrateHistory },
     U: opts.U || { bus: { on: () => {} } },
     VoiceLive: opts.voiceLive,
     fetch: async (url, init) => {
@@ -94,6 +95,29 @@ async function call(env, verb, args) {
   const out = await call(env, 'station.deliver', { sessionId: ws.id, agentId: 'agent', runId: 'cron-run-1', prompt: 'daily AI news', text: 'top stories…' });
   A.eq(out.ok, true, 'a routine result addressed by sessionId is delivered');
   A.eq(out.result.session, 'news', 'into the session the routine was made in');
+}
+
+// ---- a routine's return is a row the station wrote BEFORE it asked the page (turn identity, commit 10): the page row is keyed at once ----
+{
+  const env = boot();
+  const ws = env.W.create('news');
+  env.W.switch(env.W.generalId());
+  const out = await call(env, 'station.deliver', { sessionId: ws.id, streamId: ws.id, agentId: 'agent', runId: 'cron-run-7', prompt: 'daily AI news', text: 'top stories…', rowId: 4242, turnId: 'rcron-run-7' });
+  A.eq(out.ok, true, 'the return is folded');
+  const row = env.W.get(ws.id).history.find(r => r.role === 'assistant');
+  A.eq([row.rowId, row.turnId, row.streamId, row.sourceRunId], [4242, 'rcron-run-7', ws.id, 'cron-run-7'], 'the spliced page row carries the station row\'s id, its turn, its stream and its run: it is the same row as the station\'s, not a twin to be matched later');
+  const again = await call(env, 'station.deliver', { sessionId: ws.id, streamId: ws.id, agentId: 'agent', runId: 'cron-run-7', text: 'top stories…', rowId: 4242, turnId: 'rcron-run-7' });
+  A.eq([again.ok, again.result.reason, env.W.get(ws.id).history.filter(r => r.role === 'assistant').length], [true, 'already delivered', 1], 'a retry of the same return folds nothing twice');
+  // no row ids (a worker's delivery, an older sidecar) keeps today's shape exactly
+  const plain = await call(env, 'station.deliver', { streamId: ws.id, agentId: 'researcher', runId: 'run-9', text: 'worker words' });
+  const wrow = env.W.get(ws.id).history.find(r => r.content === 'worker words');
+  A.eq(['rowId' in wrow, 'turnId' in wrow], [false, false], 'a delivery that names no row adds no identity');
+  A.ok(plain.ok, 'and still folds');
+  // a session the page can only find by its TITLE is another stream: the station's row id there would name a stranger's row, so only the turn is taken
+  const other = env.W.create('Recap');
+  const byTitle = await call(env, 'station.deliver', { sessionId: 'ws_gone_away', streamId: 'ws_gone_away', sessionTitle: 'Recap', agentId: 'agent', runId: 'cron-run-8', text: 'found by title', rowId: 77, turnId: 'rcron-run-8' });
+  const trow = env.W.get(other.id).history.find(r => r.content === 'found by title');
+  A.eq([byTitle.ok, byTitle.result.resolvedBy, trow && trow.rowId, trow && trow.turnId, trow && trow.streamId], [true, 'title', undefined, 'rcron-run-8', other.id], 'resolved by title: no row id from another stream, the turn id and this session\'s own stream');
 }
 
 // ---- station.deliver: the worker's answer lands in the session the Commander named ----
@@ -199,7 +223,7 @@ for (const reason of ['done', 'budget', 'max_iters', 'aborted', 'error']) {
   A.eq(worker.history.map(m => m.content), ['{"ok":true}'], 'only the validated answer is visible');
   A.eq([worker.history[0].sourceRunId, worker.history[0].streamId], ['raw-run', worker.id], 'folded answer retains exact run and conversation ownership');
   const chatSource = fs.readFileSync(path.join(__dirname, '../frontend/app/chat.js'), 'utf8');
-  const merge = new Function('return (' + A.fnBody(chatSource, 'function mergeCanonicalHistory(local, turns)') + ')')();
+  const merge = new Function('return (' + require('./helpers/turnmerge').source('mergeCanonicalHistory') + ')')();
   const canonicalFinal = { ...worker.history[0], dispatchState: 'final', dispatchReason: 'done', rowId: 12 };
   A.eq(merge(JSON.parse(JSON.stringify(worker.history)), [canonicalFinal]).length, 1, 'newly folded answer is not duplicated by canonical restoration');
   A.eq(await env.S.reconcile(worker.id), 0, 'final delivery recovery is idempotent');
@@ -735,6 +759,52 @@ for (const text of ['', 'Older partial work.']) {
   A.eq(w.history.length, 0, '…and the session holds no truncated answer');
   hangTranscript = false;
   A.eq(await settled(env.S.reconcile(w.id)), 1, 'the next reconcile recovers the complete answer');
+}
+
+/* ---- a session whose SAVED history is packed (save v7: it names rows the station holds, the page has not read them back) ----
+   station.read_session must read them back before it reads out, station.deliver before it asks whether the answer is filed:
+   a lead told "no visible conversation yet" about a session the page simply has not read is the guess these verbs end ---- */
+{
+  const HR = require('../frontend/app/historyref.js');
+  const station = { 1: { rowId: 1, role: 'user', content: 'what did the researcher find?', ts: 1 }, 2: { rowId: 2, role: 'assistant', agentId: 'researcher', content: 'Phobos and Deimos.', sourceRunId: 'run-filed', ts: 2 } };
+  // the page's station-backed reader: the real expand over a fake transport that returns what it holds (ids in `lost` are never returned)
+  const reader = (lost) => async (ws) => {
+    const ref = ws.historyRef, out = await HR.expand(ref, { streamId: ws.id, fetchRows: async (_stream, ids) => ({ turns: ids.filter(id => station[id] && !(lost || []).includes(id)).map(id => Object.assign({}, station[id])) }) });
+    env.W.hydrate(ws, out.rows, { ref });
+    return { complete: !ws.historyRef };
+  };
+  let env = boot({ hydrateHistory: (ws) => env.reading(ws) });
+  const seed = () => env.W.init({ workstreams: [{ id: 'packed', title: 'research', history: [{ $ref: '1,1' }, { role: 'system', sys: true, content: '— a note —', ts: 3 }], runIds: [], createdAt: 1, lastActiveAt: 1, lastReadAt: 1 }], activeId: 'packed', generalId: 'packed' });
+
+  seed(); env.reading = reader();
+  const whole = await call(env, 'station.read_session', { session: 'research' });
+  A.eq(whole.ok, true, 'a packed session can be read');
+  A.eq(whole.result.turns.map(t => t.speaker + ':' + t.text), ['commander:what did the researcher find?', 'researcher:Phobos and Deimos.', 'station:— a note —'], 'its rows are read back first: the lead is told the whole conversation, in order');
+  A.eq([whole.result.incomplete, whole.result.note], [undefined, undefined], 'and nothing is flagged: it is whole');
+  A.eq(env.W.needsHydration('packed'), false, 'the page holds the rows now');
+
+  seed(); env.reading = reader([2]);
+  const part = await call(env, 'station.read_session', { session: 'research' });
+  A.eq(part.ok, true, 'a conversation the station could not return all of is still read out');
+  A.eq(part.result.turns.map(t => t.text), ['what did the researcher find?', '— a note —'], 'with the rows that came back');
+  A.eq(part.result.incomplete, true, 'and says it is incomplete');
+  A.ok(/could not be read back yet/.test(part.result.note) && !/no visible conversation/.test(part.result.note), 'in words that never claim there is nothing to read');
+
+  seed(); env.reading = async () => ({ complete: false });
+  env.W.get('packed').history.length = 0;
+  const none = await call(env, 'station.read_session', { session: 'research' });
+  A.eq(none.result.turns.length, 0, 'a session with no row held at all');
+  A.ok(none.result.incomplete === true && !/no visible conversation/.test(none.result.note), 'is never reported as "no visible conversation yet": the rows exist, the page could not read them');
+
+  // station.deliver: the answer this run already filed is in a packed row; it is read back before the filed check, so it is not filed twice
+  seed(); env.reading = reader();
+  const again = await call(env, 'station.deliver', { streamId: 'packed', agentId: 'researcher', runId: 'run-filed', text: 'Phobos and Deimos.' });
+  A.eq([again.ok, again.result.folded, again.result.reason], [true, false, 'already delivered'], 'a run whose answer is in a packed row is recognised as filed once the rows are back');
+  A.eq(env.W.get('packed').history.filter(m => m.role === 'assistant').length, 1, 'and the answer is in the conversation once');
+  seed(); env.reading = reader();
+  const fresh = await call(env, 'station.deliver', { streamId: 'packed', agentId: 'researcher', runId: 'run-new', text: 'A new finding.' });
+  A.eq([fresh.ok, fresh.result.folded], [true, true], 'a new answer is filed');
+  A.eq(env.W.get('packed').history.map(m => m.content), ['what did the researcher find?', 'Phobos and Deimos.', '— a note —', 'A new finding.'], 'after the whole conversation, not among the few rows the page kept');
 }
 
 A.report('station-commands.test');

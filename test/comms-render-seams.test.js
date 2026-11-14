@@ -180,10 +180,10 @@ const { makeStationControlTools } = require('../sidecar/tools/builtin/station-co
 {
   const src = read('frontend/app/chat.js');
   const extract = name => { const m = new RegExp('(  function ' + name + '\\([\\s\\S]*?\\n  \\})').exec(src); A.ok(m, 'chat.js defines ' + name + '()'); return m[1]; };
-  const esc = /const HTML_ESC = \{[^}]*\};/.exec(src);
+  const escapeOwner = require('../frontend/js/util.js');
   // eslint-disable-next-line no-new-func
-  const reportInline = new Function(esc[0] + '\n' + extract('escapeHtml') + '\n' + extract('linkify') + '\n' + extract('hostOf') + '\n'
-    + extract('linkHostNote') + '\n' + extract('reportInline') + '\nreturn reportInline;')();
+  const reportInline = new Function('U', extract('escapeHtml') + '\n' + extract('linkify') + '\n' + extract('hostOf') + '\n'
+    + extract('linkHostNote') + '\n' + extract('reportInline') + '\nreturn reportInline;')(escapeOwner);
   A.eq(reportInline('- Lean on *speed* first'), '- Lean on <span class="md-i">speed</span> first', 'a single-asterisk word is italic, not raw');
   A.eq(reportInline('what a developer actually *does* with it'), 'what a developer actually <span class="md-i">does</span> with it', 'the walk\'s "*does*" renders italic');
   A.eq(reportInline('*Run* it twice'), '<span class="md-i">Run</span> it twice', 'italic at the start of a line');
@@ -370,7 +370,7 @@ const { makeStationControlTools } = require('../sidecar/tools/builtin/station-co
       void p;
     }
     A.ok(/function deliverTurns\(ws, turns\) \{[\s\S]*?noteDeliveryLanding\(\);[\s\S]*?return true;\n  \}/.test(chat), 'a delivered answer landing in the open conversation (deliverTurns) is a delivery landing');
-    A.ok(/function deliverableLine\(title, agentId\) \{[\s\S]{0,120}noteDeliveryLanding\(\);/.test(chat) && /function imageDeliverableLine\(title, agentId\) \{[\s\S]{0,160}noteDeliveryLanding\(\);/.test(chat), 'so is a saved file or image line');
+    A.ok(/function deliverableLine\(title, agentId(?:, projectRoot)?\) \{[\s\S]{0,120}noteDeliveryLanding\(\);/.test(chat) && /function imageDeliverableLine\(title, agentId(?:, projectRoot)?\) \{[\s\S]{0,160}noteDeliveryLanding\(\);/.test(chat), 'so is a saved file or image line');   // (commit 10: a chip may carry the project root its relative path lives under)
   }
 
   A.report('comms-render-seams.test');

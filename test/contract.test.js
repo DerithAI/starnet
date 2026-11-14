@@ -73,8 +73,45 @@ A.ok(!events.validate('agent.run.start', { agentId: 'a' }).ok, 'missing required
 // The full trigger vocabulary the sidecar actually emits must VALIDATE: 'loop' (loopjob-driver) and
 // 'nightshift' were real emitted triggers outside the enum, so every validating emitter silently dropped
 // those runs' start events — the floor saw a loop run's middle and end but never its beginning.
-for (const trig of ['directive', 'schedule', 'event', 'loop', 'nightshift']) {
+// 'manual' (Run Now) joins them so a hand-started routine run stops borrowing 'schedule'.
+for (const trig of ['directive', 'schedule', 'event', 'loop', 'nightshift', 'manual']) {
   A.ok(events.validate('agent.run.start', { agentId: 'a', runId: 'r', trigger: trig, model: 'm' }).ok, "trigger '" + trig + "' validates");
+}
+// TYPED OUTCOMES (additive, 2026-10-29): agent.run.end may carry the run's outcome code (one closed vocabulary — the one
+// frontend/app/runoutcome.js resolves) and a failureCode; agent.run.error may carry the same failureCode. Optional on both:
+// an old payload that omits them stays valid, and an outcome outside the vocabulary is rejected.
+{
+  const RunOutcome = require('../frontend/app/runoutcome.js');
+  const end = { agentId: 'a', runId: 'r', reason: 'error', turns: 1, usd: 0 };
+  A.ok(events.validate('agent.run.end', end).ok, 'an end without an outcome stays valid');
+  for (const outcome of RunOutcome.OUTCOMES) A.ok(events.validate('agent.run.end', Object.assign({}, end, { outcome })).ok, "outcome '" + outcome + "' validates");
+  A.eq(events.EVENTS['agent.run.end'].properties.outcome.enum.slice().sort(), RunOutcome.OUTCOMES.slice().sort(), 'the contract enum is exactly the resolver vocabulary');
+  A.ok(events.validate('agent.run.end', Object.assign({}, end, { outcome: 'failed', failureCode: 'rate_limit' })).ok, 'a failed end carries its failureCode');
+  A.ok(!events.validate('agent.run.end', Object.assign({}, end, { outcome: 'probably_fine' })).ok, 'an outcome outside the vocabulary is rejected');
+  A.ok(!events.validate('agent.run.end', Object.assign({}, end, { failureCode: 429 })).ok, 'a failureCode is a string');
+  const err = { agentId: 'a', runId: 'r', message: 'codex http 429 — Rate limit reached', transient: true };
+  A.ok(events.validate('agent.run.error', err).ok, 'an error without a code stays valid');
+  A.ok(events.validate('agent.run.error', Object.assign({}, err, { failureCode: 'rate_limit' })).ok, 'an error carries its failureCode');
+  // (additive, review r7) cron.result: a fire someone STOPPED says 'stopped', never 'failed'; the fire's own outcome code, a failure's code and
+  // the auto-pause count ride beside the coarse word. An old payload stays valid; the code is the same closed vocabulary.
+  const fire = { jobId: 'j1', runId: 'r', outcome: 'failed', reason: 'error' };
+  A.ok(events.validate('cron.result', fire).ok, 'a cron.result without the new fields stays valid');
+  A.ok(events.validate('cron.result', { jobId: 'j1', runId: 'r', outcome: 'stopped', reason: 'cancelled', runOutcome: 'stopped' }).ok, "a stopped fire's cron.result validates");
+  for (const outcome of RunOutcome.OUTCOMES) A.ok(events.validate('cron.result', Object.assign({}, fire, { runOutcome: outcome })).ok, "cron.result runOutcome '" + outcome + "' validates");
+  A.eq(events.EVENTS['cron.result'].properties.runOutcome.enum.slice().sort(), RunOutcome.OUTCOMES.slice().sort(), 'cron.result runOutcome is exactly the resolver vocabulary');
+  A.ok(events.validate('cron.result', Object.assign({}, fire, { failureCode: 'rate_limit', pausedAfter: 5 })).ok, 'a failed fire carries its failureCode and the auto-pause count');
+  A.ok(!events.validate('cron.result', Object.assign({}, fire, { runOutcome: 'probably_fine' })).ok, 'a runOutcome outside the vocabulary is rejected');
+  A.ok(!events.validate('cron.result', Object.assign({}, fire, { pausedAfter: 'five' })).ok, 'pausedAfter is an integer');
+  // (additive, review 8.2) task: a worker someone STOPPED says 'stopped', one that asked 'asked', one that did not finish 'unfinished' — never
+  // 'failed'; the worker's own outcome code and a failure's code ride beside the coarse word. An old payload stays valid.
+  const task = { id: 'w1', agentId: 'a', status: 'failed', kind: 'subagent', title: 't' };
+  A.ok(events.validate('task', task).ok, 'a task event without the new fields stays valid');
+  for (const status of ['stopped', 'asked', 'unfinished']) A.ok(events.validate('task', Object.assign({}, task, { status })).ok, "task status '" + status + "' validates");
+  for (const outcome of RunOutcome.OUTCOMES) A.ok(events.validate('task', Object.assign({}, task, { outcome })).ok, "task outcome '" + outcome + "' validates");
+  A.eq(events.EVENTS.task.properties.outcome.enum.slice().sort(), RunOutcome.OUTCOMES.slice().sort(), 'task outcome is exactly the resolver vocabulary');
+  A.ok(events.validate('task', Object.assign({}, task, { outcome: 'failed', failureCode: 'rate_limit' })).ok, 'a failed worker carries its failureCode');
+  A.ok(!events.validate('task', Object.assign({}, task, { outcome: 'probably_fine' })).ok, 'a task outcome outside the vocabulary is rejected');
+  A.ok(!events.validate('task', Object.assign({}, task, { failureCode: 429 })).ok, 'a task failureCode is a string');
 }
 A.ok(!events.validate('definitely.unknown', {}).ok, 'unknown event name rejected');
 
@@ -105,5 +142,19 @@ A.eq(seen.length, 1, 'bus did NOT see the unknown event');
 bus.on('notify', () => { throw new Error('boom'); });
 A.notThrows(() => emit('notify', 'hello'), 'a throwing handler does not propagate out of emit');
 A.eq(emit('notify', 'hello again'), true, 'emit still succeeds despite a throwing handler');
+
+// 7. TURN IDENTITY (additive, 2026-10-29): agent.run.start may name the turn it answers (turnId) and the transcript row
+// holding its directive (directiveRowId). Both optional: an old start stays valid, and each field is type-checked, so a
+// stringly row id or a numeric turn id is rejected rather than silently carried.
+{
+  const start = { agentId: 'a', runId: 'r', trigger: 'directive', model: 'm' };
+  A.ok(events.validate('agent.run.start', start).ok, 'a start without turn ids stays valid');
+  A.ok(events.validate('agent.run.start', Object.assign({}, start, { turnId: 'tabcdefgh12345678' })).ok, 'a start carrying its turnId validates');
+  A.ok(events.validate('agent.run.start', Object.assign({}, start, { directiveRowId: 12 })).ok, 'a start carrying its directiveRowId validates');
+  A.ok(events.validate('agent.run.start', Object.assign({}, start, { trigger: 'manual', turnId: 'r0123456789', directiveRowId: 12 })).ok,
+    "one start carrying trigger 'manual', a turnId and a directiveRowId together validates");
+  A.ok(!events.validate('agent.run.start', Object.assign({}, start, { directiveRowId: '12' })).ok, "directiveRowId '12' (a string) is rejected");
+  A.ok(!events.validate('agent.run.start', Object.assign({}, start, { turnId: 7 })).ok, 'turnId 7 (a number) is rejected');
+}
 
 A.report('contract.test');

@@ -233,11 +233,18 @@ const XpStore = (() => {
     const touched = new Set();
     for (const row of rows) {
       if (!row || isInternalRun(row) || !row.runId || !row.agentId) continue;
-      const result = onEvent('agent.run.end', {
+      const end = {
         agentId: String(row.agentId), runId: String(row.runId), reason: row.clarifying ? 'clarifying' : String(row.reason || 'error'),
         turns: Number(row.turns) || 0, tokens: Number(row.tokens) || 0, usd: Number(row.usd) || 0,
         _historyToolsOk: Math.max(0, Number(row.toolsOk) || 0)
-      }, { silent: true, noPersist: true });
+      };
+      // (typed-outcomes) the row's OUTCOME facts ride the rebuilt end, so XP's fold (RunOutcome.ofEnd) reads a run caught up from history
+      // exactly as it read it live: a provider-cut 'done' is no finished task and no won run
+      if (row.outcome) end.outcome = String(row.outcome);
+      if (row.finishReason) end.finishReason = String(row.finishReason);
+      if (row.failureCode) end.failureCode = String(row.failureCode);
+      if (row.clarifying === true) end.clarifying = true;
+      const result = onEvent('agent.run.end', end, { silent: true, noPersist: true });
       if (!result || !result.applied) continue;
       applied++;
       credentialChanged = credentialChanged || result.credentialChanged;
@@ -374,6 +381,9 @@ const XpStore = (() => {
     if (!res || !res.ok || !body || !body.ok || !body.rating || !Array.isArray(body.rating.entries)) {
       const status = Number(res && res.status) || 0;
       const reason = String(body && body.error || '');
+      // the GATE refused this page's key (the ONE reading, Harness.classifyApiFailure: the gate's own code; a bare 401/403 only
+      // from a station that names no refusal, or with no Harness loaded) — a route's own 403 is not a rejected connection
+      const refused = res && typeof Harness !== 'undefined' && Harness && typeof Harness.classifyApiFailure === 'function' ? Harness.classifyApiFailure(res) : null;
       // Read rejected responses too. Keep UI copy actionable without exposing arbitrary storage paths.
       let error = 'Rating was not saved — try again.';
       if (!res) error = 'Cannot reach the rating service — try again.';
@@ -383,7 +393,9 @@ const XpStore = (() => {
       else if (reason === 'non-interactive run cannot be rated') error = 'This scheduled activity is not eligible for rating. New interactive replies can be rated separately.';
       else if (reason === 'run origin unavailable for rating') error = 'This older reply has no saved run origin, so its rating eligibility cannot be verified. It cannot be rated; new interactive replies can be rated separately.';
       else if (reason === 'run did not produce rateable agent work') error = 'This task did not finish with rateable work.';
-      else if (status === 401 || status === 403) error = 'Rating connection was rejected — reload the app and try again.';
+      else if (refused ? (refused.staleSession || refused.tokenWithheld) : (status === 401 || status === 403)) {
+        error = refused && refused.tokenWithheld ? refused.tokenWithheld : 'Rating connection was rejected — reload the app and try again.';
+      }
       else if (status === 503 || (body && body.growthUnavailable)) error = 'Rating history is unavailable — try again after restarting the app.';
       else if (status >= 500) error = 'The rating service could not save this rating — try again.';
       return { ok: false, error, status };

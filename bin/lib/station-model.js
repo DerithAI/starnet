@@ -12,6 +12,7 @@
 'use strict';
 
 const { fileArg } = require('./mouse.js');
+const RunOutcome = require('../../frontend/app/runoutcome.js');   // TYPED OUTCOMES: how a run ended, as ONE code every surface reads
 
 const SLOTS = 14;            // activity history width
 const SLOT_MS = 2000;        // one activity bar = 2 s of the agent's events
@@ -33,7 +34,7 @@ function sourceOf(run) {
   if (/^cli-/.test(String(r.streamId || ''))) return 'terminal';
   if (r.lineId || r.dockId) return 'flow';
   const t = String(r.trigger || ''), s = String(r.surface || r.source || '');
-  if (t === 'schedule' || t === 'loop') return 'routine';
+  if (t === 'schedule' || t === 'manual' || t === 'loop') return 'routine';   // 'manual': a routine's Run Now
   if (t === 'nightshift' || s === 'nightshift') return 'autonomy';
   if (s === 'interactive' || t === 'directive') return 'desktop';
   if (t === 'event') return 'trigger';
@@ -110,16 +111,30 @@ function askInspect(tool, raw) {
   return Object.keys(o).map(k => k + ': ' + (typeof o[k] === 'string' ? o[k] : JSON.stringify(o[k]))).join('\n');
 }
 
+/* runPairOf(row) — the PAIR a GET /api/runtime/agent row's runs really go out on: its resolved `wire` (sidecar/run-wire.js
+   — what COMMS, a routine or a chat runs for this agent) when it names a model. The raw model/provider are the row as
+   saved: an unpinned agent's empty model means "follows the station default", never "no model set", and its provider may
+   be an older page's stale stamp. An older station sends no wire: the raw row is all there is. The dashboard, `starnet
+   ls` and `starnet status` all read this, so the terminal never refuses or mislabels an agent the station runs. */
+function runPairOf(row) {
+  const r = row || {};
+  const w = (r.wire && typeof r.wire === 'object' && r.wire.model) ? r.wire : null;
+  return {
+    model: String((w ? w.model : r.model) || ''), provider: String((w ? w.provider : r.provider) || ''),
+    followsStation: !!(w && w.followsStation), source: w ? String(w.source || '') : '', wire: w
+  };
+}
+
 function makeAgent(id, name) {
   return {
-    id, name: String(name || id).toUpperCase().slice(0, 24), model: '', provider: '', inRoster: false,
+    id, name: String(name || id).toUpperCase().slice(0, 24), model: '', provider: '', followsStation: false, inRoster: false,
     runs: new Set(), last: null, now: '', act: new Array(SLOTS).fill(0), bucket: 0, log: [], seq: 0
   };
 }
 
 function makeStation() {
   const st = {
-    agents: new Map(), order: [], runs: new Map(), prompts: [],
+    agents: new Map(), order: [], runs: new Map(), prompts: [], ended: new Map(),
     cost: { usd: null, atLeast: null, cap: null },
     lines: new Map(), jobs: [],
     feed: 'connecting', lastSlotAt: 0, sent: []
@@ -148,11 +163,16 @@ function makeStation() {
       if (!r || !r.agentId) continue;
       const a = agent(r.agentId);
       a.name = String(r.name || r.agentId).toUpperCase().slice(0, 24);   // whole up to 24; each screen shortens it with …
-      a.model = String(r.model || ''); a.provider = String(r.provider || ''); a.inRoster = true;
+      // the PAIR its runs really go out on (runPairOf: the row's resolved wire, else the raw row on an older station)
+      const pair = runPairOf(r), w = pair.wire;
+      a.model = pair.model; a.provider = pair.provider; a.followsStation = pair.followsStation; a.inRoster = true;
+      a.wireSource = pair.source;   // where that pair comes from ('agent' = its own pin; '' = an older station: the raw row)
       // what its runs are held to, when the station says (an older station does not: the app's save is read instead)
       // a station that says the field says it whole: null is the Commander clearing it (the provider's default), never
-      // "keep what the terminal last heard" — a cleared effort is not sent on the terminal's runs
-      if (Object.prototype.hasOwnProperty.call(r, 'reasoningEffort')) { a.reasoningEffort = typeof r.reasoningEffort === 'string' && r.reasoningEffort ? r.reasoningEffort : null; a.rosterSettings = true; }
+      // "keep what the terminal last heard" — a cleared effort is not sent on the terminal's runs. The wire's effort is the
+      // station's ONE effort rule (its own, else the Overseer's when it follows the station) and wins over the raw row's.
+      const effortFrom = (w && Object.prototype.hasOwnProperty.call(w, 'reasoningEffort')) ? w : (Object.prototype.hasOwnProperty.call(r, 'reasoningEffort') ? r : null);
+      if (effortFrom) { a.reasoningEffort = typeof effortFrom.reasoningEffort === 'string' && effortFrom.reasoningEffort ? effortFrom.reasoningEffort : null; a.rosterSettings = true; }
       if (typeof r.approvalMode === 'string' && r.approvalMode) { a.approvalMode = r.approvalMode; a.rosterSettings = true; }
       if (typeof r.personaId === 'string' && r.personaId) a.personaId = r.personaId;
     }
@@ -199,9 +219,14 @@ function makeStation() {
     st.runs.delete(runId);
     if (run.text) run.text.live = false;
     for (const t of run.tools.values()) if (t.running) { t.running = false; t.res = t.res || 'no result seen'; }
-    a.last = { reason, at: now, usd: (extra && extra.usd) || 0, seen: !(extra && extra.unseen) };
+    // review r8: the run's OWN outcome rides its agent's last end (the end payload's stamp, else RunOutcome.ofWord of its reason) and is kept
+    // per run, so the floor flies each ended run back by its own end (endOf), never by its agent's later one
+    const oc = extra && extra.end ? RunOutcome.ofEnd(extra.end, null) : RunOutcome.ofWord(reason);
+    a.last = { reason, outcome: oc.outcome, failureCode: oc.failureCode, at: now, usd: (extra && extra.usd) || 0, seen: !(extra && extra.unseen) };
+    if (!(extra && extra.unseen)) { st.ended.set(runId, { reason, outcome: oc.outcome, failureCode: oc.failureCode }); if (st.ended.size > 200) st.ended.delete(st.ended.keys().next().value); }
     if (extra && extra.unseen) log(a, { k: 'sys', text: 'a run ended while the feed was away (its end was not seen)', at: now });
-    else if (reason && reason !== 'done') log(a, { k: reason === 'cancelled' ? 'sys' : 'bad', text: 'run ended: ' + reason, at: now });
+    // each outcome in its own words and tone (endLook): a stop the plain line, a question or an unfinished run the warn line, a failure red
+    else if (!oc.ok) log(a, { k: endLook(oc).log, text: 'run ended: ' + RunOutcome.line(oc), at: now });
     // asks of an ended run cannot be answered any more
     st.prompts = st.prompts.filter(q => q.runId !== runId || q.background);
   }
@@ -287,7 +312,8 @@ function makeStation() {
         return;
       }
       case 'agent.run.error': { const a = agent(p.agentId); log(a, { k: 'bad', text: String(p.message || 'run error'), at: now }); return; }
-      case 'agent.run.end': endRun(String(p.runId), String(p.reason || 'error'), now, { usd: Number(p.usd) || 0 }); return;
+      // (typed-outcomes) a provider-cut 'done' is not done: the screen names its outcome (cut_short), never "done"
+      case 'agent.run.end': endRun(String(p.runId), RunOutcome.reasonOf(p), now, { usd: Number(p.usd) || 0, end: p }); return;
       case 'permission.prompt': addPrompt(p, now); return;
       case 'permission.response': settlePrompt(p, now); return;
       default: return;
@@ -413,9 +439,11 @@ function makeStation() {
       return { key: 'working', since: since === Infinity ? now : since, count: a.runs.size };
     }
     if (a.last && now - a.last.at < RECENT_MS) {
-      if (a.last.reason === 'done') return { key: 'done', text: 'done' };
-      if (a.last.reason === 'unknown') return { key: 'idle', text: 'idle' };
-      return { key: 'stopped', text: a.last.reason };
+      if (a.last.seen === false) return { key: 'idle', text: 'idle' };
+      // review r8: the card says the run's OUTCOME — key 'stopped' only for a stop; a question, a run that did not finish and a failure
+      // each keep their own key, word and tone (endLook), never one failure-coloured "■ stopped"
+      const look = endLook(lastOutcome(a.last));
+      return { key: look.key, outcome: look.outcome, text: look.word, why: look.why, code: look.code, style: look.style };
     }
     return { key: 'idle', text: 'idle' };
   }
@@ -429,7 +457,8 @@ function makeStation() {
       const src = run ? sourceOf(run) : '';
       return (a.now || 'thinking') + (src && src !== 'terminal' && src !== 'desktop' ? ' · ' + src : '');
     }
-    if (a.last) return 'last run: ' + (a.last.seen === false ? 'ended unseen' : a.last.reason);
+    // review r8: in the outcome's own words (RunOutcome.line, as the `starnet -p` receipt says it), its failureCode included — never the bare end word
+    if (a.last) return 'last run: ' + (a.last.seen === false ? 'ended unseen' : RunOutcome.line(lastOutcome(a.last)));
     return '';
   }
   function rows(now) {
@@ -456,9 +485,13 @@ function makeStation() {
       } else if (job) {
         // a job that reached its OUTBOX is the line's success, whichever word its record uses
         state = (job.status === 'done' || job.status === 'delivered') ? 'done' : job.status;
-        text = job.status + (job.endedAt ? ' · ' + ago(now - job.endedAt) : '');
+        // review r8: each job status in the WORKFLOWS window's own words (windows/workflows.js), never the raw record word
+        text = (JOB_LOOK[state] ? JOB_LOOK[state][2] : String(job.status)) + (job.endedAt ? ' · ' + ago(now - job.endedAt) : '');
       }
-      out.push({ lineId: l.lineId, name: l.name || shortLine(l.lineId), state, text, job, runs: l.runs || 0, shipped: l.shipped || 0, steps: job ? job.steps || 0 : 0, agents: live.map(r => agent(r.agentId).name) });
+      // review r8: the FLOWS strip's and the WORK page's lamp per job status — a job that finished with a problem is no idle line, a stopped
+      // job is the stop's plain lamp, an interrupted one the warn lamp (they read ○ idle, ○ idle and the failure ✗)
+      const look = state === 'idle' || state === 'running' ? null : (JOB_LOOK[state] || JOB_LOOK.unknown);
+      out.push({ lineId: l.lineId, name: l.name || shortLine(l.lineId), state, text, job, lamp: look ? look[0] : '○', lampStyle: look ? look[1] : 'dim', runs: l.runs || 0, shipped: l.shipped || 0, steps: job ? job.steps || 0 : 0, agents: live.map(r => agent(r.agentId).name) });
     }
     return out;
   }
@@ -478,8 +511,30 @@ function makeStation() {
 
   return {
     state: st, agent, setRoster, apply, applySnapshot, describePrompt, applyBudget, applyLines, noteSeen, noteSent, noteSaid, noteAgentLine, sendFailed, seedHistory, resetLog, tick,
-    rows, header, flows, findAgent, findLine, statusOf, front: () => st.prompts[0] || null, logOf: (id) => (st.agents.get(String(id)) || { log: [] }).log
+    rows, header, flows, findAgent, findLine, statusOf, front: () => st.prompts[0] || null, logOf: (id) => (st.agents.get(String(id)) || { log: [] }).log,
+    endOf: (runId) => st.ended.get(String(runId)) || null
   };
+}
+
+/* THE TERMINAL'S LOOK FOR HOW A RUN ENDED (review r8): RunOutcome.look's word and tone, in the terminal's styles — the crew card, the CREW tag,
+   the floor plate and the conversation's end line all read it. A stop is never the failure colour, a question never a stop, a failure never
+   a stop. key: the posture the floor and the camera feed draw ('done' · 'asked' · 'stopped' · 'unfinished' · 'failed'). */
+const TONE_STYLE = Object.freeze({ ok: 'ok', ask: 'am', stop: 'dim', warn: 'am', bad: 'bad' });
+// a line job's status (sidecar routing/linejobs.js) -> [lamp, style, words]: the WORKFLOWS window's ✓ DELIVERED · ⚠ FINISHED WITH A PROBLEM ·
+// ■ STOPPED · ⚠ INTERRUPTED · ✕ IT DIDN'T RUN, in the terminal's styles
+const JOB_LOOK = Object.freeze({ done: ['✓', 'ok', 'delivered'], problem: ['■', 'am', 'finished with a problem'], stopped: ['■', 'dim', 'stopped'],
+  interrupted: ['■', 'am', 'interrupted'], failed: ['✗', 'am', 'it didn’t run'], unknown: ['■', 'am', 'ended'] });
+const TONE_LOG = Object.freeze({ ok: 'ok', ask: 'warn', stop: 'sys', warn: 'warn', bad: 'bad' });
+const TONE_KEY = Object.freeze({ ok: 'done', ask: 'asked', stop: 'stopped', warn: 'unfinished', bad: 'failed' });
+function lastOutcome(last) {
+  const l = last || {};
+  return RunOutcome.isOutcome(l.outcome) ? { outcome: l.outcome, failureCode: l.failureCode || '' } : RunOutcome.ofWord(l.reason);
+}
+function endLook(o) {
+  const oc = o && RunOutcome.isOutcome(o.outcome) ? o : RunOutcome.ofWord(o && o.reason);
+  const look = RunOutcome.look(oc);
+  const code = (oc.outcome === 'failed' || oc.outcome === 'refused') && oc.failureCode && oc.failureCode !== 'model_refusal' && oc.failureCode !== 'run_failure' ? oc.failureCode : '';
+  return { key: TONE_KEY[look.tone], outcome: oc.outcome, word: look.word, why: RunOutcome.line(oc), code, style: TONE_STYLE[look.tone], log: TONE_LOG[look.tone] };
 }
 
 function fmtDur(ms) { const s = Math.max(0, Math.floor(ms / 1000)); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, r = s % 60; return h ? h + 'h' + String(m).padStart(2, '0') + 'm' : s >= 60 ? Math.floor(s / 60) + 'm' + String(r).padStart(2, '0') + 's' : r + 's'; }
@@ -497,4 +552,4 @@ function costText(cost) {
   return 'spend unknown';
 }
 
-module.exports = { makeStation, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RUN_FLOOR, RECENT_MS, ONCE_ONLY_TOOLS };
+module.exports = { makeStation, endLook, runPairOf, sourceOf, toolName, oneLine, argDigest, askGlance, askInspect, fmtDur, fmtShort, ago, costText, SLOTS, SLOT_MS, RUN_FLOOR, RECENT_MS, ONCE_ONLY_TOOLS };

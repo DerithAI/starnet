@@ -48,10 +48,10 @@ const T0 = 1_800_000_000_000;
   ];
   const items = H.workItems({ feed: H.createFeed(), workers, now: T0 });
   const w = id => items.find(x => x.workerId === id);
-  A.eq([w('w1').state, w('w1').status], ['fault', 'Lost when the station restarted'], 'a worker lost to a restart is a fault, not "done"');
+  A.eq([w('w1').state, w('w1').status], ['interrupted', 'Interrupted when the station restarted'], 'a worker a restart cut off is interrupted (review 9): never "done", never a stop or the fault');
   A.eq([w('w2').state, w('w2').status], ['fault', 'Refused'], 'a refused worker is a fault');
-  A.eq([w('w3').state, w('w3').status], ['stopped', 'Ended (weird)'], 'an ending the HUD does not know is never painted done');
-  A.eq([w('w4').state, w('w4').status], ['fault', 'Stopped: made no progress'], 'a worker the liveness check stopped is never blamed on a restart that did not happen');
+  A.eq([w('w3').state, w('w3').status], ['fault', 'Ended (weird)'], 'an ending the HUD does not know is never painted done, nor a stop (review 9: no proof of an ending)');
+  A.eq([w('w4').state, w('w4').status], ['interrupted', 'Interrupted: it made no progress'], 'a worker the liveness check stopped is never blamed on a restart that did not happen');
   const js = fs.readFileSync(path.join(ROOT, 'frontend/app/hudmode.js'), 'utf8');
   A.ok(!js.includes('No result was recorded') && js.includes("'Its reply isn’t shown here.'") && js.includes("'Its reply is in the conversation.'"),
     'a finished card with no reply on this page says where the reply is, never that there was none');
@@ -86,14 +86,19 @@ const T0 = 1_800_000_000_000;
     A.ok(!isDragRegion([key, h3]), 'a header key stays a click (the h3 is not deep)');
     A.eq(h3Attr, '', 'the h3 keeps the bare (self-only) attribute');
   }
-  // quick win 12: /api/cancel also reaches a run holding a runOnce stop handle (a routine hop, a line step, a hub run), so
-  // the snapshot offers STOP on exactly the runs it can stop — no more, no fewer
+  // quick win 12: /api/cancel also reaches a run its run-table entry holds a stop for (a routine hop, a line step, a hub run,
+  // /v1, a queued turn), so the snapshot offers STOP on exactly the runs it can stop — no more, no fewer (run-table S3; the
+  // live proof is test/run-registry-coverage.http.test.js: every surface's row is stoppable and /api/cancel ends it)
   const snap = sidecarFunctionSource('handleStateSnapshot');
   A.ok(snap.length > 500 && snap.length < 20000, 'one bounded handleStateSnapshot');
-  A.ok(snap.includes('row.stoppable = runs.has(runId) || runStopHandles.has(runId);') && snap.includes("source: 'host', stoppable: runs.has(runId) || runStopHandles.has(runId) }"),
-    'the snapshot says which runs /api/cancel can reach, a stop-handle run included (additive)');
+  A.ok(snap.includes('row.stoppable = runReachable(r.runId);') && snap.includes('for (const r of runTable.live())'),
+    'the snapshot says which runs /api/cancel can reach, every run-table run included (additive)');
+  const reach = sidecarFunctionSource('runReachable');
+  A.ok(reach.includes('runTable.stoppable(id)'), 'one reach for the snapshot\'s flag, STOP and steer');
   const cancel = sidecarFunctionSource('handleCancel');
-  A.ok(cancel.includes('runStopHandles.get(String(runId))') && cancel.includes('stopped: !!(ac || kc)'), 'the same two maps /api/cancel stops through, and it says whether it stopped one');
+  const stopById = sidecarFunctionSource('stopRunById');
+  A.ok(cancel.includes("stopped: stopRunById(body.runId, 'cancel')") && stopById.includes('return runTable.stop(id, cause);'),
+    'the same reach /api/cancel stops through, and it says whether it stopped one');
   const world = fs.readFileSync(path.join(ROOT, 'frontend/app/world.js'), 'utf8');
   A.ok(world.includes('function cameraState()') && world.includes('function restoreCamera(st)') && world.includes('cameraState, restoreCamera,'), 'the world hands a borrowed camera back exactly');
   const rs = fs.readFileSync(path.join(ROOT, 'src-tauri/src/hud_mode.rs'), 'utf8');
@@ -333,7 +338,7 @@ A.eq([H.fmtAgo(10_000), H.fmtAgo(5 * 60_000), H.fmtAgo(2 * 3_600_000)], ['just n
     A.ok(js.includes("el('button', 'btn', 'AGENT CAM')") && !js.includes("'btn', 'SMALL')"), 'the key that shrinks the HUD says where it goes: AGENT CAM (Andrew 09-30: not SMALL)');
   }
   const side = readSidecarSource();
-  A.ok(has(side, "source: 'interactive', streamId: streamId || '', internal: internal }", 'if (meta && meta.internal) row.internal = true;') && has(js, 'r.internal || workerRuns.has'),
+  A.ok(has(side, "source: 'interactive', streamId: streamId || '', internal: internal, blocksGroup: true }", 'if (r.internal) row.internal = true;') && has(js, 'r.internal || workerRuns.has'),
     'live self-talk is marked by the sidecar and never shown as the Commander\'s work');
 }
 

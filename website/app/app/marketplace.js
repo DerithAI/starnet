@@ -60,10 +60,11 @@ const Marketplace = (() => {
   let acceptingProspectId = null;   // Slice 4: the prospect id being reviewed → removed from staging on a successful CREATE
   // ---- IMPORT AGENT (Hermes / OpenClaw migration) — the view='harnessImport' flow's working state ----
   // importStep: 'detect' (list found installs / PICK FOLDER) → 'preview' (the dossier-style scan card).
-  // importFound = the /api/harness/detect list (null until the detect call lands, [] = nothing found).
+  // importFound = the /api/harness/detect list (null until the detect call lands, [] = nothing found); importDetectErr = why the
+  // station could not look (a refused or unanswered detect), shown instead of a 'nothing found' it never confirmed.
   // importScan = the /api/harness/scan result being previewed; importOrigin = { harness, root } that produced it.
   // All strings shown come straight from the scan (truthful telemetry) — no invented placeholders.
-  let importStep = 'detect', importFound = null, importDetecting = false, importScanning = false;
+  let importStep = 'detect', importFound = null, importDetecting = false, importScanning = false, importDetectErr = '';
   let importScan = null, importOrigin = null, importName = '', importErr = '';
 
   const hasRecipes = () => typeof Recipes !== 'undefined';
@@ -278,7 +279,7 @@ const Marketplace = (() => {
     else if (named) ctx.summon = true;   // an older pick-mode caller keeps its own summon flag
     view = ctx.firstValue ? 'firstvalue' : 'grid'; editingId = null; editingRecipeId = null; launchId = null; pendingMintKey = null; pendingMintTemplate = null; pendingScoutRecipeId = null; scoutSeedDraft = null;
     editForkedFrom = null; editSourceRunId = null; launchRunAs = null;
-    importStep = 'detect'; importFound = null; importDetecting = false; importScanning = false;
+    importStep = 'detect'; importFound = null; importDetecting = false; importScanning = false; importDetectErr = '';
     importScan = null; importOrigin = null; importName = ''; importErr = '';
     laneFilter = 'all'; catFilter = 'all'; query = '';
     lastDecodedHero = null;   // a fresh bay open replays the hero decode beat once
@@ -1110,7 +1111,8 @@ const Marketplace = (() => {
         (Array.isArray(d && d.runs) ? d.runs : []).forEach(row => {
           const id = row && row.recipeId;
           if (!id || map[id]) return;
-          map[id] = { ts: Number(row.ts) || 0, reason: String(row.reason || ''), artifacts: Array.isArray(row.artifacts) ? row.artifacts : [] };
+          // the row's OUTCOME facts ride with its reason (typed-outcomes): lastRunHTML reads RunOutcome.ofRow off them — a cut run is never "done"
+          map[id] = { ts: Number(row.ts) || 0, reason: String(row.reason || ''), outcome: row.outcome, failureCode: row.failureCode, finishReason: row.finishReason, clarifying: row.clarifying === true, artifacts: Array.isArray(row.artifacts) ? row.artifacts : [] };
         });
         recipeRuns = map; recipeRunsPending = null; return recipeRuns;
       })
@@ -1133,12 +1135,15 @@ const Marketplace = (() => {
     }
     return '';
   }
-  const RUN_REASON_WORD = { done: 'done', max_iters: 'hit its turn limit', budget: 'hit its budget', cancelled: 'cancelled', error: 'errored', refusal: 'refused' };
+  // a recipe's last run in its OUTCOME's own word (review 9.2: keyed on the bare reason, an end-only refusal — reason 'error', stamped 'refused' — read "errored")
+  const LAST_RUN_WORD = { succeeded: 'done', asked: 'asked a question', stopped: 'cancelled', failed: 'errored', refused: 'refused', cut_short: 'was cut short',
+    out_of_budget: 'hit its budget', step_limit: 'hit its turn limit', empty: 'sent back an empty reply', interrupted: 'was interrupted', blocked: 'was held at a gate' };
   // GOLDEN-RUN DRIFT line: the last 5 outcomes as marks, and the named signal when the latest run drifted from the
   // recipe's own good history. Says 'insufficient' nothing — a recipe with no baseline shows only its streak.
   function driftHTML(r) {
     const d = recipeDrift && recipeDrift[r.id]; if (!d || !d.streak || !d.streak.length) return '';
-    const marks = d.streak.map(m => '<span class="mkt-drift-mark' + (m === 'pass' ? ' ok' : ' bad') + '" aria-label="' + m + '">' + (m === 'pass' ? '✓' : '✗') + '</span>').join('');
+    // a run someone STOPPED ('stop', review r7) is no failure: a neutral mark, never the red ✗
+    const marks = d.streak.map(m => '<span class="mkt-drift-mark' + (m === 'pass' ? ' ok' : m === 'stop' ? '' : ' bad') + '" aria-label="' + m + '">' + (m === 'pass' ? '✓' : m === 'stop' ? '■' : '✗') + '</span>').join('');
     let line = '<div class="mkt-r-drift' + (d.status === 'drift' ? ' bad' : '') + '"><span class="mkt-r-lastrun-k" aria-hidden="true">◫</span> last ' + d.streak.length + ' run' + (d.streak.length === 1 ? '' : 's') + ' ' + marks;
     if (d.status === 'drift') line += ' · <b>DRIFT</b> — ' + d.signals.slice(0, 2).map(s => esc(s.detail)).join('; ') + (d.signals.length > 2 ? ' <span class="dim">+' + (d.signals.length - 2) + '</span>' : '');
     else if (d.status === 'steady') line += ' · steady vs ' + d.baselineRuns + ' prior';
@@ -1148,9 +1153,13 @@ const Marketplace = (() => {
     if (!recipeRuns) return '';                       // no read yet — assert nothing
     const row = recipeRuns[r.id]; if (!row) return '';
     const when = scoutRelTime(row.ts);
-    const why = RUN_REASON_WORD[row.reason] || row.reason || '';
+    // (typed-outcomes) the row's OUTCOME decides its word and its look: 'done' only for a run that SUCCEEDED (a provider-cut reply reads "was cut short").
+    // Review 9.2: the tone is RunOutcome.look's (marketplace.css) — a cut reply or a refusal drew the failure's red, a limit or an empty reply the plain
+    // look of a success; only a failure is red now, a run that did not finish warns, a question asks and a stop is the stop's dim
+    const oc = typeof RunOutcome !== 'undefined' ? RunOutcome.ofRow(row) : null;
+    const why = oc ? LAST_RUN_WORD[oc.outcome] : String(row.reason || '');
     const art = artifactLabel(row.artifacts);
-    const cls = (row.reason === 'error' || row.reason === 'refusal') ? ' bad' : '';
+    const cls = oc ? ' ' + RunOutcome.look(oc).tone : '';
     return '<div class="mkt-r-lastrun' + cls + '"><span class="mkt-r-lastrun-k" aria-hidden="true">◱</span> last run' +
       (when ? ' ' + esc(when) : '') + (why ? ' · ' + esc(why) : '') +
       (art ? ' · produced <b>' + esc(art) + '</b>' + (row.artifacts.length > 1 ? ' <span class="dim">+' + (row.artifacts.length - 1) + '</span>' : '')
@@ -2577,16 +2586,11 @@ const Marketplace = (() => {
     const base = String(name || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     return (base || 'recipe') + '.starnet-recipe.json';
   }
-  function downloadRecipeFile(obj) {
+  async function downloadRecipeFile(obj) {
     try {
       const json = JSON.stringify(obj, null, 2);
-      const blob = new Blob([json], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = safeFilename(obj && obj.name); a.style.display = 'none';
-      document.body.appendChild(a); a.click();
-      setTimeout(() => { try { document.body.removeChild(a); URL.revokeObjectURL(url); } catch (_) {} }, 0);
-      note('exported recipe: ' + ((obj && obj.name) || 'recipe') + ' — saved to your downloads', 'good');
+      const receipt = await U.saveFile({ name: safeFilename(obj && obj.name), ext: 'json', text: json });
+      note(receipt.line, receipt.ok ? 'good' : 'bad');
     } catch (_) { sfx('bad'); note('could not export the recipe file', 'bad'); }
   }
   // IMPORT: the file-picker button (in the bar) fires a hidden <input type=file>; this reads + parses + imports it.
@@ -2652,16 +2656,21 @@ const Marketplace = (() => {
   // enter the flow: reset to the detect step and kick the machine scan.
   function enterHarnessImport() {
     view = 'harnessImport'; importStep = 'detect';
-    importFound = null; importScan = null; importOrigin = null; importErr = ''; importScanning = false; importName = '';
+    importFound = null; importScan = null; importOrigin = null; importErr = ''; importScanning = false; importName = ''; importDetectErr = '';
     renderStage();
     runDetect();
   }
+  // A REFUSED LOOK IS NOT "NOTHING FOUND": a detect the station refused (or never answered) says it could not look, and why,
+  // in the detect step itself; only a list the station confirmed can say there is nothing to import.
   function runDetect() {
-    importDetecting = true;
-    fetch('/api/harness/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-      .then(r => r.ok ? r.json() : { ok: false, found: [] })
-      .then(d => { importDetecting = false; importFound = (d && d.ok && Array.isArray(d.found)) ? d.found : []; if (view === 'harnessImport' && importStep === 'detect') renderStage(); })
-      .catch(() => { importDetecting = false; importFound = []; if (view === 'harnessImport' && importStep === 'detect') renderStage(); });
+    importDetecting = true; importDetectErr = '';
+    const settle = (found, why) => {
+      importDetecting = false; importFound = found; importDetectErr = why ? 'could not look for other harnesses: ' + why : '';
+      if (view === 'harnessImport' && importStep === 'detect') renderStage();
+    };
+    Harness.api.post('/api/harness/detect', {})
+      .then(r => (r.ok && Array.isArray(r.j.found)) ? settle(r.j.found, '') : settle([], r.ok ? 'the station sent no list' : Harness.api.why(r)),
+        () => settle([], 'the station did not answer'));
   }
   // scan a folder as each harness in `harnesses` (in order), stopping at the first ok:true. A detected row passes a
   // single known harness; PICK FOLDER passes ['openclaw','hermes'] (try both). On ok:true → preview step; on total
@@ -2676,18 +2685,17 @@ const Marketplace = (() => {
         if (view === 'harnessImport') renderStage();
         return;
       }
-      fetch('/api/harness/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ harness: harnesses[i], root: rootPath }) })
-        .then(r => r.ok ? r.json() : { ok: false, reason: 'scan failed (http ' + r.status + ')' })
-        .then(res => {
-          if (res && res.ok) {
+      Harness.api.post('/api/harness/scan', { harness: harnesses[i], root: rootPath })
+        .then(r => {
+          const res = r.j;
+          if (r.ok) {
             importScanning = false; importScan = res;
             importOrigin = { harness: res.harness || harnesses[i], root: rootPath };
             importName = String(res.name || '').trim();
             importStep = 'preview';
             if (view === 'harnessImport') renderStage();
-          } else { lastReason = (res && res.reason) || 'no agent found'; tryOne(i + 1); }
-        })
-        .catch(() => { lastReason = 'scan request failed'; tryOne(i + 1); });
+          } else { lastReason = Harness.api.why(r); tryOne(i + 1); }
+        }, () => { lastReason = 'the station did not answer the scan'; tryOne(i + 1); });
     };
     tryOne(0);
   }
@@ -2735,6 +2743,8 @@ const Marketplace = (() => {
           '<span class="mkt-imp-row-h">' + esc(label) + '</span>' +
           '<span class="mkt-imp-row-path">' + esc(f.root || '') + '</span></button>';
       }).join('');
+    } else if (importDetectErr) {
+      rows = '<div class="mkt-r-warn">⚠ ' + esc(importDetectErr) + ' — pick a folder to import from instead.</div>';
     } else {
       rows = '<div class="mkt-empty">no Hermes or OpenClaw install detected on this machine — pick a folder to import from instead.</div>';
     }
@@ -2817,13 +2827,14 @@ const Marketplace = (() => {
     const pick = stage.querySelector('.mkt-imp-pick');
     if (pick) pick.addEventListener('click', () => {
       sfx('click'); importErr = ''; importScanning = true; renderStage();
-      fetch('/api/projects/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
-        .then(r => r.ok ? r.json() : { ok: false })
-        .then(d => {
-          if (d && d.ok && d.path) scanHarness(d.path, ['openclaw', 'hermes']);
-          else { importScanning = false; if (view === 'harnessImport') renderStage(); }   // cancelled → quietly stay on detect
-        })
-        .catch(() => { importScanning = false; importErr = 'could not open the folder picker'; if (view === 'harnessImport') renderStage(); });
+      Harness.api.post('/api/projects/pickfolder', {}, { timeoutMs: 6 * 60 * 1000 })   // the station's picker gives the human 5 minutes
+        .then(r => {
+          if (r.ok && r.j.path) scanHarness(r.j.path, ['openclaw', 'hermes']);
+          else {   // a cancel ({ok:true, cancelled:true}) quietly stays on detect; a refusal says why
+            importScanning = false; if (!r.ok) importErr = 'could not open the folder picker: ' + Harness.api.why(r);
+            if (view === 'harnessImport') renderStage();
+          }
+        }, () => { importScanning = false; importErr = 'could not open the folder picker: the station did not answer'; if (view === 'harnessImport') renderStage(); });
     });
     // NAME is stateful (importName is the single source of truth): the bay's search box + FILTER chips stay live
     // during this view and each rebuilds the stage — without this write-back a rebuild would revert the field to

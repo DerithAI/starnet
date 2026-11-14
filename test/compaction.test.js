@@ -22,7 +22,7 @@ const openCtx = () => ({ agentId: 'a', canUse: () => ({ ok: true }), canRun: () 
 const toolTurn = (id, p) => [{ type: 'tool_start', index: 0, id, name: 'noop' }, { type: 'tool_args', index: 0, chunk: '{}' },
   { type: 'usage', usage: { prompt_tokens: p, completion_tokens: 1, total_tokens: p + 1 } }, { type: 'done', finishReason: 'tool_calls' }];
 const stopTurn = [{ type: 'text', delta: 'final' }, { type: 'done', finishReason: 'stop' }];
-function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { type: 'object' }, run: async () => 'ok' }); return r; }
+function reg() { const r = makeRegistry(); r.register({ impact: 'none', name: 'noop', schema: { type: 'object' }, run: async () => 'ok' }); return r; }
 
 (async () => {
   // ---- 1. ITERATIVE MERGE: a prior summary note is merged, not stacked; exactly one note survives ----
@@ -71,43 +71,73 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
     A.eq(compacts, 2, 'exactly two agent.compact events despite four threshold-crossing tool turns');
   }
 
-  // ---- 3. DIRECTIVE PINNED + TAIL IN TURNS: after a fold the first user message is byte-identical at the head,
-  //         the summarizer never sees it, and the verbatim tail holds >= keepTailTurns turns ----
+  // ---- 3. THE RUN'S OWN REQUEST IS PINNED + TAIL IN TURNS. The pin used to be "the first non-system message": right for a
+  //         single directive, wrong in a chat, where the first message is turn 1 of the conversation and the run's task
+  //         is the latest user message. Now the pin is the run's request (loop.js runRequest, by identity). ----
   {
-    const { seq, emit } = setup();
     const big = 'B'.repeat(4000);   // big tool results: the micro tier alone cannot clear a 10-token window
-    const R = makeRegistry(); R.register({ name: 'noop', schema: { type: 'object' }, run: async () => big });
-    const provider = makeReplayProvider({ turns: [toolTurn('c1', 100), toolTurn('c2', 100), toolTurn('c3', 100), toolTurn('c4', 100), stopTurn] });
-    const ctx = makeContext({ contextLimit: 10, compactAt: 0.65, keepTailTurns: 2 });
-    const folded = [];
-    const summarize = async (older) => { folded.push(older); return { summary: 'S', usd: 0, tokens: 0 }; };
-    const directive = { role: 'user', content: 'THE DIRECTIVE: read every file and report the tokens' };
-    const messages = [{ role: 'system', content: 'sys' }, directive, { role: 'user', content: 'earlier note' }, { role: 'assistant', content: 'ack' }];
-    const res = await runAgentLoop({ messages, provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
-      model: 'replay/model', agentId: 'a', runId: 'r', tools: R.wireFormat(), dispatch: (c, ctx2) => R.dispatch(c, ctx2), capCtx: openCtx(), context: ctx, summarize });
-    A.eq(res.reason, 'done', 'run completes');
-    A.ok(folded.length >= 1, 'at least one LLM fold happened (' + folded.length + ')');
-    A.eq(messages[0], { role: 'system', content: 'sys' }, 'leading system prefix verbatim');
-    A.eq(messages[1], directive, 'the directive is pinned byte-identical after the fold(s)');
-    A.ok(!folded.some(older => older.some(m => m === directive || String(m.content).indexOf('THE DIRECTIVE') >= 0)), 'the summarizer never received the directive');
-    A.ok(folded[0].some(m => m.content === 'earlier note'), 'the turns AFTER the directive were folded');
-    A.ok(seq.some(e => e.name === 'agent.compact' && e.payload.reason === 'context'), 'an LLM fold was emitted');
-    // tail after the LAST fold: the summarizer saw the slice, so messages after the note = kept tail at that
-    // moment; count turn-groups in what the last fold kept (its `tail` = everything after the note then)
-    const lastOlder = folded[folded.length - 1];
-    const noteIdx = messages.findIndex(m => m.role === 'system' && /^<conversation_summary>/.test(String(m.content)));
-    A.ok(noteIdx === 2, 'the summary note sits right after the pinned directive');
-    const afterNote = messages.slice(noteIdx + 1).filter(m => m.role !== 'system');
-    let groups = 0; for (let k = 0; k < afterNote.length; k++) if (afterNote[k].role !== 'tool') groups++;
-    A.ok(groups >= 2, 'the verbatim tail holds >= keepTailTurns (2) turns — got ' + groups + ' (' + afterNote.map(m => m.role).join(',') + ')');
-    A.ok(lastOlder.length >= 1, 'the last fold folded something');
+    const bigTool = () => { const R = makeRegistry(); R.register({ impact: 'none', name: 'noop', schema: { type: 'object' }, run: async () => big }); return R; };
+    const replay = () => makeReplayProvider({ turns: [toolTurn('c1', 100), toolTurn('c2', 100), toolTurn('c3', 100), toolTurn('c4', 100), stopTurn] });
+    const afterNote = (messages) => { const noteIdx = messages.findIndex(m => m.role === 'system' && /^<conversation_summary>/.test(String(m.content))); return { noteIdx, rest: messages.slice(noteIdx + 1).filter(m => m.role !== 'system') }; };
+    const turnsOf = (rest) => { let groups = 0; for (let k = 0; k < rest.length; k++) if (rest[k].role !== 'tool') groups++; return groups; };
+
+    // (a) A SINGLE DIRECTIVE (the first message IS the run's request): pinned byte-identical, the summarizer never sees
+    //     it, the verbatim tail holds >= keepTailTurns turns
+    {
+      const { seq, emit } = setup();
+      const R = bigTool(), provider = replay();
+      const ctx = makeContext({ contextLimit: 10, compactAt: 0.65, keepTailTurns: 2 });
+      const folded = [];
+      const summarize = async (older) => { folded.push(older); return { summary: 'S', usd: 0, tokens: 0 }; };
+      const directive = { role: 'user', content: 'THE DIRECTIVE: read every file and report the tokens' };
+      const messages = [{ role: 'system', content: 'sys' }, directive];
+      const res = await runAgentLoop({ messages, provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
+        model: 'replay/model', agentId: 'a', runId: 'r', tools: R.wireFormat(), dispatch: (c, ctx2) => R.dispatch(c, ctx2), capCtx: openCtx(), context: ctx, summarize });
+      A.eq(res.reason, 'done', 'run completes');
+      A.ok(folded.length >= 1, 'at least one LLM fold happened (' + folded.length + ')');
+      A.eq(messages[0], { role: 'system', content: 'sys' }, 'leading system prefix verbatim');
+      A.ok(messages[1] === directive, 'the directive is pinned: the SAME object, right after the system prefix, after the fold(s)');
+      A.ok(!folded.some(older => older.some(m => m === directive || String(m.content).indexOf('THE DIRECTIVE') >= 0)), 'the summarizer never received the directive');
+      A.ok(folded[0].some(m => m.role === 'assistant' && Array.isArray(m.tool_calls)), "the run's own turns AFTER the directive were folded");
+      A.ok(seq.some(e => e.name === 'agent.compact' && e.payload.reason === 'context'), 'an LLM fold was emitted');
+      const { noteIdx, rest } = afterNote(messages);
+      A.ok(noteIdx === 2, 'the summary note sits right after the pinned directive');
+      A.ok(turnsOf(rest) >= 2, 'the verbatim tail holds >= keepTailTurns (2) turns — got ' + turnsOf(rest) + ' (' + rest.map(m => m.role).join(',') + ')');
+      A.ok(folded[folded.length - 1].length >= 1, 'the last fold folded something');
+    }
+
+    // (b) A CHAT'S STALE FIRST MESSAGE IS NOT PINNED: the run's request is the latest user message. The stale first message
+    //     folds like any older turn (the summarizer sees it; its words ride the note's verbatim user section ONCE), and the
+    //     run's request is the pin
+    {
+      const { emit } = setup();
+      const R = bigTool(), provider = replay();
+      const ctx = makeContext({ contextLimit: 10, compactAt: 0.65, keepTailTurns: 2 });
+      const folded = [];
+      const summarize = async (older) => { folded.push(older); return { summary: 'S', usd: 0, tokens: 0 }; };
+      const stale = { role: 'user', content: 'THE OLD DIRECTIVE: tidy the workshop' };
+      const request = { role: 'user', content: 'THE DIRECTIVE: read every file and report the tokens' };
+      const messages = [{ role: 'system', content: 'sys' }, stale, { role: 'user', content: 'earlier note' }, { role: 'assistant', content: 'ack' }, request];
+      const res = await runAgentLoop({ messages, provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
+        model: 'replay/model', agentId: 'a', runId: 'r', tools: R.wireFormat(), dispatch: (c, ctx2) => R.dispatch(c, ctx2), capCtx: openCtx(), context: ctx, summarize });
+      A.eq(res.reason, 'done', 'chat: run completes');
+      A.ok(folded.length >= 1, 'chat: at least one LLM fold happened (' + folded.length + ')');
+      A.ok(folded[0].some(m => m === stale), 'chat: the summarizer DID receive the stale first message');
+      A.ok(!folded.some(older => older.some(m => m === request)), "chat: and never the run's request");
+      A.ok(messages[1] === request, "chat: the run's request is the pin — the SAME object, right after the system prefix");
+      A.ok(!messages.some(m => m === stale), 'chat: the stale first message is not kept as a message of its own');
+      const note = messages.find(m => m.role === 'system' && /^<conversation_summary>/.test(String(m.content)));
+      A.eq(String(note.content).split('THE OLD DIRECTIVE: tidy the workshop').length - 1, 1, "chat: its words ride the note's verbatim user section exactly once");
+      A.ok(afterNote(messages).noteIdx === 2, 'chat: the summary note sits right after the pinned request');
+      A.ok(turnsOf(afterNote(messages).rest) >= 2, 'chat: the verbatim tail still holds >= keepTailTurns (2) turns');
+    }
   }
 
   // ---- 4. MICRO TIER FIRST: elided tool results clear the threshold -> no summarizer call, reason 'micro' ----
   {
     const { seq, emit } = setup();
     const big = 'C'.repeat(20000);                       // ~5000 tokens of tool output per turn
-    const R = makeRegistry(); R.register({ name: 'noop', schema: { type: 'object' }, run: async () => big });
+    const R = makeRegistry(); R.register({ impact: 'none', name: 'noop', schema: { type: 'object' }, run: async () => big });
     // window 20000: threshold 13000 tokens. After the 3rd tool turn the provider reports 14000 -> fires; eliding the
     // results OUTSIDE a 1-turn tail drops the local estimate far under the threshold -> micro clears it.
     const provider = makeReplayProvider({ turns: [toolTurn('c1', 6000), toolTurn('c2', 11000), toolTurn('c3', 14000), stopTurn] });
@@ -135,7 +165,7 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
   // ---- 4b. microCompaction:false (STARNET_COMPACT_MICRO=0) -> the free tier is skipped, the paid fold runs ----
   {
     const { seq, emit } = setup();
-    const R = makeRegistry(); R.register({ name: 'noop', schema: { type: 'object' }, run: async () => 'C'.repeat(20000) });
+    const R = makeRegistry(); R.register({ impact: 'none', name: 'noop', schema: { type: 'object' }, run: async () => 'C'.repeat(20000) });
     const provider = makeReplayProvider({ turns: [toolTurn('c1', 6000), toolTurn('c2', 11000), toolTurn('c3', 14000), stopTurn] });
     const ctx = makeContext({ contextLimit: 20000, compactAt: 0.65, keepTailTurns: 1 });
     let llm = 0;
@@ -152,14 +182,14 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
   //         threshold crossing folds deterministically (reason 'fallback'), and the run proceeds to 'done' ----
   {
     const { seq, emit } = setup();
-    const R = makeRegistry(); R.register({ name: 'noop', schema: { type: 'object' }, run: async () => 'r'.repeat(3000) });
+    const R = makeRegistry(); R.register({ impact: 'none', name: 'noop', schema: { type: 'object' }, run: async () => 'r'.repeat(3000) });
     const provider = makeReplayProvider({ turns: [toolTurn('c1', 100), toolTurn('c2', 100), toolTurn('c3', 100), toolTurn('c4', 100), stopTurn] });
     const ctx = { shouldCompact: () => true, estimateMessages: (arr) => arr.reduce((t, m) => t + Math.ceil(String(m.content || '').length / 4) + 4, 0),
       planCompaction: (arr) => ({ older: arr.slice(0, Math.max(0, arr.length - 1)), tail: arr.slice(Math.max(0, arr.length - 1)) }) };
     let calls = 0, drained = 0;
     const summarize = async () => { calls++; throw new Error('summarizer down'); };
     summarize.drain = (older) => { drained += older.length; };
-    const messages = [{ role: 'user', content: 'd' }, { role: 'user', content: 'old-1 ' + 'z'.repeat(2000) }, { role: 'assistant', content: 'old-2 ' + 'z'.repeat(2000) }, { role: 'user', content: 'old-3' }];
+    const messages = [{ role: 'user', content: 'FIRST-ASK' }, { role: 'user', content: 'old-1 ' + 'z'.repeat(2000) }, { role: 'assistant', content: 'old-2 ' + 'z'.repeat(2000) }, { role: 'user', content: 'old-3' }];
     const res = await runAgentLoop({ messages, provider, emit, cost: makeCostEngine({ priceOf: provider.priceOf }),
       model: 'replay/model', agentId: 'a', runId: 'r', tools: R.wireFormat(), dispatch: (c, ctx2) => R.dispatch(c, ctx2), capCtx: openCtx(), context: ctx, summarize });
     A.eq(res.reason, 'done', 'the run still completes after the summarizer breaker trips');
@@ -172,7 +202,10 @@ function reg() { const r = makeRegistry(); r.register({ name: 'noop', schema: { 
     // the digest line for a user message points at the (budgeted) verbatim section; it never promises word for word
     A.ok(note.content.indexOf('- user: [see the user messages section below — it marks any message it had to trim or omit]') >= 0, 'a user line points at the user messages section');
     A.ok(!/carried word for word in the user messages section/.test(note.content), 'and no digest line claims the section carries it word for word');
-    A.eq(messages[0], { role: 'user', content: 'd' }, 'directive still pinned');
+    // the pin is the run's OWN request (the newest user message), not the chat's first message: that one folded, and its
+    // words ride the digest's verbatim user section exactly once
+    A.eq(messages[0], { role: 'user', content: 'old-3' }, "the run's own request stays pinned");
+    A.eq(note.content.split('FIRST-ASK').length - 1, 1, 'and the stale first message rides the verbatim user section once');
   }
 
   A.report('compaction.test');

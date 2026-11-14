@@ -133,8 +133,12 @@ body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved {
 }
 body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.has-fold:is(:hover, :focus-visible) { opacity: .9; color: var(--ph); }
 body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.open { opacity: .85; }
-body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.err { color: var(--bad); opacity: .9; }
-body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.stopped { color: var(--gold); opacity: .85; }
+/* review 9: one colour per outcome TONE (chat.js PRESENCE_END): a question the ask's gold, a stop the dim phosphor (never a question's gold,
+   never the red), a run that did not finish the warn tone, a failure red — last, so no other class outranks it */
+body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.tone-ask { color: var(--gold); opacity: .85; }
+body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.tone-stop { color: var(--ph-dim); opacity: .9; }
+body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.tone-warn { color: var(--warn); opacity: .85; }
+body #chat-panel :is(#chat-log, #gc-log) .comms-presence.resolved.tone-bad { color: var(--bad); opacity: .9; }
 body #chat-panel :is(#chat-log, #gc-log) .run-fold { margin: 2px 0 6px 14px; }
 
 /* ---- STATION LINES (trophies, quests, level-ups) — a ruled ASCII line, the time break's sibling: ─┐ ◆ TROPHY … ┌─.
@@ -267,8 +271,10 @@ body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system:not(.cmsg.system + .cmsg
 body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system:not(.cmsg.system + .cmsg.system):first-child { margin-top: 0; }
 /* the lines of a run sit flush, so the card is one surface: the log's 6px flex gap is taken back between them */
 body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system + .cmsg.system { margin-top: -6px; }
-/* the run's last row (no station line and no answering choice row after it): the bottom edge and room below */
-body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system:not(:has(+ .cmsg.system)):not(:has(+ .choice-row)) {
+/* the run's last row (no station line and no answering choice row after it): the bottom edge and room below. chat.js marks a row
+   with something after it (.sys-more, markSysRuns), so a row at the end of the log already wears this edge. Never :has(+ …) here:
+   it restyled the SYSTEM rows on every row added to the log */
+body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system:not(.sys-more) {
   margin-bottom: 12px; padding-bottom: 12px; border-bottom-width: 1px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;
 }
 /* the SYSTEM tag heads the card once, on the text edge */
@@ -288,6 +294,9 @@ body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system > :is(.body, .syscard-he
 }
 /* a saved station line that recorded a failure (chat.js sysLine) keeps its red, as its live line did */
 body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system.err > .body { color: var(--bad); }
+/* and a routine's replayed marker keeps its tone: a question's gold, an unfinished fire's warn */
+body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system.ask > .body { color: var(--gold); }
+body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system.warn > .body { color: var(--warn); }
 /* the collapsed readout: its header is a line like any other, with the one-fold chevron drawn in CSS (VT323 has no ▸) */
 body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system > .syscard-head {
   display: flex; align-items: center; gap: 10px; width: 100%; min-height: 0; font-family: inherit; text-align: left; cursor: pointer;
@@ -372,6 +381,7 @@ body.glass-demo #chat-panel .queued-pill.sent { border-color: rgba(var(--ph-rgb)
 body.glass-demo #chat-panel .queued-pill.sent .queued-tag { color: var(--ok); }
 body.glass-demo #chat-panel .queued-pill.sent .queued-text { color: var(--ph-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 body.glass-demo #chat-panel .queued-pill .queued-when { flex: 0 0 auto; color: var(--ph-dim); font-size: 14px; }
+body.glass-demo #chat-panel .queued-pill .queued-files { font-size: 14px; padding-right: 4px; }
 @media (prefers-reduced-motion: reduce) {
   body #chat-panel :is(#chat-log, #gc-log) > .cmsg.system .sys-door { transition: none; }
   body.glass-demo #chat-panel .queued-pill .queued-now { transition: none; }

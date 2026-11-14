@@ -13,7 +13,7 @@
    headless chat has no browser to answer a permission.prompt, so an ungranted mutation default-denies and the
    run continues — never stalls) UNLESS this chat opted into approve/deny buttons via `/approvals on`, in which
    case it runs 'interactive' and an ungranted mutation asks on the channel and fail-closes on silence (C6);
-   (4) assembles the reply by concatenating agent.token deltas (the SAME contract
+   (4) assembles the reply from agent.token deltas (reply-assembler.js: the SAME contract
    harness.js uses in the browser — there is no agent.message event); (5) delivers it chunked to the platform's
    message-length limit; (6) emits channel.inbound / channel.delivery telemetry. One run per chat: a new message
    ABORTS the in-flight run for that chat and serves the latest (natural chat behavior). The existing per-run
@@ -72,6 +72,13 @@
   // plain-English stop sentences shared with routines/loops (sidecar/stop-reason.js); the inline fallback only serves a
   // non-node embed, which never runs the hub against a real host.
   const StopReason = (typeof require === 'function') ? require('../stop-reason.js') : { stopSentence: (r) => (r ? 'it stopped before finishing (' + r + ')' : '') };
+  // TYPED OUTCOMES: how the run ended, read through the ONE resolver every surface shares (frontend/app/runoutcome.js)
+  const RunOutcome = (typeof require === 'function') ? require('../../frontend/app/runoutcome.js') : null;
+  // THE ONE HOP EXECUTOR (line-job-runner): a work line's later stages run through sidecar/routing/line-runner.js, never a copy here
+  const LineRunner = (typeof require === 'function') ? require('../routing/line-runner.js') : null;
+  // the intake's crate rides to the OUTBOX only when the work line delivered the whole job (review 4.3: the routine's rule too)
+  const lineDelivered = (typeof require === 'function') ? require('../routing/line-fire.js').lineDelivered : function (l) { return !l || typeof l !== 'object' || (!l.stopped && !l.partial); };
+  const NO_END_NOTE = '\n\n(the run ended without reporting how it finished — this reply may be incomplete.)';
   /* WHY THE RUN STOPPED, in words (2026-10-11 — "they start a task and then stop repeatedly with no explanation"). A raw
      "(stopped: empty)" read as a silent stop, a provider-cut reply had no note at all (finishReason was ignored), a
      station-side cancel said nothing, and the unpriced-model TOKEN ceiling told the user to raise a $ cap that never
@@ -106,79 +113,17 @@
     return !!transient && SUPERSEDE_REFUSAL_RE.test(String(message == null ? '' : message));
   }
 
-  /* Re-open a fenced code block that a chunk boundary cut in half.
-
-     A reply longer than the platform's limit is split into messages, and a ``` block straddling the cut left
-     chunk 2 with an UNPAIRED opening fence: the formatter (which only converts what it can prove is balanced
-     within its own string) correctly declines to make it code, so the second half of a script or a log lands as
-     raw prose with a stray ``` in it. Close the block at the end of the chunk that opened it and re-open at the
-     top of the next, so both halves render as code and neither carries a dangling marker.
-
-     Counting is by LINES beginning with ```, which is what a fence actually is — a ``` inside a line of prose
-     ("use ```js to fence it") is not a block delimiter and must not flip the state. The reserve below is why
-     the split is given less room: the two markers we add have to fit under the same limit. */
-  const FENCE_RESERVE = 8;   // '\n```' opening + '```\n' closing, with slack
-  // reopened (optional out-array): reopened[i] === true when chunk i begins INSIDE a block (it got the synthetic opener)
-  function reopenFences(chunks, reopened) {
-    let open = false;
-    const out = [];
-    for (let i = 0; i < chunks.length; i++) {
-      let c = chunks[i];
-      if (reopened) reopened.push(open);
-      if (open) c = '```\n' + c;                        // continue the block this chunk starts inside
-      const fences = (c.match(/^[ \t]{0,3}```/gm) || []).length;
-      if (fences % 2 === 1) { c = c.replace(/\s*$/, '') + '\n```'; open = true; }
-      else open = false;
-      out.push(c);
-    }
-    return out;
-  }
-
-  /* split text into <=max-length pieces, preferring to break at the last newline/space so words/lines stay
-     whole. chunkTextParts returns BOTH views, aligned 1:1: `send` carries the fence-doctored chunks the wire
-     wants (reopenFences injects synthetic ``` markers), `raw` the undecorated splits of the original text.
-     Anyone persisting an undelivered REMAINDER must rebuild it with remainderOf(parts, at) — joining decorated chunks
-     bakes the synthetic fences into the stored text, and the next pass re-fences them (stray ``` lines per retry). */
-  function chunkTextParts(text, max) {
-    const s = String(text == null ? '' : text);
-    // A non-positive `max` makes `end === i` below, so the loop pushes '' forever without advancing. No
-    // caller passes one today (adapters default to 4096), but an unbounded loop is not a thing to leave
-    // one bad config away.
-    max = (typeof max === 'number' && isFinite(max) && max > 0) ? Math.floor(max) : 4096;
-    if (s.length <= max) { const one = s.length ? [s] : []; return { raw: one, send: one, reopened: one.map(() => false) }; }
-    // Leave room for the fence markers reopenFences may add, but ONLY when there is a fence to worry about —
-    // an ordinary long reply keeps the exact old boundaries.
-    const fenced = /^[ \t]{0,3}```/m.test(s);
-    const room = fenced ? Math.max(1, max - FENCE_RESERVE) : max;
-    const out = [];
-    let i = 0;
-    while (i < s.length) {
-      let end = Math.min(i + room, s.length);
-      if (end < s.length) {
-        const slice = s.slice(i, end);
-        const nl = slice.lastIndexOf('\n');
-        const sp = slice.lastIndexOf(' ');
-        const cut = nl > room * 0.5 ? nl : (sp > room * 0.5 ? sp : -1);
-        if (cut > 0) end = i + cut + 1;
-      }
-      out.push(s.slice(i, end));
-      i = end;
-    }
-    const reopened = [];
-    const send = fenced ? reopenFences(out, reopened) : out;
-    return { raw: out, send: send, reopened: fenced ? reopened : out.map(() => false) };
-  }
-  function chunkText(text, max) { return chunkTextParts(text, max).send; }
-  /* remainderOf(parts, at) -> the chunks from `at` on that did NOT go out, as ONE new message: the RAW splits (never the
-     decorated ones) plus a real opening fence when chunk `at` begins inside a code block. The raw tail alone lost that
-     opener — the redelivered code read as prose and its closing ``` became a dangling opener the formatter refuses
-     (review of quick win 20). The ONE rebuild for every undelivered remainder: deliver()'s outbox text and heldText,
-     and a flush pass's progress. */
-  function remainderOf(parts, at) {
-    const i = Math.max(0, Number(at) || 0);
-    const tail = (parts && Array.isArray(parts.raw) ? parts.raw : []).slice(i).join('');
-    return (tail && parts && Array.isArray(parts.reopened) && parts.reopened[i] === true) ? '```\n' + tail : tail;
-  }
+  // THE ONE CHUNKER (channels/chunk.js): a hub's reply and every send outside one split their text there.
+  const { chunkTextParts, chunkText } = require('./chunk.js');
+  // WHERE IN A CHAT an answer goes (channels/routes.js): one route book per hub, made in makeChannelHub.
+  const { makeRouteBook } = require('./routes.js');
+  const ChannelHistory = require('./history-port.js');
+  const TurnView = require('../turn-view.js');
+  const TurnKinds = require('../../frontend/app/turnkinds.js');
+  const DEFAULT_AGENT_PREFIX = 'tg_';
+  const HISTORY_HOLD_NOTE = '⚠ StarNet could not read this chat\'s history, so it did not answer this message (it never answers from another chat\'s history). Send it again in a moment.';
+  // HOW A REPLY REACHES THE CHAT (channels/hub-delivery.js): one per hub, made in makeChannelHub.
+  const { makeHubDelivery } = require('./hub-delivery.js');
 
   /* Render an inbound message's `replyTo` as the preamble that goes ABOVE the member's own words in the turn.
 
@@ -251,31 +196,7 @@
   //   'write'  — the bare form is a read-only readout anyone may see; any argument (a change) is owner-only
   //   absent   — read-only, open to every admitted sender (status, agents, whoami, tools, help, start)
   // Commander-defined commands (userCommandNames) are owner-only too — they run the owner's own aliases.
-  const COMMANDS = [
-    // `aliases` — the desktop registry's other spellings of the SAME command (sidecar/slash.js; pinned by
-    // test/channels.desktop-commands.test.js). Parsed to the canonical name, so the owner gate below reads one rule.
-    { command: 'status', description: 'What this chat is doing right now' },
-    { command: 'stop', description: 'Stop the run in progress', owner: 'always' },
-    { command: 'new', description: 'Forget this chat\'s history and start fresh', owner: 'always', aliases: ['reset'] },
-    { command: 'agents', description: 'List agents (→ marks the one you are talking to)', aliases: ['tasks'] },
-    { command: 'talk', description: 'Switch this chat to another agent', usage: '/talk <name>', owner: 'always' },
-    { command: 'model', description: 'Show or change the current agent\'s model', usage: '/model [id]', owner: 'write' },
-    { command: 'usage', description: 'Real spend from the station ledger', slash: true, owner: 'always' },
-    { command: 'tools', description: 'The tools this agent can actually call', slash: true },
-    { command: 'routine', description: 'List, create or pause scheduled routines', usage: '/routine [list|add <schedule> | <task>|pause N|rm N]', slash: true, owner: 'always', aliases: ['routines'] },
-    { command: 'away', description: 'Queue work to build on the away shift', usage: '/away [<what to build>|list|on|off]', slash: true, owner: 'always', aliases: ['build-away', 'buildaway'] },
-    { command: 'approvals', description: 'Approve/deny buttons for this chat (on or off)', usage: '/approvals [on|off]', owner: 'write' },
-    { command: 'mention', description: 'In a group: when I answer, and whether I follow the rest', usage: '/mention [on|observe|off]', owner: 'write' },
-    // A group is closed until the paired owner sends /allow IN it (2026-10-19). The adapter lets exactly these two
-    // through from a group it does not answer in yet, so the owner can open it from the inside.
-    { command: 'allow', description: 'In a group: let me answer here', owner: 'always' },
-    { command: 'deny', description: 'In a group: stop me answering here', owner: 'always' },
-    { command: 'whoami', description: 'Show which agent this chat is talking to' },
-    { command: 'help', description: 'List these commands', menu: false },
-    // Telegram sends this when a fresh chat's START button is pressed. menu:false — the client offers it on an
-    // empty chat by itself, and it would be noise in the "/" list for everyone else.
-    { command: 'start', description: 'What this bot is and how to talk to it', menu: false }
-  ];
+  const { CHANNEL_COMMANDS: COMMANDS, CHANNEL_NOTE_COMMANDS } = require('../slash.js');
   const SLASH_CMDS = COMMANDS.reduce((m, c) => { if (c.slash) m[c.command] = 1; return m; }, {});
   const KNOWN_CMDS = COMMANDS.reduce((m, c) => { m[c.command] = 1; return m; }, {});
   const ALIAS_CMDS = COMMANDS.reduce((m, c) => { for (const a of (c.aliases || [])) m[a] = c.command; return m; }, {});
@@ -294,29 +215,17 @@
   }
   // the /help body, rendered from the SAME table so it can never claim a command the parser doesn't accept.
   function helpText() {
-    return 'Commands:\n' + COMMANDS.map(c => (c.usage || '/' + c.command) + ' — ' + c.description).join('\n');
+    return 'Commands:\n' + COMMANDS.concat(CHANNEL_NOTE_COMMANDS).map(c => (c.usage || '/' + c.command) + ' — ' + c.description).join('\n');
   }
-  /* A STEERING NOTE IS NOT PROSE (bug e903a199, 2026-10-23). The loop echoes a folded note as one token delta,
-     '\n[steering] <note>\n' (loop.js foldSteerNotes, and the NOT-applied notice at the run's end). COMMS draws that line
-     as its own steer row; buffered raw here it reached the phone as an internal marker glued between the answer before
-     the note and the answer after it. joinReplyDelta keeps both answers and every word of the note, but writes the
-     note as a readable line of its own ('↪ <note>', the same arrow the steer acknowledgement uses), with one blank line
-     on either side — the model's own paragraph break after it is folded in rather than stacked.
-     ONE LINE: this hub posts its notes flattened (steerNoteWire, the rule COMMS's steerWire keeps), but a note posted by
-     any other client may still carry a line break — the echo is matched whole and its note drawn on the one line. */
-  const STEER_ECHO_RE = /^\n\[steering\] ([\s\S]*?)\n?$/;
-  const AFTER_STEER_RE = /(?:^|\n)↪ [^\n]*\n\n$/;
-  // a steering note as the run gets it: one line, however many bubbles or line breaks it was typed in
-  function steerNoteWire(text) { return String(text == null ? '' : text).replace(/\s*\r?\n\s*/g, ' ').trim(); }
-  function joinReplyDelta(buf, delta) {
-    const b = String(buf == null ? '' : buf), d = String(delta == null ? '' : delta);
-    const m = STEER_ECHO_RE.exec(d);
-    if (m) return (b.trim() ? b.replace(/\s+$/, '') + '\n\n' : '') + '↪ ' + steerNoteWire(m[1]) + '\n\n';
-    if (AFTER_STEER_RE.test(b)) return b + d.replace(/^\s+/, '');
-    return b + d;
-  }
+  // A STEERING NOTE IS NOT PROSE (bug e903a199): the steer join, the one-line note and every sink's assembler live in sidecar/reply-assembler.js.
+  const { makeReplyAssembler, joinReplyDelta, steerNoteWire } = require('../reply-assembler.js');
+  // how a withdrawn run ended: one field on its inflight record, read here only through endOf (halt.js)
+  const { endOf, markEnd } = require('../halt.js');
   // the registry's NOTE commands (slash.js steer, queue/q, background/bg/btw) -> what the words after them are for here
-  const NOTE_CMDS = Object.freeze({ steer: 'steer', queue: 'queue', q: 'queue', background: 'background', bg: 'background', btw: 'background' });
+  const NOTE_CMDS = Object.freeze(CHANNEL_NOTE_COMMANDS.reduce((out, row) => {
+    for (const token of [row.command].concat(row.aliases)) out[token] = row.command;
+    return out;
+  }, {}));
   function parseCommand(text) {
     const s = String(text == null ? '' : text).trim();
     if (s[0] !== '/') return null;
@@ -388,7 +297,7 @@
     /* OUTBOUND HOST-PATH GUARD (run-paths review rounds 2 + 3). A project-scoped run is told where a saved file is by its
        absolute path in the agent's private workspace (attachments.js expandForRun), and a model will echo it. A chat is
        never shown an absolute host path: o.scrubOutbound (the host's ONE scrub, sidecar/host-path-scrub.js) runs on the
-       WHOLE text before deliver() or the outbox chunks it (a path cut at a chunk boundary went out in two halves), and
+       WHOLE text before deliver() chunks it (a path cut at a chunk boundary went out in two halves), and
        again on every send / edit, so "<workspaces>\alpha\x.png" reads "[workspace]\alpha\x.png". A rig may pass
        hostPathPrefixes() instead and gets the same scrub over those prefixes. Absent both, the text goes as written. */
     const HostPathScrub = (typeof require === 'function') ? require('../host-path-scrub.js') : null;
@@ -431,13 +340,6 @@
     // root doesn't inject one. It is a wall-time WAIT, not a clock READ — the determinism gate bans Date.now/random
     // here, not setTimeout (see adapter.js:70, discord.transport.js:33 for the identical fallback).
     const sleep = typeof o.sleep === 'function' ? o.sleep : (ms => new Promise(r => setTimeout(r, ms)));
-    // Durable replies must recover even when polling never drops. A separate outbound-only outage used to leave
-    // the outbox parked forever unless another message happened to send successfully. The timer is injected for
-    // deterministic tests, unref'd in production, and explicitly closed with the hub lifecycle.
-    const setTimer = typeof o.setTimeout === 'function' ? o.setTimeout : setTimeout;
-    const clearTimer = typeof o.clearTimeout === 'function' ? o.clearTimeout : clearTimeout;
-    const outboxRetryMs = Number.isFinite(o.outboxRetryMs) ? Math.max(1, Number(o.outboxRetryMs)) : 5000;
-    const outboxRetryMaxMs = Number.isFinite(o.outboxRetryMaxMs) ? Math.max(outboxRetryMs, Number(o.outboxRetryMaxMs)) : 60000;
     // Supersede-retry knobs (tunable for tests; the defaults give ~0.3s+0.6s+1.2s ≈ a couple seconds of grace). When a
     // second message aborts this chat's in-flight run, the fresh run can momentarily lose the same-agent workspace
     // mutex race in the host and get a TRANSIENT "already running a task" refusal — retry exactly that class a few
@@ -445,7 +347,7 @@
     const supersedeRetries = Number.isFinite(o.supersedeRetries) ? Math.max(0, o.supersedeRetries | 0) : 3;
     const supersedeBackoffMs = Number.isFinite(o.supersedeBackoffMs) ? Math.max(0, o.supersedeBackoffMs) : 300;
     const maxMessageLength = o.maxMessageLength || 4096;
-    const agentPrefix = o.agentPrefix || 'tg_';
+    const agentPrefix = o.agentPrefix || DEFAULT_AGENT_PREFIX;
     const resolveAgent = typeof o.resolveAgent === 'function' ? o.resolveAgent : null;   // Phase B: the placed floor's routing plan
     const getTag = typeof o.getTag === 'function' ? o.getTag : null;                     // FILTER content-routing key (B3 classifier)
     const resolveStation = typeof o.resolveStation === 'function' ? o.resolveStation : null;   // B5: per-bay capability station
@@ -454,20 +356,33 @@
     // tools, or routing (those stay with resolveStation/resolveAgent). Chain hops get theirs inside chain.js.
     const stageBriefFor = typeof o.stageBriefFor === 'function' ? o.stageBriefFor : null;
     // AGENTIC GRAPHS: the dock resolveAgent picked is stage ONE; the belts drawn PAST it say where its output
-    // goes. `chain` is the injected executor (sidecar/routing/chain.js) already bound to the floor's edge
-    // function — the hub hands it a way to run one hop and stays require-free. Absent -> a single-stage run,
-    // byte-identical to the behaviour before work lines existed.
-    const chain = (o.chain && typeof o.chain.advance === 'function') ? o.chain : null;
+    // goes. `lineRunner` (sidecar/routing/line-runner.js) runs them: the host builds ONE over the floor-bound chain and hands it to
+    // every hub; a hub given only a `chain` (sidecar/routing/chain.js) builds its own over that chain and this hub's runOnce — the
+    // same executor either way. Absent both -> a single-stage run, byte-identical to the behaviour before work lines existed.
+    const lineRunner = (o.lineRunner && typeof o.lineRunner.runLineJob === 'function') ? o.lineRunner
+      : (LineRunner && o.chain && typeof o.chain.advance === 'function' && typeof o.runOnce === 'function')
+        ? LineRunner.makeLineRunner({ chain: o.chain, runOnce: runOnce, newId: newId, now: now || undefined }) : null;
     /* WORK BELONGS TO A LINE (2026-08-07): lineOriginFor(agentId) -> the lineId work ARRIVING at this dock
        belongs to, or null when nothing triggered a workflow. Injected (index.js passes router.lineOriginFor)
        so the compiled plan alone decides; absent -> null -> the chain never advances, the safe default. */
     const lineOriginFor = typeof o.lineOriginFor === 'function' ? o.lineOriginFor : null;
+    const intakeReceiptFor = typeof o.intakeReceiptFor === 'function' ? o.intakeReceiptFor : null;
     // Target-agent runtime identity for downstream work-line hops. The connection's own secrets belong only
     // to stage one; reusing them would silently run every later dock on the upstream model/provider.
     const resolveRunConfig = typeof o.resolveRunConfig === 'function' ? o.resolveRunConfig : null;
     // Opt-in for unaddressed sample runs: resolve identity only AFTER the router picks the dock.
     const resolveEntryRunConfig = typeof o.resolveEntryRunConfig === 'function' ? o.resolveEntryRunConfig : null;
+    const mentionControl = o.mentionControl !== false;
     const onLineOutcome = typeof o.onLineOutcome === 'function' ? o.onLineOutcome : null;
+    /* THE FACTS A SAVED HOLD NAMES OF HOW A JOB CAME IN (line-hold lane, S3). A work line that parks at a reviewer's gate keeps its origin
+       (line-hold.js originOf): this chat — channel, chat, sender, thread, bound agent — unless the door knows better (jobOrigin(): the trigger
+       hub knows its trigger and delivery, the SEND TO hub the job it came from). Facts only: the host decides whether they name an origin. */
+    const jobOrigin = typeof o.jobOrigin === 'function' ? o.jobOrigin : null;
+    function jobOriginFacts(chatId, msg, boundAgentId) {
+      if (jobOrigin) { try { const f = jobOrigin(); if (f && typeof f === 'object') return f; } catch (e) { failNote('channels.hub.jobOrigin', e); } }
+      return { instanceId: channel, chatId: String(chatId), senderId: msg && msg.userId != null ? String(msg.userId) : '', chatType: msg && msg.chatType === 'group' ? 'group' : 'dm',
+        threadId: msg && msg.threadId != null ? msg.threadId : null, boundAgentId: boundAgentId || null };
+    }
     // ENTRY TAINT (security review 2026-09-24): a hub whose every inbound message is EXTERNAL DATA rather than the
     // owner speaking — the line-trigger hub (a webhook payload / a watched folder's file contents) — names the taint
     // its FIRST hop starts under, so the entry run's sensitive tools are consent-gated exactly like any other run
@@ -501,13 +416,8 @@
     // old absent property ('' / 'global' fallbacks), so behaviour is unchanged.
     const streamIdFor = typeof o.streamId === 'function' ? o.streamId
       : (o.streamId ? function () { return String(o.streamId); } : null);
-    // Canonical transcript projection. Ordinary channel chats share the durable workstream ledger used by
-    // desktop COMMS; the legacy channel history remains an offline fallback only.
-    const historyFor = typeof o.historyFor === 'function' ? o.historyFor : null;
-    // observeInto(streamId, agentId, text, taint) files an OVERHEARD group line (/mention observe) as a run-less user row
-    // in that canonical stream — the one historyFor replays. Without it a hub with historyFor never shows the agent what
-    // it overheard, so observe is offered only where it can be kept (observeKept below).
-    const observeInto = typeof o.observeInto === 'function' ? o.observeInto : null;
+    // Production factories always inject the canonical owner. Only hand-built test hubs use the named legacy seam.
+    const history = o.history || ChannelHistory.legacyPort(store, { failNote });
     // ONE-RESOLVER LAW: any telemetry that attributes an inbound message to an agent (workitem crates, queue
     // HUD) must come from THIS hub's resolution, never a parallel guess. onResolved fires once per real message
     // (never for /commands) with the exact agentId the run will execute as, in onInbound's first synchronous
@@ -546,6 +456,10 @@
     // are not tagged as sender-originated, so their Full Power posture is unchanged, while its commands still need
     // an owner it can never name (a webhook body that starts with /stop is refused, not obeyed).
     const tagSenderRuns = !ownerSurface && o.untrustedSenders !== false;
+    // The sender verdict a slash command carries to the shared registry: the same host-minted pair this chat's runs carry
+    // (run-origin.js hostPowerWithheldFor reads it), so /tools counts Full Power exactly when the run gets it. A hub with a
+    // runSlash never takes a SEND TO hand-off inbound (the trigger hub passes none), so no line verdict applies here.
+    const slashSender = (senderOwner) => ({ channelSender: tagSenderRuns, channelSenderOwner: senderOwner === true });
     const rosterFn = typeof o.roster === 'function' ? o.roster : null;
     const setModelFn = typeof o.setModel === 'function' ? o.setModel : null;
     const modelCatalogFn = typeof o.modelCatalog === 'function' ? o.modelCatalog : null;
@@ -630,7 +544,7 @@
           meta: { runId: runId, promptId: promptId }
         });
         if (!entry) return;
-        if (ask) ask.entry = entry;
+        if (ask) { ask.entry = entry; ask.id = 'consent:' + runId + ':' + promptId; }
         // argsSummary is the WHOLE request now (consentSummary): fit it under a chat message's limit, and say when it
         // doesn't fit — a silent cut would ask for an approval of words the Commander never saw
         const ARGS_MAX = 3000;
@@ -663,8 +577,11 @@
        four live-looking buttons under it, and a late tap then had to guess what had happened. So the hub .then()s the ask
        and edits the keyboard message ONCE with the decision the broker applied, stripping the buttons (an edit with no
        reply_markup). A tap only acknowledges; it records which button won so the stamp can name it.
-       `ask` = { entry, messageId, decision, stamped }: messageId arrives when the keyboard lands, decision when the ask
-       settles — whichever comes second stamps. Cosmetic in effect (the decision is applied either way) and never awaited. */
+       `ask` = { id, entry, messageId, decision, stamped }: messageId arrives when the keyboard lands, decision when the ask
+       settles — whichever comes second stamps. Cosmetic in effect (the decision is applied either way) and never awaited,
+       but durable (channel-delivery-ledger S6): a keyboard that lands with its ask open goes on the ledger, so a crash cannot
+       leave it live for good (hub-delivery.js), and the settle's write swaps that for a delivery in the chat's lane, which
+       retries a refusal and survives a crash. */
     function consentStampLine(decision, tapped) {
       const d = String(decision || '');
       if (tapped) return '▸ ' + String(tapped);
@@ -673,12 +590,14 @@
       return '▸ ❌ DENIED — the action did not run';
     }
     function stampConsent(chatId, ask) {
-      if (!ask || ask.stamped || ask.decision === undefined || !ask.messageId || !ask.entry) return;
-      ask.stamped = true;
-      if (!editMessage) return;
-      const tapped = ask.entry.meta && ask.entry.meta.tapped ? ask.entry.meta.tapped : '';
-      const text = String((ask.entry.meta && ask.entry.meta.text) || '') + '\n\n' + consentStampLine(ask.decision, tapped);
-      try { Promise.resolve(editMessage(chatId, ask.messageId, text, {})).catch(swallow('channels.hub.consent.stamp')); } catch (e) { failNote('channels.hub.consent.stamp', e); }
+      if (!ask || ask.stamped || !ask.messageId || !ask.entry || !editMessage) return;
+      const meta = ask.entry.meta || {};
+      const keyboard = { id: ask.id, messageId: ask.messageId, runId: meta.runId, promptId: meta.promptId, text: String(meta.text || '') };
+      try {
+        if (ask.decision === undefined) { delivery.askOpened(chatId, keyboard); return; }
+        ask.stamped = true;
+        delivery.stamp(chatId, Object.assign(keyboard, { text: keyboard.text + '\n\n' + consentStampLine(ask.decision, meta.tapped || '') }));
+      } catch (e) { failNote('channels.hub.consent.stamp', e); }
     }
     /* AN UNANSWERED APPROVAL EXPIRED (2026-10-11). It fail-closes (the action does not run), but it used to do so in
        silence and the agent then told the user "you declined". Tell the chat what actually happened and how to retry;
@@ -692,7 +611,7 @@
     const MAX_REPLY_MEDIA = 4;                       // files lifted off a QUOTED message — context, never the bulk
     const MAX_MEDIA_BYTES = 8 * 1024 * 1024;         // mirrors attachments.js MAX_BYTES (saveAttachment re-enforces)
     if (typeof runOnce !== 'function') throw new Error('makeChannelHub: runOnce is required');
-    if (!store || typeof store.loadHistory !== 'function') throw new Error('makeChannelHub: a channel store is required');
+    if (!store) throw new Error('makeChannelHub: a channel store is required');
     if (typeof send !== 'function') throw new Error('makeChannelHub: a send(chatId,text) is required');
 
     // The fallback factory is INVOKED: un-invoked, personaFor returned the inner arrow and every run without a configured
@@ -701,19 +620,18 @@
       : (() => { const p = (typeof o.persona === 'string' && o.persona) || DEFAULT_PERSONA; return () => p; })();
 
     const AID_RE = /^[A-Za-z0-9_-]{1,40}$/;   // notebook/fs-jail agentId grammar (a configured agentId must match)
-    // chatId -> { runId, abort, superseded, agentId, startedAt } (one run per CONVERSATION, not per agent). The
+    // chatId -> { runId, abort, endReason, agentId, startedAt } (one run per CONVERSATION, not per agent). The
     // record is the SINGLE source of truth for this channel's live runs: E-STOP reads it (killAll in halt.js) AND
     // GET /api/state/snapshot reads it (so a reconnect never wipes a live channel run's floor/HUD state — the
     // reconcile keeps any agent listed here). agentId/startedAt are carried so the snapshot can attribute the run
-    // to the acting agent and age it, exactly like an interactive/cron/workshop run in runsMeta. Additive to the
-    // record: halt.js only ever reads { abort, superseded }, so the extra fields are invisible to it.
+    // to the acting agent and age it, exactly like an interactive/cron/workshop run in the run table. Additive to the
+    // record: halt.js only ever reads { abort, endReason }, so the extra fields are invisible to it.
     const inflight = new Map();
 
     // chatId -> a per-chat agentId, sanitized to the notebook/fs-jail grammar (/^[A-Za-z0-9_-]{1,40}$/). Telegram
     // chat ids are already safe (numeric, '-' for groups); the prefix namespaces them away from the browser 'agent'.
     function agentIdFor(chatId) {
-      const tail = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 40 - agentPrefix.length);
-      return agentPrefix + (tail || '0');
+      return ChannelHistory.keyFor(chatId, agentPrefix);
     }
     /* HOP HISTORY IS KEYED BY CHAT LINEAGE, NOT BY AGENT (sec-taint 09-25). A downstream hop replays its prior turns
        from the channel store. That store was keyed by the hop's agentId alone, so every chat, every line and every
@@ -734,6 +652,33 @@
       const hex = (n) => ('00000000' + n.toString(16)).slice(-8);
       return 'hop_' + hex(h1) + hex(h2) + hex(Math.imul(h1 ^ h2, 0x01000193) >>> 0) + hex((h2 + src.length) >>> 0);
     }
+    /* hopLineage(chatId, lineId) -> a REAL chat's canonical replay for ONE job. Ordinary chat turns remain visible;
+       only hop rows require this dock's line tag. Read once on first arrival so a loop-back never replays this job's
+       later same-dock hop output (token-burn 10-17: "the hub loop-back sends the draft twice"). The ordinary entry
+       pair already finished before first arrival and stays visible. The stage replays the chat's WORDS, never the tool
+       traffic of the agent before it (forAgent): the provider is not told the stage made a call only that agent made.
+       A one-job hub (bindChats:false) gets none. */
+    function hopLineage(chatId, lineId, chat) {
+      const read = new Map();
+      const keyOf = h => hopHistoryKey(chatId, lineId, h.dockId || h.agentId);
+      return {
+        load: h => {
+          const key = keyOf(h);
+          if (!read.has(key)) {
+            const line = TurnKinds.ofRun({ lineHop: true, lineId, dockId: h.dockId }).line;
+            if (!line && !history.legacy) throw new Error('The line history has no canonical line/dock identity');
+            read.set(key, history.replay({ chat, streamId: chat.streamId, agentId: h.agentId, forAgent: h.agentId, line, shape: 'pairs', legacyKey: key }));
+          }
+          return read.get(key);
+        },
+        append: (h, role, text) => {
+          if (!history.legacy && bindChats) return;
+          const key = keyOf(h);
+          history.legacyMirror(key, role, text, { chat });
+          if (role === 'user') rememberHopKey(chatId, key);
+        }
+      };
+    }
     // the hop keys a chat has written, remembered on its chat record so /new forgets the line's handoffs too
     function rememberHopKey(chatId, key) {
       if (!bindChats || typeof store.getChatRecord !== 'function' || typeof store.saveChatRecord !== 'function') return;
@@ -746,82 +691,43 @@
       } catch (e) { failNote('channels.hub.hopKeys', e); }
     }
 
-    function resolvedStreamId(chatId) {
-      let explicit = '';
-      try { if (streamIdFor) explicit = String(streamIdFor(chatId) || ''); } catch (_) { explicit = ''; }
-      if (/^[A-Za-z0-9_-]{1,64}$/.test(explicit)) return explicit;
-      if (!bindChats) return null;
-      try {
-        const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
-        // a string, always: a NEW chat has no record, and RegExp.test(undefined) tests "undefined" — a valid-looking id
-        const bound = rec ? String(rec.streamId || '') : '';
-        if (/^[A-Za-z0-9_-]{1,64}$/.test(bound)) return bound;
-      } catch (_) {}
-      const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
-      return base.slice(0, 64) || null;
+    function chatContext(chatId) {
+      return history.context({ store, channel, chatId, legacyKey: agentIdFor(chatId), bindChats, streamIdFor });
+    }
+    function countHistory(chatId, agentId, streamId) { return history.count({ chat: chatContext(chatId), agentId, streamId }); }
+    async function holdHistory(chatId, agentId, intake, error, answers) {
+      failNote('channels.hub.history', error);
+      if (intake && typeof intake.onSettled === 'function') {
+        try { intake.onSettled({ runId: '', ok: false }); } catch (e) { failNote('channels.hub.onSettled', e); }
+      }
+      await deliver(chatId, HISTORY_HOLD_NOTE, '', 'error', agentId, undefined, '', answers);
+    }
+    /* THE SAVED FLOOR IS HELD (routing/saved-hold.js). resolveAgent throws the hold instead of answering from a floor that cannot be
+       proved right now, and this message is refused here, in words, with nothing run: never a fallback agent, never a guess about
+       which bay it would have reached. A job the host opened for this message beforehand (the sample and trigger hubs) is settled as
+       the refusal it is, in the existing 'refused' stop; the receipts leave with the reply like any other message's. */
+    const heldSaid = error => String((error && error.why) || 'the saved floor is held; routing is held until it is readable');
+    async function holdRouting(chatId, agentId, intake, error, answers) {
+      const why = heldSaid(error);
+      if (intake && typeof intake.onSettled === 'function') {
+        // held (additive): a caller that watches the settlement reads the refusal as typed, not only as words in the reply
+        try { intake.onSettled({ runId: '', ok: false, held: { status: String((error && error.status) || 'unreadable'), why } }); } catch (e) { failNote('channels.hub.onSettled', e); }
+      }
+      const preJobId = typeof o.jobId === 'function' ? o.jobId() : null;
+      const preJob = preJobId && lineRunner && typeof lineRunner.get === 'function' ? lineRunner.get(preJobId) : null;
+      if (preJob) {
+        try {
+          const settled = lineRunner.settle(preJob, { refusedSaid: why });
+          if (typeof o.onJobSettled === 'function') o.onJobSettled(settled);
+        } catch (e) { failNote('channels.hub.jobOutcome', e); }
+      }
+      await deliver(chatId, '⚠ StarNet did not run this message: ' + why + '.', '', 'error', agentId, undefined, '', answers);
     }
 
-    /* ---- ROUTE: answer WHERE the question was asked -------------------------------------------------------
-       Two facts arrive with an inbound message and were both thrown away: which sub-conversation it came from
-       (`threadId` — a Telegram forum topic today), and which message it was (`messageId`). Without the first,
-       every answer in a forum supergroup lands in **General instead of the topic the member is sitting in** —
-       the last remaining case of this channel delivering to the wrong place rather than merely doing less. Without
-       the second, a reply in a busy group floats loose from its question.
-
-       Ambient per chat rather than threaded through ~40 deliver() call-sites: the route is a property of the
-       CONVERSATION, so /status, a consent card and the run's answer should all land in the same topic without
-       each having to know it. Bounded (MAX_ROUTES, oldest evicted) because chatIds are unbounded.
-
-       The quote is CONSUMED on first use; the thread is not. A quote answers one specific message, so a routine
-       firing six hours later must not reach back and reply to it — but it should still land in the right topic.
-       Fields are neutral ({ threadId, replyTo }); only telegram.transport.js knows the Bot API's names, and the
-       other four transports ignore opts they do not recognise, so their behaviour is byte-identical. */
-    const MAX_ROUTES = 500;
-    const routes = new Map();   // chatId -> { threadId, replyTo, lastMessageId }
-    function noteRoute(msg) {
-      const chatId = String(msg.chatId);
-      const threadId = (msg.threadId == null || msg.threadId === '') ? '' : String(msg.threadId);
-      // Quoting in a DM is noise — there is only one other person and nothing to disambiguate. Groups only,
-      // which is also where a detached answer actually costs the reader something.
-      const replyTo = (msg.chatType === 'group' && msg.messageId != null && msg.messageId !== '') ? String(msg.messageId) : '';
-      const lastMessageId = (msg.messageId == null || msg.messageId === '') ? '' : String(msg.messageId);
-      routes.delete(chatId);                        // re-insert so Map iteration order is least-recently-used first
-      routes.set(chatId, { threadId: threadId, replyTo: replyTo, lastMessageId: lastMessageId });
-      while (routes.size > MAX_ROUTES) { const k = routes.keys().next().value; routes.delete(k); }
-    }
-
-    /* IS THIS EDIT WORTH A FRESH RUN?
-       Telegram now delivers `edited_message`, which closes a real gap — fixing a typo used to change nothing and
-       the bot went on answering the typo. But "an edit is just another message" is too blunt: editing something
-       from last week would fire a run out of nowhere, and it would be spend the member never asked for.
-
-       The bound is the narrowest one that still fixes the case people actually hit: an edit counts only when it
-       edits the LAST message we saw in that chat. Anything older is somebody tidying history, not asking again.
-       No record (a fresh boot) also declines — we cannot tell an ancient edit from a fresh one, and inventing a
-       run is worse than doing nothing. When it IS accepted, the supersede rule downstream does the rest: a
-       correction made while the bot is still thinking aborts the stale run and re-answers the corrected text. */
-    function editIsCurrent(msg) {
-      const r = routes.get(String(msg.chatId));
-      if (!r || !r.lastMessageId) return false;
-      return String(msg.messageId || '') === r.lastMessageId;
-    }
-    /* The topic this chat was bound to no longer exists — the transport already saved the message by resending
-       to the chat root, but the binding itself must go too, or every later send repeats that failed call and
-       its retry. Dropped rather than remembered as "dead": the next inbound message re-learns the real topic. */
-    function forgetThread(chatId) {
-      const r = routes.get(String(chatId));
-      if (r && r.threadId) r.threadId = '';
-    }
-    // first=true asks for the quote as well (and spends it). Returns null when this chat has no route, so the
-    // send call is byte-identical to before on every platform that never sets one.
-    function routeOpts(chatId, first) {
-      const r = routes.get(String(chatId));
-      if (!r) return null;
-      const out = {};
-      if (r.threadId) out.threadId = r.threadId;
-      if (first && r.replyTo) { out.replyTo = r.replyTo; r.replyTo = ''; }
-      return (out.threadId || out.replyTo) ? out : null;
-    }
+    /* ---- ROUTE: answer WHERE the question was asked (channels/routes.js) -----------------------------------------
+       The chat's forum topic and the message to quote ride every send as neutral opts ({ threadId, replyTo }); the
+       quote is spent on first use, the topic is not. Ambient per chat, bounded, one book per hub. */
+    const { routes, noteRoute, beginWork, isCurrentWork, editIsCurrent, forgetThread, routeOpts, MAX_ROUTES } = makeRouteBook();
 
     /* ---- REACTION ACK: "I heard you", for the price of one API call -----------------------------------------
        The typing bubble answers "is it working?" only while you are looking at the chat. A reaction is durable:
@@ -887,7 +793,6 @@
     const streamOk = !!(editMessage && deleteMessage) && o.streamReplies !== false;
     const STREAM_MIN_MS = Number.isFinite(o.streamMinMs) ? Math.max(250, o.streamMinMs) : 1500;   // Telegram edits: ~1/s is safe
     const STREAM_MIN_CHARS = Number.isFinite(o.streamMinChars) ? Math.max(1, o.streamMinChars) : 60;   // don't seed on "Su"
-    const notModified = (e) => /not modified/i.test(String(e || ''));
 
     function startStream(chatId) {
       if (!streamOk) return null;
@@ -966,208 +871,46 @@
       return function () { stopped = true; };
     }
 
-    // agentId (optional, last arg) names WHICH roster agent produced this reply, so the floor can pulse the RIGHT
-    // agent's dish on a multi-agent station. Passed only for a real RUN reply (onInbound); administrative command
-    // replies (/agents, /model…) omit it — no agent "produced" them, so the floor should not attribute a dish.
-    // sendOpts (optional) rides ONLY on the FINAL chunk — a keyboard must land under the last thing the user
-    // reads, and Telegram would otherwise render one set of buttons per chunk of a long reply. Returns the final
-    // chunk's messageId too, which is what a keyboard needs in order to be edited/stripped once it is tapped.
-    async function deliver(chatId, text, runId, reason, agentId, sendOpts, seedId) {
-      // `send` is what goes on the wire; remainderOf(parts, at) rebuilds any undelivered REMAINDER from `raw` (see chunkTextParts — joining the
-      // fence-doctored chunks bakes synthetic ``` markers into the stored text, re-fenced on every redelivery). The host
-      // path scrub runs on the WHOLE text first: chunked, a path cut at the boundary would go out as two halves.
-      const parts = chunkTextParts(scrubHostPaths(text), maxMessageLength);
-      const chunks = parts.send;
-      let ok = true, failedAt = -1, messageId = '', lastFail = null;
-      // A message the stream already put in the chat. Chunk 0 REPLACES it rather than being sent again — that
-      // replacement is the whole difference between "streamed" and "streamed, then repeated".
-      let seed = (seedId && editMessage) ? String(seedId) : '';
-      for (let i = 0; i < chunks.length; i++) {
-        const last = i === chunks.length - 1;
-        // The route rides EVERY chunk (all of a split reply belongs in one topic) while the quote and the
-        // keyboard each ride exactly one: the quote the first chunk, the keyboard the last. A fresh object every
-        // time — the caller's sendOpts is theirs and must not grow a stale reply id.
-        const rt = routeOpts(chatId, i === 0);
-        const terminal = (last && sendOpts) ? sendOpts : null;
-        const opts = (rt || terminal) ? Object.assign({}, terminal || {}, rt || {}) : undefined;
-        let r;
-        if (i === 0 && seed) {
-          // Replace the streamed partial with the finished chunk. "message is not modified" means the text we
-          // streamed was already the final text — a success wearing a 400.
-          try { r = await editMessage(chatId, seed, chunks[0], opts || {}); } catch (e) { r = { ok: false, error: (e && e.message) || 'editMessage threw' }; }
-          if (r && r.ok === false && notModified(r.error)) r = { ok: true, messageId: seed };
-          if (!r || r.ok === false) {
-            /* The partial is stranded: we cannot update it and we are about to send the real answer. Remove it
-               first, or the member reads half an answer immediately above the whole one. The delete is
-               best-effort — if it fails too, delivering the reply still matters more than the duplicate. */
-            try { await deleteMessage(chatId, seed); } catch (_) {}
-            seed = '';
-            try { r = await send(chatId, chunks[0], opts); } catch (e) { r = { ok: false, error: (e && e.message) || 'send threw' }; }
-          } else if (!r.messageId) {
-            r = { ok: true, messageId: seed };   // an edit answers with no id of its own; it is still that message
-          }
-        } else {
-          try { r = await send(chatId, chunks[i], opts); } catch (e) { r = { ok: false, error: (e && e.message) || 'send threw' }; }
-        }
-        if (r && r.threadGone) forgetThread(chatId);   // the topic is gone; stop aiming at it
-        if (!r || r.ok === false) { ok = false; failedAt = i; lastFail = r || null; break; }
-        if (last && r.messageId) messageId = String(r.messageId);
+    /* ---- DELIVERY (channels/hub-delivery.js, on the delivery ledger) ------------------------------------------
+       How this hub's replies reach the chat, and how the messages it was handed are held until they are answered:
+       onInbound writes a message's receipt before the adapter acknowledges it; deliver() writes a reply to the ledger
+       (answering its receipts in the same write) and the chat's lane sends it on the chat's route, retrying it alone
+       when it fails; recoverInbox replays a receipt no live run owns ('up' and a timer). */
+    const delivery = makeHubDelivery({
+      channel: channel, store: store, send: send, editMessage: editMessage, deleteMessage: deleteMessage, scrubHostPaths: scrubHostPaths,
+      maxMessageLength: maxMessageLength, routeOpts: routeOpts, forgetThread: forgetThread, emit: emit, routeInbound: routeInbound,
+      deferrable: deferrable, editIsCurrent, now: o.now, setTimeout: o.setTimeout, clearTimeout: o.clearTimeout, recoverMs: o.recoverMs
+    });
+    /* WHAT BACKPRESSURE MAY HOLD BACK (review round 1). A chat that owes too many undelivered replies has its new messages
+       kept (deferred) until its lane drains: it starts no new paid run meanwhile. A message that starts no run is never held
+       — its own answer is ephemeral and adds nothing to the lane — and holding one took the chat's controls away: a deferred
+       /stop or "stop" never reached the run still working and spending. Those are: a hub command, the Commander's own or a
+       desktop command (not a note command, which may start a run), a stop word or a follow-up to the run this chat has
+       working (it joins that run), an overheard group line, an admission or pairing message, and an edit of an older
+       message. Everything else may start a run, and waits its turn. Read at intake, before the receipt is written. */
+    function deferrable(msg) {
+      if (!msg || msg.tap) return true;
+      if (msg.directReply || msg.admissionOnly || msg.observeOnly) return false;
+      if (msg.edited && !editIsCurrent(msg)) return false;
+      const text = String(msg.text || '');
+      const third = carriesThirdPartyText(msg);
+      if (!third && text.trim().charAt(0) === '/') {
+        if (parseCommand(text)) return false;
+        let names = [];
+        try { names = userCommandNames() || []; } catch (e) { failNote('channels.hub.userCommandNames', e); names = []; }
+        if (parseUserCommand(text, names)) return false;
+        const desk = desktopCommandFn ? parseDesktopCommand(text) : null;
+        if (desk && !NOTE_CMDS[desk.name]) return false;
       }
-      /* UNDELIVERABLE (quick win 22): the transport said this send can NEVER succeed (retryable:false — a 4xx such as
-         "chat not found", "message is too long", "bot was blocked"). Queued, it failed identically on every flush and,
-         sitting at the head of the outbox, stopped every pass before the replies queued behind it; held for an inbox
-         replay, it would re-run the message only to fail again. It is parked: said once, never retried. An ABORTED
-         send is our own transport being torn down, not the chat refusing — that one still queues. So does a refused
-         CREDENTIAL (auth:true — every transport marks a 401 / revoked token): it is the whole channel failing, not this
-         chat, every chat fails alike until the Commander re-pairs, and the re-paired hub's 'up' flushes the outbox to
-         the same chats. Parking it would drop the one reply the outbox can still save (review of quick win 22). */
-      const undeliverable = !ok && !!lastFail && lastFail.retryable === false && lastFail.auth !== true && String(lastFail.error || '') !== 'aborted';
-      // DURABLE OUTBOX: a reply that failed to send used to be recorded (channel.delivery ok:false) and then
-      // LOST — the agent did the work and the Commander never saw the result. Queue the undelivered remainder
-      // (only the chunks that did NOT go out) in the store's bounded outbox; flushOutbox redelivers it when the
-      // transport is proven healthy again (next successful delivery, or the adapter's next 'up' status). Command
-      // replies (/help, /agents…) are ephemeral and stay fire-and-forget — a stale command menu hours later is
-      // noise, not a lost result. Guarded on pushOutbox so hubs built over older/test stores behave as before.
-      // 'prompt' joins 'command' as ephemeral: a permission ask whose keyboard failed to send is answered by the
-      // host's fail-closed timer within seconds — redelivering that dead question hours later would invite a tap
-      // on a run that ended long ago.
-      // …unless the chat is KNOWN unreachable. Queueing for a chat that blocked us is not resilience, it is a
-      // pile of retries that can only ever fail — and every one of them is an API call. See onMembership.
-      // Read the record only on the failure path: this runs on every delivered message, and the happy path must
-      // not pay a store read to answer a question that only matters when a send has already failed.
-      let unreachable = false;
-      if (!ok) {
-        try { const r0 = typeof store.getChatRecord === 'function' ? store.getChatRecord(String(chatId)) : null; unreachable = !!(r0 && r0.unreachable); } catch (_) {}
+      const live = inflight.get(String(msg.chatId));
+      if (live && live.abort && !endOf(live)) {
+        if (STOP_WORDS_RE.test(text)) return false;
+        const media = Array.isArray(msg.media) && msg.media.length;
+        if (steerRun && msg.chatType !== 'group' && !msg.edited && !third && !media && text.trim()) return false;
       }
-      if (!ok && unreachable) {
-        try { console.error('[' + channel + '] reply for chat ' + chatId + ' NOT queued — this chat has blocked or removed the bot'); } catch (_) {}
-      } else if (undeliverable) {
-        try { console.error('[' + channel + '] reply for chat ' + chatId + ' is undeliverable and was NOT queued: ' + String(lastFail.error || 'refused').slice(0, 200)); } catch (_) {}
-      }
-      const mustPersistFailure = !ok && !unreachable && !undeliverable && reason !== 'command' && reason !== 'prompt' && typeof store.pushOutbox === 'function';
-      let failurePersisted = false;
-      let failurePersistError = null;
-      if (mustPersistFailure) {
-        try {
-          const remainder = '⌛ delayed reply — the channel was unreachable when this was first sent:\n' + remainderOf(parts, failedAt);
-          store.pushOutbox({ channel: channel, chatId: String(chatId), text: remainder, runId: runId || '', agentId: agentId ? String(agentId) : '', reason: reason || '' });
-          failurePersisted = true;
-          scheduleOutboxRetry();
-        } catch (e) { failurePersistError = e; }
-      }
-      const ev = { channel, chatId: String(chatId), runId: runId || '', ok, chunks: chunks.length, reason: undeliverable ? 'undeliverable' : (reason || '') };
-      if (agentId) ev.agentId = String(agentId);   // additive/optional — attribute the dish to the acting agent
-      try { emit('channel.delivery', ev); } catch (_) {}
-      if (ok) { try { kickOutbox(); } catch (_) {} }   // a proven-healthy send is the cue to drain any backlog
-      // The adapter acknowledged this message only after its durable INBOX receipt existed. If the failed answer
-      // cannot enter the outbox, reject processing so that receipt remains and replays once capacity returns.
-      // `heldText` is the remainder the outbox refused: processInbound keeps it on that receipt (deliverHeld), so the
-      // replay sends this finished answer instead of running the message a second time.
-      if (mustPersistFailure && !failurePersisted) {
-        const err = new Error('failed reply could not be persisted: ' + ((failurePersistError && failurePersistError.message) || 'outbox unavailable'));
-        err.heldText = remainderOf(parts, failedAt);
-        throw err;
-      }
-      // `text` is the FINAL chunk's text — the one a keyboard was attached to, and therefore the exact string a
-      // later editMessage must rebuild on top of when it stamps the chosen answer in place.
-      return { ok: ok, messageId: messageId, text: chunks.length ? chunks[chunks.length - 1] : '' };
+      return true;
     }
-
-    // ---- durable-outbox flush: redeliver queued replies once the transport is healthy ----------------------
-    // Triggered by (a) the adapter reporting 'up' (reconnect/restart recovery) and (b) any successful deliver
-    // (covers a mid-session send failure while the poll status never dropped). One pass at a time; a failed
-    // redelivery bumps the item's try-count and STOPS the pass (transport clearly still shaky) — the item is
-    // Retained until delivery succeeds or Telegram proves the chat unreachable. At five failures we emit one
-    // escalation event, but keep retrying at the capped cadence — a two-minute outage must not become message loss.
-    const OUTBOX_ESCALATE_TRIES = 5;
-    let flushing = false;
-    let outboxTimer = null;
-    let closed = false;
-    function pendingOutbox() {
-      try { return typeof store.loadOutbox === 'function' ? (store.loadOutbox(channel) || []) : []; }
-      catch (_) { return []; }
-    }
-    function scheduleOutboxRetry() {
-      if (closed || outboxTimer || typeof store.loadOutbox !== 'function') return;
-      const items = pendingOutbox();
-      if (!items.length) return;
-      const tries = Math.max(0, Number(items[0] && items[0].tries) || 0);
-      const delay = Math.min(outboxRetryMs * Math.pow(2, Math.min(tries, 8)), outboxRetryMaxMs);
-      outboxTimer = setTimer(() => {
-        outboxTimer = null;
-        Promise.resolve(flushOutbox()).catch(function () {});
-      }, delay);
-      if (outboxTimer && typeof outboxTimer.unref === 'function') outboxTimer.unref();
-    }
-    function kickOutbox() {
-      if (closed) return;
-      if (outboxTimer) { try { clearTimer(outboxTimer); } catch (_) {} outboxTimer = null; }
-      const p = flushOutbox();
-      if (p && typeof p.catch === 'function') p.catch(function () {});
-    }
-    async function flushOutbox() {
-      if (closed || flushing || typeof store.loadOutbox !== 'function') return;
-      flushing = true;
-      try {
-        const items = store.loadOutbox(channel);
-        for (const it of items) {
-          // A chat that blocked us cannot be redelivered to. onMembership already drops its backlog, but a flush
-          // racing that drop would otherwise spend a failed send per item and then stop the whole pass.
-          let dead = false;
-          try { const r0 = typeof store.getChatRecord === 'function' ? store.getChatRecord(String(it.chatId)) : null; dead = !!(r0 && r0.unreachable); } catch (_) {}
-          if (dead) { try { store.removeOutbox(it.id); } catch (e) { failNote('channels.hub.outbox.remove', e); } continue; }
-          const parts = chunkTextParts(scrubHostPaths(it.text), maxMessageLength);   // whole text first, as deliver() does
-          const chunks = parts.send;
-          let ok = true, sentUpTo = 0;
-          for (let ci = 0; ci < chunks.length; ci++) {
-            let r;
-            // Thread only, never the quote: a delayed reply still belongs in its topic, but the message it was
-            // answering is hours old and quoting it now would read as a bot talking to the past.
-            try { r = await send(it.chatId, chunks[ci], routeOpts(it.chatId, false) || undefined); } catch (e) { r = { ok: false }; }
-            if (!r || r.ok === false) { ok = false; break; }
-            sentUpTo = ci + 1;
-          }
-          if (ok) {
-            try { store.removeOutbox(it.id); } catch (e) { failNote('channels.hub.outbox.remove', e); }
-            const ev = { channel, chatId: String(it.chatId), runId: it.runId || '', ok: true, chunks: chunks.length, reason: 'redelivered' };
-            if (it.agentId) ev.agentId = String(it.agentId);
-            try { emit('channel.delivery', ev); } catch (_) {}
-            continue;
-          }
-          // PROGRESS: chunks the member already received must never be re-sent — a flaky transport used to
-          // replay the first two-thirds of a long answer on every retry pass. The remainder is rebuilt from
-          // the RAW (undecorated) splits: joining the fence-doctored send chunks baked reopenFences's
-          // synthetic ``` markers into the stored text, which the next pass re-fenced — stray fence lines
-          // growing per retry on every long code-bearing reply.
-          if (sentUpTo > 0 && typeof store.replaceOutboxText === 'function') {
-            try { store.replaceOutboxText(it.id, remainderOf(parts, sentUpTo)); } catch (e) { failNote('channels.hub.outbox.progress', e); }
-          }
-          // A pass that delivered real chunks is PROGRESS, not another failed attempt — it must not count
-          // toward the escalation ceiling, or a long message advancing one chunk per pass reads as failing.
-          let bumped = null;
-          if (sentUpTo === 0) {
-            try { bumped = (typeof store.bumpOutboxTry === 'function') ? store.bumpOutboxTry(it.id) : null; } catch (e) { failNote('channels.hub.outbox.bump', e); }
-          }
-          if (bumped && bumped.tries === OUTBOX_ESCALATE_TRIES) {
-            try { emit('channel.delivery', { channel, chatId: String(it.chatId), runId: it.runId || '', ok: false, chunks: 0, reason: 'redelivery-delayed' }); } catch (_) {}
-            try { console.error('[' + channel + '] outbox item for chat ' + it.chatId + ' still delayed after ' + OUTBOX_ESCALATE_TRIES + ' attempts; retained for retry'); } catch (_) {}
-          }
-          break;   // transport still unhealthy — end this pass; the next healthy cue retries
-        }
-      } finally {
-        flushing = false;
-        if (pendingOutbox().length) scheduleOutboxRetry();
-        else {
-          // Capacity is back. Replay intake deliberately held when a saturated outbox could not accept its reply.
-          try { const p = recoverInbox(); if (p && typeof p.catch === 'function') p.catch(function () {}); } catch (_) {}
-        }
-      }
-    }
-
-    function close() {
-      closed = true;
-      if (outboxTimer) { try { clearTimer(outboxTimer); } catch (_) {} outboxTimer = null; }
-    }
+    const { deliver, close, onInbound, inboxId, withInbox, inboxIdsOf, recoverInbox, activeInbox, notModified } = delivery;
 
     /* GROUP ADMISSION lives on the chat's own record, like /mention and /approvals: the adapter's allow-list reads
        this per message, so /allow and /deny take effect on the next one and survive a restart. The value is the
@@ -1206,14 +949,25 @@
       if (sec && sec.agentId && AID_RE.test(String(sec.agentId))) return String(sec.agentId);
       return agentIdFor(chatId);
     }
+    // Command readouts name the same live pair that the next message will use. A missing
+    // resolver keeps standalone/legacy hubs compatible; a failed live read never falls back
+    // to a stale connect-time model and claims it is ready.
+    function configForCommand(agentId) {
+      if (!resolveEntryRunConfig) return null;
+      try {
+        const cfg = resolveEntryRunConfig(agentId);
+        return cfg && cfg.ok !== false ? cfg : { ok: false, error: (cfg && cfg.error) || 'target agent is not configured' };
+      } catch (_) { return { ok: false, error: 'target agent configuration could not be read' }; }
+    }
 
     // Handle a parsed control command. Every reply states what ACTUALLY happened (truthful telemetry): a rebind
     // only claims success after saveChatRecord returns; a model change only confirms after setModel reports ok.
     // boundRec is this chat's persisted record (or null) — /approvals reads its opt-in flag and writes it back.
     // chatType (optional, additive) — only /mention needs it, to say honestly that the setting is group-only
     // rather than storing a value that can never apply in a DM. `ownerTrusted` is host-minted at ingress and is
-    // forwarded to the shared slash registry so its /tools answer matches this owner DM's actual run authority.
-    async function handleCommand(chatId, parsed, boundAgentId, sec, boundRec, chatType, ownerTrusted) {
+    // forwarded to the shared slash registry so its /tools answer matches this owner DM's actual run authority, with
+    // `senderOwner` (the channelSenderOwner verdict this chat's runs carry: slashSender above).
+    async function handleCommand(chatId, parsed, boundAgentId, sec, boundRec, chatType, ownerTrusted, senderOwner) {
       const cmd = parsed.cmd, arg = parsed.arg;
       // rosterFn is an INJECTED callback (Discord/other wire-ups pass it straight through); a throwing roster must
       // degrade to a logged error + polite reply, never an unhandled rejection that swallows the whole inbound.
@@ -1255,8 +1009,8 @@
         let r;
         // deliveryOrigin: the SAME shape a run from this chat carries (runOnce below), so a "/routine add" typed here
         // reports back to this chat exactly like a routine the agent creates when asked in words (bug 3b958e41)
-        const sctx = { agentId: boundId, ownerTrusted: !!ownerTrusted,
-          deliveryOrigin: { channel: channel, chatId: String(chatId), threadId: (routes.get(String(chatId)) || {}).threadId || null } };
+        const sctx = Object.assign({ agentId: boundId, ownerTrusted: !!ownerTrusted,
+          deliveryOrigin: { channel: channel, chatId: String(chatId), threadId: (routes.get(String(chatId)) || {}).threadId || null } }, slashSender(senderOwner));
         try { r = await runSlashFn('/' + cmd + (arg ? ' ' + arg : ''), sctx); }
         catch (e) { try { console.error('[' + channel + '] /' + cmd + ' threw:', (e && e.message) || e); } catch (_) {} r = null; }
         if (!r) { await deliver(chatId, '⚠ Could not run /' + cmd + ' right now — try again in a moment.', '', 'command'); return; }
@@ -1268,12 +1022,13 @@
       }
 
       // ---- /stop — abort the run this CHAT has in flight -------------------------------------------------
-      // Only this hub can do it: it owns the inflight record (chatId -> { runId, abort, ... }). Marked
-      // superseded first so the run's own teardown stays quiet rather than reporting a failure you caused.
+      // Only this hub can do it: it owns the inflight record (chatId -> { runId, abort, ... }). Its endReason goes
+      // first, so the run's own teardown stays quiet rather than reporting a failure you caused.
       if (cmd === 'stop') {
+        beginWork(chatId);   // also retires an awaited fallback whose original run already finished
         const live = inflight.get(chatId);
         if (!live) { await deliver(chatId, 'Nothing is running for this chat right now.', '', 'command'); return; }
-        live.superseded = true;
+        markEnd(live, 'stopped');
         let aborted = false;
         try { live.abort.abort(); aborted = true; } catch (_) { aborted = false; }
         await deliver(chatId, aborted ? 'Stopped the run in progress.' : '⚠ Could not stop that run — it may already be finishing.', '', 'command');
@@ -1286,27 +1041,9 @@
       // a run is in flight — clearing the history under a live run would strand it mid-conversation.
       if (cmd === 'new') {
         if (inflight.get(chatId)) { await deliver(chatId, 'A run is still going — send /stop first, then /new.', '', 'command'); return; }
-        if (!store || typeof store.clearHistory !== 'function') { await deliver(chatId, '⚠ Clearing history is not available on this channel.', '', 'command'); return; }
         let dropped = 0;
-        try { dropped = store.clearHistory(boundId); }
-        catch (e) { await deliver(chatId, '⚠ Could not clear this chat: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
-        // the work line's per-chat hop histories start fresh too (hopHistoryKey)
-        try {
-          const rec = typeof store.getChatRecord === 'function' ? store.getChatRecord(chatId) : null;
-          for (const k of (rec && Array.isArray(rec.hopKeys) ? rec.hopKeys : [])) if (typeof k === 'string' && AID_RE.test(k)) dropped += store.clearHistory(k) || 0;
-        } catch (e) { failNote('channels.hub.hopKeys.clear', e); }
-        /* A RUN READS ITS HISTORY FROM THE CANONICAL STREAM (historyFor), not from the store file above: clearing only the
-           file answered "I no longer remember" while the next run replayed up to 100 turns of the old chat, taint and all
-           (2026-10-20). Move the chat onto a fresh stream, as /new does in COMMS; the old one stays in the station's
-           history, it is just never replayed again. */
-        const oldStream = (historyFor && typeof store.saveChatRecord === 'function') ? resolvedStreamId(chatId) : null;
-        if (oldStream && !streamIdFor) {
-          try { dropped = Math.max(dropped, (historyFor(oldStream, boundId) || []).length); } catch (e) { failNote('channels.hub.new.count', e); }
-          const tail = '_n' + String(newId()).replace(/[^A-Za-z0-9]/g, '').slice(0, 8);
-          const base = ('channel_' + channel + '_' + String(chatId)).replace(/[^A-Za-z0-9_-]/g, '_');
-          try { store.saveChatRecord(chatId, { streamId: base.slice(0, 64 - tail.length) + tail }); }
-          catch (e) { await deliver(chatId, '⚠ Could not start this chat fresh: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
-        }
+        try { const result = await history.rotate({ chat: chatContext(chatId), agentId: boundId }); dropped = result.dropped; }
+        catch (e) { failNote('channels.hub.new', e); await deliver(chatId, '⚠ Could not start this chat fresh: ' + ((e && e.message) || 'the write failed') + '.', '', 'command'); return; }
         await deliver(chatId, dropped
           ? ('Cleared ' + dropped + ' message' + (dropped === 1 ? '' : 's') + ' — this chat starts fresh. I no longer remember what we discussed.')
           : 'Nothing to clear — this chat had no history yet.', '', 'command');
@@ -1327,16 +1064,15 @@
             : 'Working on something right now.');
         } else bits.push('Idle — nothing running.');
         const me = (roster || []).find(x => String(x.agentId) === String(boundId));
-        bits.push('Agent: ' + (me ? (me.name || me.agentId) : boundId) + (me && me.model ? ' (' + me.model + ')' : ''));
-        // count what the NEXT RUN replays: the canonical stream when the host wires historyFor (the run reads THAT, and /new
-        // moves the chat onto a fresh one), else the legacy store file — never a number the run would not see (quick win 23)
-        let turns = 0;
+        const cfg = configForCommand(boundId);
+        const model = cfg ? (cfg.ok !== false ? cfg.model : '') : me && me.model;
+        bits.push('Agent: ' + (me ? (me.name || me.agentId) : boundId) + (model ? ' (' + model + ')' : ''));
+        if (cfg && cfg.ok === false) bits.push('Not ready: ' + cfg.error);
+        // Count the exact next replay. An unreadable history is unknown, never a fabricated zero.
         try {
-          const sid = historyFor ? resolvedStreamId(chatId) : null;
-          const h = sid ? historyFor(sid, boundId) : ((store && typeof store.loadHistory === 'function') ? store.loadHistory(boundId) : []);
-          turns = Array.isArray(h) ? h.length : 0;
-        } catch (_) { turns = 0; }
-        bits.push('History: ' + turns + ' message' + (turns === 1 ? '' : 's') + ' remembered.');
+          const turns = await history.count({ chat: chatContext(chatId), agentId: boundId });
+          bits.push('History: ' + turns + ' message' + (turns === 1 ? '' : 's') + ' remembered.');
+        } catch (e) { failNote('channels.hub.status.history', e); bits.push('History: unavailable.'); }
         bits.push('Approve/deny buttons: ' + ((boundRec && boundRec.approvals) ? 'ON' : 'OFF') + '.');
         await deliver(chatId, bits.join('\n'), '', 'command');
         return;
@@ -1379,6 +1115,7 @@
          DM-only chats say so rather than silently storing a setting that can never apply — a control that
          appears to work and does nothing is worse than one that is honest about being irrelevant. */
       if (cmd === 'mention') {
+        if (!mentionControl) { await deliver(chatId, 'Group mention settings are not available on this channel.', '', 'command'); return; }
         const isGroup = String(chatType || '') === 'group';
         const on = !(boundRec && boundRec.requireMention === false);
         const observing = !!(boundRec && boundRec.observeUnmentioned);
@@ -1489,7 +1226,7 @@
         const target = m.agent;
         // Persist the rebind. Only confirm the switch if the write actually succeeded (truthful telemetry).
         let saved = false;
-        try { if (typeof store.saveChatRecord === 'function') { store.saveChatRecord(chatId, { agentId: String(target.agentId), channel: channel }); saved = true; } } catch (_) { saved = false; }
+        try { if (typeof store.saveChatRecord === 'function') { store.saveChatRecord(chatId, Object.assign({ agentId: String(target.agentId), channel: channel }, intakeReceiptFor ? { intakeBinding: null } : null)); saved = true; } } catch (_) { saved = false; }
         if (!saved) { await deliver(chatId, '⚠ Could not persist the switch to "' + (target.name || target.agentId) + '" — this chat is still talking to the previous agent.', '', 'command'); return; }
         const nm = target.name && target.name !== target.agentId ? (target.name + ' (' + target.agentId + ')') : target.agentId;
         await deliver(chatId, 'Now talking to ' + nm + ' — model: ' + (target.model || 'not set') + '.', '', 'command');
@@ -1500,7 +1237,10 @@
         if (!roster || !roster.length) { await deliver(chatId, 'No roster is available to this channel yet — cannot read or change models.', '', 'command'); return; }
         const me = roster.find(a => String(a.agentId) === String(boundId));
         if (!me) { await deliver(chatId, 'This chat is bound to "' + boundId + '", which is not in the current roster — /talk to pick an agent first.', '', 'command'); return; }
-        if (!arg) { await deliver(chatId, (me.name || me.agentId) + '\'s current model: ' + (me.model || 'not set') + '.\nSend /model <id> to change it.', '', 'command'); return; }
+        const current = configForCommand(boundId);
+        const currentModel = current ? (current.ok !== false ? current.model : '') : me.model;
+        if (!arg) { await deliver(chatId, current && current.ok === false ? 'Not ready: ' + current.error
+          : (me.name || me.agentId) + '\'s current model: ' + (currentModel || 'not set') + '.\nSend /model <id> to change it.', '', 'command'); return; }
         // Validate against the model catalog when one is reachable sidecar-side; otherwise accept and be honest
         // that no catalog was available to check against.
         let catalog = null;
@@ -1512,8 +1252,10 @@
         }
         if (!setModelFn) { await deliver(chatId, '⚠ Model changes are not available on this channel (no roster write path wired).', '', 'command'); return; }
         let r; try { r = setModelFn(String(me.agentId), arg); } catch (e) { r = { ok: false, error: (e && e.message) || 'write threw' }; }
-        if (!r || r.ok === false) { await deliver(chatId, '⚠ Could not change the model — ' + ((r && r.error) || 'roster write failed') + '. It is still ' + (me.model || 'not set') + '.', '', 'command'); return; }
-        await deliver(chatId, (me.name || me.agentId) + '\'s model is now ' + (r.model || arg) + ' (saved to the roster).', '', 'command');
+        if (!r || r.ok === false) { await deliver(chatId, '⚠ Could not change the model — ' + ((r && r.error) || 'roster write failed') + '. It is still ' + (currentModel || 'not set') + '.', '', 'command'); return; }
+        const next = configForCommand(boundId);
+        await deliver(chatId, next && next.ok === false ? 'Model selection saved to the roster. Not ready: ' + next.error
+          : (me.name || me.agentId) + '\'s model is now ' + ((next && next.model) || r.model || arg) + ' (saved to the roster).', '', 'command');
         return;
       }
     }
@@ -1599,24 +1341,16 @@
        Bounded for free: the store's appendTurn trims by turn count and characters, so a busy room cannot grow
        the history without limit. A message with no words (a bare photo, a sticker) teaches the room nothing and
        is skipped rather than filed as an empty turn. */
-    function observeTurn(chatId, msg, boundAgentId, sec) {
+    async function observeTurn(chatId, msg, boundAgentId, sec) {
       const body = String(msg.text || '').trim();
       if (!body) return;
       const who = String(msg.userName || '').trim();
       const agentId = currentBoundAgent(chatId, boundAgentId, sec);
       const line = who ? (who + ': ' + body) : body;
-      try { store.appendTurn(agentId, 'user', line); } catch (e) { failNote('channels.hub.appendTurn', e); }
-      /* THE RUN READS THE CANONICAL STREAM (historyFor), not the store file above — filed only there, the overheard room
-         never reached the model and "I read the rest of the room" was a promise nobody kept. Filed into the SAME stream
-         the next addressed run replays, with the provenance an addressed message from this room would carry: clean,
-         unless it is a forwarded third party's words (initialTaint's rule below). */
-      if (historyFor && observeInto) {
-        const sid = resolvedStreamId(chatId);
-        if (sid) { try { observeInto(sid, agentId, line, carriesThirdPartyText(msg) ? 'forwarded message' : null); } catch (e) { failNote('channels.hub.observeInto', e); } }
-      }
+      try { await history.observe({ chat: chatContext(chatId), agentId, text: line, taint: carriesThirdPartyText(msg) ? 'forwarded message' : null }); }
+      catch (e) { failNote('channels.hub.observe', e); }
     }
-    // can an overheard line reach the model on this hub? (legacy history is what a hub without historyFor replays)
-    function observeKept() { return !historyFor || !!observeInto; }
+    function observeKept() { return typeof history.observe === 'function'; }
 
     // ---- ALBUM (media-group) BATCHING --------------------------------------------------------------------
     // A Telegram album arrives as N SEPARATE messages sharing one media_group_id (caption usually on only one).
@@ -1634,141 +1368,62 @@
     const TEXT_BATCH_WAIT_MS = Number.isFinite(o.textBatchWaitMs) ? Math.max(0, o.textBatchWaitMs) : 0;
     const textBatches = new Map();
 
-    const activeInbox = new Map();   // durable inbox id -> the one live processing promise (dedupes restart races)
-    function inboxId(msg) {
-      if (!msg || msg.messageId == null || String(msg.messageId) === '') return '';
-      return channel + '|' + String(msg.chatId) + '|' + String(msg.messageId) + (msg.edited ? '|edited' : '');
-    }
-    function onInbound(msg, intake) {
-      const id = inboxId(msg);
-      // Older/test stores retain the original behavior. Production's store claim is synchronous and durable,
-      // so returning from this function is the exact point the adapter may safely advance Telegram's offset.
-      if (!id || typeof store.pushInbox !== 'function' || typeof store.removeInbox !== 'function') return routeInbound(msg, intake);
-      // this hub's own claim first, then the store's: a hub this one REPLACED (a reconnect) may still be running it
-      const shared = typeof store.liveInbox === 'function' && typeof store.holdInbox === 'function';
-      const live = activeInbox.get(id) || (shared ? store.liveInbox(id) : null);
-      if (live) {
-        if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true, duplicate: true }); } catch (_) {} }
-        return live;
-      }
-      const receipt = store.pushInbox({ id: id, channel: channel, message: msg });   // throws synchronously -> adapter does NOT ack
-      if (intake && typeof intake.onAccepted === 'function') { try { intake.onAccepted({ id, durable: true }); } catch (_) {} }
-      // A receipt that already carries an attempt is a RE-DELIVERY of work whose run had started — from recoverInbox,
-      // or Telegram handing the same update over again. processInbound decides what that may do (attemptOf, heldOf).
-      const routed = withInbox(intake, [id], attemptOf(receipt), heldOf(receipt));
-      const running = Promise.resolve().then(() => routeInbound(msg, routed)).then((value) => {
-        store.removeInbox(id);   // reply delivered OR its undelivered remainder is now durable in the outbox
-        return value;
-      }).finally(() => { activeInbox.delete(id); });
-      activeInbox.set(id, running);
-      if (shared) store.holdInbox(id, running);
-      return running;
-    }
-
-    /* RECOVERY KNOWS HOW FAR THE RUN GOT (e5ecd6b8, 2026-10-21). The `recovered` flag had no reader: a crash after the
-       run had appended a line to a file replayed the whole message as a second identical user turn, the line went in
-       twice, and the chat was told "Appended one line". The durable receipt now carries an attempt marker
-       (store.markInbox: the run's id once it starts, a count of the tool steps it began), and a re-delivered receipt
-       is handled by what that proves, the same split the station's own run recovery makes (COMMS continues a run only
-       when nothing uncertain happened, and asks first otherwise):
-         no attempt              -> never reached a run: replay it as before
-         attempt, 0 tool steps   -> nothing could have happened: run it again, said so, without a second copy of the turn
-         attempt, N tool steps   -> something may already be done: do NOT run it again; tell the chat, and leave the next
-                                    run in this chat a one-shot note (interruptedAttempt) so a "continue" finishes only
-                                    what is left
-       The intake copy carries every receipt this message stands for (a merged text batch or album is one run over several
-       receipts), so the marker lands on all of them.
-       ONLY A REAL RESTART GETS THE CRASH RULE (review, 2026-10-21). A receipt also comes back inside the SAME process:
-       the full outbox refused a finished reply (flushOutbox -> recoverInbox replays it once capacity returns), or
-       processing threw. Taking that for a crash told the chat "StarNet restarted" when nothing restarted, and — with a
-       tool step counted — never delivered the answer the run had finished. So the attempt carries the store's bootId:
-       an attempt from THIS process is no restart and replays as before; and a finished reply the outbox refused is kept
-       on the receipt (held) and delivered by the replay, whatever process it lands in, without running anything. */
-    function attemptOf(receipt) {
-      const a = receipt && receipt.attempt;
-      if (!a || typeof a !== 'object' || !String(a.runId || '')) return null;
-      const here = (store && store.bootId != null) ? String(store.bootId) : '';
-      if (here && String(a.boot || '') === here) return null;   // this process left it pending: not a restart
-      return { runId: String(a.runId), tools: Math.max(0, Math.floor(Number(a.tools) || 0)) };
-    }
-    function heldOf(receipt) {
-      const h = receipt && receipt.held;
-      if (!h || typeof h !== 'object' || typeof h.text !== 'string') return null;
-      return { text: h.text, runId: String(h.runId || ''), reason: String(h.reason || ''), agentId: String(h.agentId || ''),
-        ids: Array.isArray(h.ids) ? h.ids.filter(x => typeof x === 'string' && x) : [] };
-    }
-    function withInbox(intake, ids, prior, held) {
-      const out = Object.assign({}, intake || {}, { inboxIds: ids.slice() });
-      if (prior) out.priorAttempt = prior;
-      else delete out.priorAttempt;
-      if (held) out.heldReply = held;
-      else delete out.heldReply;
-      return out;
-    }
-    function inboxIdsOf(intake) {
-      return (intake && Array.isArray(intake.inboxIds)) ? intake.inboxIds.filter(x => typeof x === 'string' && x) : [];
+    // TURN IDENTITY: a chat message's turn is named by its durable receipt — 'ch' + fnv1a64x2(inbox id), two FNV-1a 32-bit
+    // passes (two offset bases) as 16 hex chars — so a recovered replay of the same receipt answers the same turn
+    function fnv1a64x2(s) {
+      const pass = basis => { let h = basis >>> 0; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16).padStart(8, '0'); };
+      return pass(2166136261) + pass(2166136261 ^ 0x9e3779b9);
     }
     function clipAsk(text) {
       const t = String(text || '').replace(/\s+/g, ' ').trim();
       return t.length > 80 ? t.slice(0, 79) + '…' : t;
     }
     function stepsWord(n) { return n === 1 ? '1 tool step' : n + ' tool steps'; }
-    // run ids whose interruption this hub already told the chat about: a merged batch is ONE run over several receipts
-    const reportedAttempts = new Set();
-    async function reportInterruptedAttempt(chatId, agentId, msg, prior) {
+    /* AN ATTEMPT THAT MAY ALREADY HAVE DONE THINGS IS NEVER RUN AGAIN (the attempt rule, channels/hub-delivery.js attemptOf).
+       One notice, written in the same ledger write that settles every receipt of that run (a merged batch is ONE run over
+       several receipts, so its id 'notice:<runId>:<kind>' is the dedupe). `restart` says whether an earlier process left
+       the attempt (a crash, an update) or this one did (its processing stopped on an error). */
+    async function reportInterruptedAttempt(chatId, agentId, msg, prior, inboxIds) {
       const runId = String(prior.runId || '');
-      if (reportedAttempts.has(runId)) return;
-      // the next run in this chat reads this once (interruptedAttemptNote). Counts only — never the message text, which
-      // may be a third party's words and has no business in a system prompt.
-      if (typeof store.saveChatRecord === 'function') {
-        try { store.saveChatRecord(chatId, { interruptedAttempt: { runId: runId, tools: prior.tools } }); }
-        catch (e) { failNote('channels.hub.interruptedAttempt.save', e); }
-      }
       const ask = clipAsk(msg && msg.text);
-      await deliver(chatId, '⚠ StarNet restarted while it was working on ' + (ask ? '"' + ask + '"' : 'your message')
-        + '. That attempt had already begun ' + stepsWord(prior.tools) + ', so part of it may already be done. It was NOT run again, '
-        + 'so nothing is done twice. Reply "continue" to finish what is left — the next run is told those steps already began.',
-        runId, 'interrupted', agentId);
-      if (reportedAttempts.size >= 500) reportedAttempts.clear();
-      reportedAttempts.add(runId);   // only once it was delivered (or durably queued): a refused notice replays with its receipt
+      const what = ask ? '"' + ask + '"' : 'your message';
+      if (prior.tools > 0) {
+        // the next run in this chat reads this once (interruptedAttemptNote). Counts only — never the message text, which
+        // may be a third party's words and has no business in a system prompt.
+        if (typeof store.saveChatRecord === 'function') {
+          try { store.saveChatRecord(chatId, { interruptedAttempt: { runId: runId, tools: prior.tools, restart: prior.restart !== false } }); }
+          catch (e) { failNote('channels.hub.interruptedAttempt.save', e); }
+        }
+        await delivery.settleWithNotice(chatId, (prior.restart !== false ? '⚠ StarNet restarted while it was working on ' + what : '⚠ The attempt at ' + what + ' stopped on an error')
+          + '. That attempt had already begun ' + stepsWord(prior.tools) + ', so part of it may already be done. It was NOT run again, '
+          + 'so nothing is done twice. Reply "continue" to finish what is left — the next run is told those steps already began.',
+          runId, 'interrupted', 'interrupted', agentId, inboxIds);
+        return;
+      }
+      // no step had begun, and it was already run a second time: it stopped twice, so it is settled and said, not run a third time
+      await delivery.settleWithNotice(chatId, '⚠ ' + (ask ? '"' + ask + '"' : 'Your message') + ' was not finished: '
+        + (prior.restart !== false ? 'StarNet restarted' : 'it stopped on an error') + ' before it began any tool step, for the second time, '
+        + 'so it was NOT run again. Send it again if you still want it.', runId, 'unfinished', 'interrupted', agentId, inboxIds);
     }
     function interruptedAttemptNote(a) {
       const n = Math.max(0, Math.floor(Number(a && a.tools) || 0));
-      return '\n\nHOST NOTE — AN EARLIER REQUEST WAS INTERRUPTED: StarNet restarted while an earlier request in this chat was being '
-        + 'worked on, after that attempt had begun ' + stepsWord(n) + '. It was not run again. Any tool result of it in this conversation '
+      const how = (a && a.restart === false) ? 'An earlier request in this chat stopped on an error' : 'StarNet restarted while an earlier request in this chat was being worked on';
+      return '\n\nHOST NOTE — AN EARLIER REQUEST WAS INTERRUPTED: ' + how + ', '
+        + 'after that attempt had begun ' + stepsWord(n) + '. It was not run again. Any tool result of it in this conversation '
         + 'already happened. If the Commander asks to continue it, finish only what is still missing: never repeat a step whose result '
         + 'is already here, and check the current state before redoing a step whose result is not.';
     }
 
     async function routeInbound(msg, intake) {
       // work that already had a run is never merged into a newer batch: it is settled on its own, exactly once
-      if (intake && (intake.priorAttempt || intake.heldReply)) return processInbound(msg, intake);
+      if ((intake && intake.priorAttempt) || (msg && msg.edited)) return processInbound(msg, intake);
+      // Every edited album part has its own message/date receipt and original media. Combining
+      // edits would lose that admission identity; ordinary new albums still debounce below.
       const gid = (msg && msg.mediaGroupId != null && String(msg.mediaGroupId))
         ? (String(msg.chatId) + '|' + String(msg.mediaGroupId)) : '';
       if (gid) return albumInbound(msg, gid, intake);
       if (TEXT_BATCH_WAIT_MS > 0 && textBatchable(msg)) return textInbound(msg, intake);
       return processInbound(msg, intake);
-    }
-
-    let recoveringInbox = false;
-    async function recoverInbox() {
-      if (closed || recoveringInbox || typeof store.loadInbox !== 'function') return;
-      recoveringInbox = true;
-      try {
-        const items = store.loadInbox(channel) || [];
-        for (const it of items) {
-          if (closed || !it || !it.message) break;
-          /* THE SNAPSHOT GOES STALE WHILE WE AWAIT. A live item's onInbound hands back its RUNNING promise, so this
-             loop can park behind a whole run while a later item (a follow-up steered into that run, a /routine add
-             typed meanwhile) finishes on its own path and leaves the inbox — replaying it from this list then ran it
-             a second time (2026-10-20). Replay only what is still durably pending right now. */
-          let pending = true;
-          try { pending = (store.loadInbox(channel) || []).some(x => x && x.id === it.id); } catch (_) { pending = true; }
-          if (!pending) continue;
-          try { await onInbound(it.message, { recovered: true }); }
-          catch (e) { try { console.error('[' + channel + '] durable inbox recovery failed for ' + String(it.id || '') + ':', (e && e.message) || e); } catch (_) {} break; }
-        }
-      } finally { recoveringInbox = false; }
     }
 
     // Words the sender did not author (a platform-flagged forward, or a reply quoting one). Arrives under the
@@ -1778,7 +1433,8 @@
     }
 
     function textBatchable(msg) {
-      if (!msg || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
+      // a choice TAP is one decision on its own (onCallback), never glued to a bubble typed around it — live or replayed
+      if (!msg || msg.tap || msg.edited || (Array.isArray(msg.media) && msg.media.length)) return false;
       const text = String(msg.text || '').trim();
       // '/allow@thebot' is a command too — it is the form Telegram's "/" menu sends in a group. Without the
       // @suffix here it was batched as chat, and the same member's next bubble inside the window was glued on as
@@ -1809,7 +1465,7 @@
       // The batch's outcome must reach EVERY merged bubble: resolving unconditionally told the losing
       // bubbles' durable-inbox wrappers "handled" even when processing threw, so their rows were removed
       // and only the winner's original (unmerged) message survived for recovery — the rest were lost.
-      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
@@ -1832,34 +1488,30 @@
       if (albums.get(gid) !== rec || rec.seq !== mySeq) return rec.done;   // a newer part re-armed the debounce
       albums.delete(gid);
       // Same failure propagation as textInbound: every merged part's durable-inbox row must survive a throw.
-      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null, null)); }
+      try { await processInbound(rec.msg, withInbox(rec.intake, rec.inboxIds, null)); }
       catch (e) { rec.reject(e); throw e; }
       rec.resolve();
     }
 
+    // a message the ledger's write failure holds back (processInbound): thrown out with its receipt still pending
+    function ledgerHeld() { return Object.assign(new Error('the delivery ledger cannot be written right now: this message waits, and runs once it can'), { code: 'LEDGER_HELD' }); }
+
     async function processInbound(msg, intake) {
-      // the durable receipts this message stands for, and how far an earlier run of it got (attemptOf, above)
+      // the durable receipts this message stands for, and how far an earlier run of it got (attemptOf, hub-delivery.js)
       const inboxIds = inboxIdsOf(intake);
       const priorAttempt = (intake && intake.priorAttempt) || null;
-      const markAttempt = (patch) => {
-        if (!inboxIds.length || typeof store.markInbox !== 'function') return;
-        for (const id of inboxIds) { try { store.markInbox(id, patch); } catch (e) { failNote('channels.hub.markInbox', e); } }
-      };
-      /* A FINISHED ANSWER THE OUTBOX REFUSED IS KEPT, NOT RE-EARNED. deliver throws (heldText = the undelivered
-         remainder) so these receipts stay; the text rides on every one of them, and their replay sends it (heldReply,
-         below) instead of running the message again — the run already happened, its tool steps included. */
-      const heldReply = (intake && intake.heldReply) || null;
-      async function deliverHeld(toChat, text, runId, reason, agentId, sendOpts, seedId, ids) {
-        try { return await deliver(toChat, text, runId, reason, agentId, sendOpts, seedId); }
-        catch (e) {
-          if (e && typeof e.heldText === 'string') markAttempt({ held: { text: e.heldText, runId: runId || '', reason: reason || '', agentId: agentId || '', ids: ids } });
-          throw e;
-        }
-      }
+      // how far this message's run got, on its receipts (the ledger write each mark is): the run's id, the steps it began.
+      // true only once the mark is on disk (hub-delivery.js markAttempt): nothing runs on a mark a crash would lose
+      const markAttempt = (patch, opts) => delivery.markAttempt(inboxIds, patch, opts);
+      // a message that ends here with no reply of its own (a command, a stop, a steer) is settled at its decision, with any
+      // other receipts that decision ends (the run a stop stops) in the same write (hub-delivery.js settleNow)
+      const settleNow = (also, opts) => delivery.settleNow(inboxIds.concat(also || []), opts);
+      // the reply that ENDS this message: its receipts leave in the same ledger write it enters the chat's lane with
+      const answers = { receiptIds: inboxIds };
       if (msg && msg.directReply) {
         const directChatId = String(msg.chatId);
         noteRoute(msg);
-        await deliver(directChatId, String(msg.directReply), '', 'admission');
+        await deliver(directChatId, String(msg.directReply), '', 'admission', undefined, undefined, '', answers);
         return;
       }
       // ADMISSION-ONLY (adapter.js): the owner's /allow or /deny from a group that is not admitted yet. It got past
@@ -1875,33 +1527,24 @@
       // An edit is only a question if it edits the thing we last heard — checked BEFORE noteRoute overwrites the
       // record it reads. Declining is silent by design: the member sees their own edit, and a bot that pipes up
       // about a two-week-old correction is worse than one that stays out of it.
-      if (msg.edited && !editIsCurrent(msg)) {
-        try { console.log('[' + channel + '] ignoring an edit of an older message in chat ' + chatId); } catch (_) {}
-        return;
+      if (msg.edited) {
+        const state = delivery.editState(msg, intake);
+        if (state === 'superseded' || (state !== 'accepted' && !editIsCurrent(msg))) {
+          try { console.log('[' + channel + '] ignoring an edit of an older message in chat ' + chatId); } catch (_) {}
+          return;
+        }
+        // A deferred edit only becomes admitted when its actual dispatch still proves current.
+        // Keep that decision before any await; a restart has no in-memory route book.
+        if (!delivery.admitEdit(msg, intake)) throw ledgerHeld();
       }
       // Remember where this came from BEFORE anything can reply — the very first deliver() below (a command
       // answer, a config error) must already land in the right topic, not just the run's final reply.
       noteRoute(msg);
-      // the replay of a receipt whose run FINISHED but whose reply the full outbox refused: send that reply, run nothing
-      if (heldReply) {
-        const ids = heldReply.ids.length ? heldReply.ids : inboxIds;
-        await deliverHeld(chatId, heldReply.text, heldReply.runId, heldReply.reason || 'done', heldReply.agentId || undefined, undefined, '', ids);
-        // one run answered every receipt in ids (a merged batch): the others must not send it again
-        if (typeof store.removeInbox === 'function') {
-          for (const sid of ids) { if (inboxIds.indexOf(sid) < 0) { try { store.removeInbox(sid); } catch (e) { failNote('channels.hub.heldReply.remove', e); } } }
-        }
-        return;
-      }
-      /* THEY ARE BACK. A chat marked unreachable (we were blocked or kicked) has just spoken, which is proof the
-         block is over — clear the flag here rather than waiting for a `my_chat_member` we may never be sent.
-         A stale unreachable flag would suppress this chat's outbox forever, which is the failure mode that made
-         the flag worth having in the first place, pointed the other way. */
-      if (typeof store.getChatRecord === 'function' && typeof store.saveChatRecord === 'function') {
-        try {
-          const rec0 = store.getChatRecord(chatId);
-          if (rec0 && rec0.unreachable) store.saveChatRecord(chatId, { unreachable: false });
-        } catch (e) { failNote('channels.hub.chatRecord.save', e); }
-      }
+      /* THEY ARE BACK. A chat marked dead (it blocked or removed this bot) has just spoken, which is proof the block is
+         over — clear the ledger's mark here rather than waiting for a `my_chat_member` we may never be sent. (A message
+         with a receipt already cleared it in the receipt's own write; a tap or a one-job fire has none.) The shared chat
+         record's old `unreachable` flag is neither read nor written: it stays as it is for an older build. */
+      delivery.chatBack(chatId);
 
       // Runtime config (live each message): { key?, model, provider?, agentId?, system? }. When the app supplies the
       // REAL agentId + composed system prompt at connect, Telegram runs as the SAME agent as in the app —
@@ -1911,7 +1554,7 @@
       // polite reply rather than an unhandled rejection (onInbound is driven fire-and-forget by the adapter).
       let sec;
       try { sec = secrets() || {}; }
-      catch (e) { try { console.error('[' + channel + '] secrets() threw in onInbound:', (e && e.message) || e); } catch (_) {} try { await deliver(chatId, '⚠ Could not read the channel configuration right now — try again in a moment.', '', 'error'); } catch (_) {} return; }
+      catch (e) { try { console.error('[' + channel + '] secrets() threw in onInbound:', (e && e.message) || e); } catch (_) {} try { await deliver(chatId, '⚠ Could not read the channel configuration right now — try again in a moment.', '', 'error', undefined, undefined, '', answers); } catch (_) {} return; }
       // The chat's own persisted binding (set by /talk) — the user's explicit choice of which roster agent this
       // chat talks to. Read it once here so both command handling (below) and run resolution can honor it.
       let boundRec = null;
@@ -1933,7 +1576,7 @@
 
          The command parse in particular must stay BELOW this line. An unmentioned "/deploy@someotherbot" is an
          observe verdict, and letting it fall through would have us execute a command aimed at a different bot. */
-      if (msg.observeOnly) { observeTurn(chatId, msg, boundAgentId, sec); return; }
+      if (msg.observeOnly) { await observeTurn(chatId, msg, boundAgentId, sec); return; }
       // Per-chat opt-in for approve/deny buttons (/approvals; default OFF). Requires BOTH the user's opt-in AND a
       // channel that can actually render and resolve a keyboard — a chat that opted in but is now running over a
       // transport without buttons must fall back to the safe autonomous floor, never stall on a prompt that
@@ -1973,7 +1616,13 @@
           await deliver(chatId, ownerOnlyReply('/' + parsed.cmd), '', 'command');
           return;
         }
-        await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted);
+        // a command acts at most once: settled before it acts, so a crash in it or in its ack never runs it again. That
+        // settle must reach the disk first, so while the ledger cannot be written a command waits (held, its receipt
+        // pending) — all but /stop, which stops the run that is spending now, whatever the disk does
+        const stopping = parsed.cmd === 'stop' ? inflight.get(chatId) : null;
+        if (stopping) settleNow(!endOf(stopping) ? stopping.inboxIds : null);   // a /stop and the run it stops: one write
+        else if (!settleNow(null, { undo: true })) throw ledgerHeld();
+        await handleCommand(chatId, parsed, boundAgentId, sec, boundRec, msg.chatType, ownerTrusted, channelSenderOwner);
         return;
       }
 
@@ -1996,8 +1645,9 @@
         // chatType + ownerDmExec let the registry word a shell-command refusal truthfully for THIS chat: a group
         // never runs one (the output would post to the whole room), and only a hub that can mint ownerTrusted has
         // an owner DM where one does run.
-        const ucCtx = { agentId: ucAgent, ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec };
+        const ucCtx = Object.assign({ agentId: ucAgent, ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }, slashSender(channelSenderOwner));
         let r;
+        if (!settleNow(null, { undo: true })) throw ledgerHeld();   // at most once, like the built-ins: kept first, or it waits
         try { r = await runSlashFn(userCmd.line, ucCtx); }
         catch (e) { try { console.error('[' + channel + '] user command threw:', (e && e.message) || e); } catch (_) {} r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
@@ -2027,7 +1677,7 @@
           return;
         }
         const lr = inflight.get(chatId);
-        if (NOTE_CMDS[deskCmd.name] === 'steer' && !(lr && !lr.superseded && !lr.halted)) {
+        if (NOTE_CMDS[deskCmd.name] === 'steer' && !(lr && !endOf(lr))) {
           await deliver(chatId, 'Nothing is running here to steer — send your note as a message to start a task.', '', 'command');
           return;
         }
@@ -2037,7 +1687,8 @@
       if (deskCmd) {
         if (!senderIsOwner) { await deliver(chatId, ownerOnlyReply('/' + deskCmd.name), '', 'command'); return; }
         let r;
-        try { r = await runSlashFn(deskCmd.line, { agentId: currentBoundAgent(chatId, boundAgentId, sec), ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }); }
+        if (!settleNow(null, { undo: true })) throw ledgerHeld();   // at most once, like the built-ins: kept first, or it waits
+        try { r = await runSlashFn(deskCmd.line, Object.assign({ agentId: currentBoundAgent(chatId, boundAgentId, sec), ownerTrusted: ownerTrusted, chatType: msg.chatType === 'group' ? 'group' : 'dm', ownerDmExec: ownerDmExec }, slashSender(channelSenderOwner))); }
         catch (e) { failNote('channels.hub.desktopCommand.run', e); r = null; }
         const body = (r && Array.isArray(r.lines) && r.lines.length)
           ? ((r.title ? r.title + '\n' : '') + r.lines.join('\n'))
@@ -2068,20 +1719,27 @@
       /* resolveAgent may answer a bare agentId (every pre-dock seam) or { agentId, dockId } (router.resolveDock —
          multi-bay agents, 2026-09-22): the DOCK the floor routed the work to is the one whose brief, room and line
          the run gets. A binding/fallback resolution carries no dock and the seams read the agent's entry dock. */
-      const routedRaw = resolveAgent ? resolveAgent({ tag, chatId, text: msg.text, boundAgentId }) : null;
+      let routedRaw = null;
+      if (resolveAgent) {
+        try { routedRaw = resolveAgent({ tag, chatId, text: msg.text, boundAgentId }); }
+        catch (e) {
+          if (!e || e.held !== true) throw e;
+          await holdRouting(chatId, boundAgentId || undefined, intake, e, answers);
+          return;
+        }
+      }
       const routed = (routedRaw && typeof routedRaw === 'object') ? routedRaw.agentId : routedRaw;
       const routedDock = (routedRaw && typeof routedRaw === 'object' && routedRaw.dockId != null && AID_RE.test(String(routedRaw.dockId))) ? String(routedRaw.dockId) : null;
       const agentId = (routed && AID_RE.test(String(routed))) ? String(routed)
         : boundAgentId
         ? boundAgentId
         : (sec.agentId && AID_RE.test(String(sec.agentId))) ? String(sec.agentId) : agentIdFor(chatId);
-      const canonicalStreamId = resolvedStreamId(chatId);
       // the dock this run is AT: only when the floor's own resolution picked this agent (never inferred)
       const dockId = (routedDock && routed && String(routed) === agentId) ? routedDock : null;
 
-      // A re-delivered receipt whose run had already BEGUN tool steps before the crash is never run again from the top
-      // (attemptOf, above): before anything below can steer it into a run, supersede one, or start one.
-      if (priorAttempt && priorAttempt.tools > 0) { await reportInterruptedAttempt(chatId, agentId, msg, priorAttempt); return; }
+      // A re-delivered receipt whose run had already BEGUN tool steps (whichever process left it), or that already had its
+      // one second go, is never run again (attemptOf, hub-delivery.js): before anything below can steer, supersede or start one.
+      if (priorAttempt && (priorAttempt.tools > 0 || priorAttempt.replays > 0)) { await reportInterruptedAttempt(chatId, agentId, msg, priorAttempt, inboxIds); return; }
 
       /* A FOLLOW-UP JOINS THE RUN IN FLIGHT (2026-10-11 — "they start a task and then stop repeatedly with no
          explanation as to why"). Every message used to ABORT this chat's working run and delete its partial, so a
@@ -2096,31 +1754,59 @@
       // a plain "stop"/"cancel" from the owner while this chat's run is working IS /stop: the same reply, no supersede
       // notice, and no paid model run on the word "stop". Same message kinds the steer below accepts; anything else
       // (a group, a forward, media, a non-owner) falls through unchanged.
-      if (liveRun && liveRun.abort && !liveRun.superseded && !liveRun.halted && senderIsOwner
+      if (liveRun && liveRun.abort && !endOf(liveRun) && senderIsOwner
           && msg.chatType !== 'group' && !msg.edited && !carriesThirdPartyText(msg)
           && !(Array.isArray(msg.media) && msg.media.length)
           && STOP_WORDS_RE.test(String(msg.text || ''))) {
-        liveRun.superseded = true;   // no supersededBy: the run's teardown stays quiet, exactly like /stop
+        settleNow(liveRun.inboxIds);   // the stop and the run it stops end here, in one write, before anything else goes
+        markEnd(liveRun, 'stopped');   // the run's teardown stays quiet, exactly like /stop
         let aborted = false;
         try { liveRun.abort.abort(); aborted = true; } catch (e) { failNote('channels.hub.plainStop', e); }
         await deliver(chatId, aborted ? 'Stopped the run in progress.' : '⚠ Could not stop that run — it may already be finishing.', '', 'command');
         return;
       }
+      // Cancellation above does not need a readable history. Only joining or starting work acquires it.
+      let chatHistory;
+      try { chatHistory = chatContext(chatId); }
+      catch (e) { await holdHistory(chatId, agentId, intake, e, answers); return; }
+      const canonicalStreamId = chatHistory.streamId;
+      /* NOTHING STARTS ON A LEDGER THAT CANNOT BE WRITTEN (review round 1). From here this message joins a run or starts one,
+         and either may do things a crash must never make happen twice; its marks (the run's id, each tool step it begins)
+         are what stop that, and they can be kept only once the ledger can be written. So it waits: thrown out with its
+         receipt still pending, it is replayed by recovery once the writes work again (hub-delivery.js recoverInbox). A
+         stop, a command and an overheard line above act now: none of them runs anything. */
+      if (inboxIds.length && delivery.held()) throw ledgerHeld();
+      const workIntent = beginWork(chatId);
       // 409 = that run's loop already FINISHED its work and is settling its reply: never abort it (that would throw away
       // a finished answer) — it delivers, and this message runs next, queued behind it on the same conversation.
       let letPrevFinish = false;
-      if (steerRun && liveRun && liveRun.runId && !liveRun.superseded && !liveRun.halted && liveRun.agentId === agentId
+      if (steerRun && liveRun && liveRun.runId && !endOf(liveRun) && liveRun.agentId === agentId
           && msg.chatType !== 'group' && !msg.edited && !carriesThirdPartyText(msg)
           && !(Array.isArray(msg.media) && msg.media.length) && !(msg.replyTo && Array.isArray(msg.replyTo.media) && msg.replyTo.media.length)
           && String(msg.text || '').trim() && !STOP_WORDS_RE.test(String(msg.text || ''))) {
         // ONE LINE ON THE WIRE: two quick bubbles arrive here joined by a newline (the text batch), and every reader of
         // the loop's '\n[steering] <note>\n' echo — this hub, COMMS, the phone relay — reads one line
         const note = steerNoteWire(msg.text);
+        // it is settled the moment it joined the run (below): the disk must take that write, so it is asked first, with a
+        // write, and the follow-up waits (held) while it would not. Joined and then replayed as a task of its own is twice
+        if (inboxIds.length && !delivery.writable()) throw ledgerHeld();
+        // A refused steer may become a new request, but only while it is still the latest
+        // steer of this same owner. A later accepted steer must also retire older fallbacks.
+        const steerIntent = {};
+        liveRun.steerIntent = steerIntent;
         let steered = false;
         try { const r = await steerRun(liveRun.runId, note); steered = !!(r && r.ok); letPrevFinish = !steered && !!r && r.status === 409; }
         catch (e) { failNote('channels.hub.steer', e); steered = false; }
+        const afterSteer = inflight.get(chatId);
         if (steered) {
-          try { store.appendTurn(agentId, 'user', note); } catch (e) { failNote('channels.hub.appendTurn', e); }
+          settleNow();   // joined the working run: this message ends here, before its ack is on the wire
+          if (endOf(liveRun) || afterSteer !== liveRun) {
+            // The host accepted it, so never replay it as a new run. The original task may
+            // now be stopped, replaced or settling delivery; do not invent its current state.
+            await deliver(chatId, 'Your follow-up was accepted by the earlier task.', liveRun.runId, 'command');
+            return;
+          }
+          if (!bindChats || history.legacy) { try { history.legacyMirror(agentId, 'user', note, { chat: chatHistory }); } catch (e) { failNote('channels.hub.legacyMirror', e); } }
           try { emit('channel.inbound', { channel, chatId, agentId, userId: msg.userId || '', kind: 'dm' }); } catch (e) { failNote('channels.hub.inbound.emit', e); }
           // the run may be PAUSED on an approval keyboard: "next step" would then wait out the keyboard (and a typed "yes"
           // never answers it — only a tap grants a security decision), so say where it is stuck and what unblocks it
@@ -2130,6 +1816,9 @@
             : '↪ Added to the task that is already running — it picks this up at its next step, no restart.', liveRun.runId, 'command');
           return;
         }
+        // Missing current owner with no stop reason is normal completion (including 409).
+        // A replaced/stopped owner or newer steer cannot authorize this older fallback.
+        if (!isCurrentWork(chatId, workIntent) || liveRun.steerIntent !== steerIntent || endOf(liveRun) || (afterSteer && afterSteer !== liveRun)) return;
       }
 
       if (resolveEntryRunConfig) {
@@ -2149,7 +1838,6 @@
       // /model and the notifier all started asserting an agent the user never chose. Persist only when the chat is
       // unbound or the resolution agrees with the binding.
       // (bindChats:false — an ephemeral proof chat never becomes addressed; see the option note above.)
-      try { if (bindChats && typeof store.saveChatRecord === 'function' && (!boundAgentId || boundAgentId === agentId)) store.saveChatRecord(chatId, { agentId: agentId, channel: channel, streamId: canonicalStreamId || undefined }); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
 
       // announce the SINGLE resolution to the host (workitem crate + queue HUD attribution — one truth).
       // isTask rides along: the BELT IS WORK-ONLY (Andrew's ruling 2026-07-05) — the host places a crate only
@@ -2169,31 +1857,87 @@
          the compiled plan stays the only authority; absent -> null -> every dock terminal, which is the
          safe direction. It rides `resolvedInfo` (so the host stamps the crate with it) and the chain seed
          below (so the gate can read it). */
-      const lineId = lineOriginFor ? ((dockId ? lineOriginFor(agentId, dockId) : lineOriginFor(agentId)) || null) : null;
+      let lineId = null;
+      if (lineOriginFor) {
+        try { lineId = (dockId ? lineOriginFor(agentId, dockId) : lineOriginFor(agentId)) || null; }
+        catch (e) {   // the saved floor went held after this message was routed: the same refusal, in words, with nothing run
+          if (!e || e.held !== true) throw e;
+          await holdRouting(chatId, agentId, intake, e, answers);
+          return;
+        }
+      }
+      // A host-derived observation of this final resolution, never an input to the next dispatch. Unknown floor
+      // clears old evidence; a changed /talk or hard-locked bot cannot inherit another agent's intake receipt.
+      try { if (bindChats && typeof store.saveChatRecord === 'function' && (!boundAgentId || boundAgentId === agentId)) store.saveChatRecord(chatId,
+        Object.assign({ agentId: agentId, channel: channel, streamId: canonicalStreamId || undefined },
+          intakeReceiptFor ? { intakeBinding: intakeReceiptFor({ agentId, dockId, lineId }) } : null));
+        else if (bindChats && intakeReceiptFor && boundRec && boundRec.intakeBinding && typeof store.saveChatRecord === 'function')
+          store.saveChatRecord(chatId, { intakeBinding: null });   // preserve /talk, retire evidence belonging to another resolved agent
+      } catch (e) { failNote('channels.hub.chatRecord.save', e); }
+      const preJobId = typeof o.jobId === 'function' ? o.jobId() : null;
+      const lineJob = lineRunner && typeof lineRunner.open === 'function'
+        ? ((preJobId && lineRunner.get(preJobId)) || (lineId ? lineRunner.open({ id: preJobId || undefined, line: lineId,
+          entry: o.jobEntry || 'channel', text: msg.text, streamId: canonicalStreamId || '' }) : null)) : null;
+      const jobFacts = { agentId, dockId, onLine: lineJob && lineId ? lineJob.line === lineId : undefined };
+      const handedFiles = typeof o.handoffReads === 'function' ? o.handoffReads() : [];
+      const handoffReads = Array.isArray(handedFiles) ? handedFiles.filter(f => typeof f === 'string' && f).slice(0, 64) : [];
+      // The same stop owner spans preparation and execution. A pending read has no run id or
+      // start time; only the actual paid attempt below fills those fields. STOP/E-STOP and a newer
+      // request can withdraw it while media or canonical history awaits, without another registry.
+      const myRec = { runId: '', abort: new AbortController(), endReason: null, agentId: agentId, startedAt: null, inboxIds: inboxIds,
+        onEnd: (reason) => { if (reason !== 'superseded') delivery.settleNow(inboxIds); } };
+      if (lineJob) lineJob.stopHandle = cause => { markEnd(myRec, cause === 'fault' ? 'faulted' : 'halted'); if (myRec.abort) myRec.abort.abort(); };
+      let jobResult = null, intakeSettled = false;
+      const settleJob = () => {
+        if (!lineJob || jobResult) return jobResult;
+        jobResult = lineRunner.settle(lineJob, jobFacts);
+        if (typeof o.onJobSettled === 'function') { try { o.onJobSettled(jobResult); } catch (e) { failNote('channels.hub.jobOutcome', e); } }
+        return jobResult;
+      };
+      /* THE SAVED FLOOR WENT HELD AFTER THIS MESSAGE WAS ROUTED (an outside edit landed between two reads of it): the dock's brief and its
+         room are read from the same floor the route was, so a hold at either is the route's own refusal, in the same words, with nothing run
+         — never a run with no brief and the whole default office. The job this hub opened settles as the existing 'refused' stop, now. */
+      const lateHold = async (error) => {
+        const why = heldSaid(error);
+        jobFacts.refusedSaid = why;
+        const result = settleJob();
+        intakeSettled = true;
+        if (intake && typeof intake.onSettled === 'function') {
+          try { intake.onSettled(Object.assign({ runId: '', ok: false, held: { status: String((error && error.status) || 'unreadable'), why } }, result ? { jobId: lineJob.id, result } : null)); }
+          catch (e) { failNote('channels.hub.onSettled', e); }
+        }
+        await deliver(chatId, '⚠ StarNet did not run this message: ' + why + '.', '', 'error', agentId, undefined, '', answers);
+      };
+      try {
       const resolvedInfo = { chatId: chatId, agentId: agentId, text: msg.text, isTask: isTask, lineId: lineId };
+      if (lineJob) resolvedInfo.jobId = lineJob.id;
       if (dockId) resolvedInfo.dockId = dockId;   // additive: the host lands the crate at THIS bay (multi-bay)
       if (onResolved) { try { onResolved(resolvedInfo); } catch (_) {} }
       if (intake && typeof intake.onResolved === 'function') { try { intake.onResolved(resolvedInfo); } catch (_) {} }
 
       // one run per CONVERSATION: a new message in THIS chat ABORTS its in-flight run — keyed by chatId, NOT
       // agentId, so two chats routed to the SAME agent (via a splitter/filter) never cross-cancel each other.
-      // `supersededBy` lets the aborted run's teardown SAY it was stopped for this message (abandoned() below) — a
-      // /stop and an E-STOP set superseded without it and keep their own replies.
+      // endReason 'superseded' lets the aborted run's teardown SAY it was stopped for this message (abandoned() below) — a
+      // /stop and an E-STOP write their own reason and keep their own replies.
       const prev = inflight.get(chatId);
-      if (prev && !(letPrevFinish && prev === liveRun)) { prev.superseded = true; prev.supersededBy = 'message'; try { prev.abort.abort(); } catch (_) {} }
+      if (prev && !(letPrevFinish && prev === liveRun)) { markEnd(prev, 'superseded'); try { prev.abort.abort(); } catch (_) {} }
+      inflight.set(chatId, myRec);
 
       try { emit('channel.inbound', { channel, chatId, agentId, userId: msg.userId || '', kind: msg.chatType === 'group' ? 'group' : 'dm' }); } catch (_) {}
 
       if (!sec.model || (!usingCodex && !sec.configured && !sec.key)) {
-        await deliver(chatId, '⚠ ' + (sec.error || 'No provider/model is configured yet. Open the STARNET app → Messaging tab and connect.'), '', 'error');
+        jobFacts.refusedSaid = sec.error || 'No provider/model is configured yet.';
+        await deliver(chatId, '⚠ ' + (sec.error || 'No provider/model is configured yet. Open the STARNET app → Messaging tab and connect.'), '', 'error', undefined, undefined, '', answers);
         return;
       }
-      // an earlier run of this message began no tool step before the crash: running it again cannot do anything twice —
-      // but the chat is told it is a second go, never left to think it is the first
+      // an earlier run of this message began no tool step: running it again cannot do anything twice — but the chat is told
+      // it is a second go, never left to think it is the first (and this is its only one: the run marks the replay)
       if (priorAttempt) {
         const ask = clipAsk(msg.text);
-        await deliver(chatId, '↻ StarNet restarted while it was working on ' + (ask ? '"' + ask + '"' : 'your message')
-          + '. It had not begun any tool step yet, so nothing can happen twice — running it again now.', priorAttempt.runId, 'command', agentId);
+        const what = ask ? '"' + ask + '"' : 'your message';
+        await deliver(chatId, (priorAttempt.restart !== false ? '↻ StarNet restarted while it was working on ' + what + '. It had not begun any tool step yet'
+          : '↻ The first attempt at ' + what + ' stopped on an error before it began any tool step')
+          + ', so nothing can happen twice — running it again now.', priorAttempt.runId, 'command', agentId);
       }
 
       // TYPING: from here on a real run WILL happen — light the platform's "typing…" bubble now (it also covers
@@ -2208,15 +1952,50 @@
       const stream = startStream(chatId);
       // hoisted OUT of the typing try-block: deliver() below the finally reads all three.
       let state = null;          // the LAST attempt's assembled state (buf/errMsg/reason/transient)
+      let entryRan = null;       // what the LAST attempt's runOnce returned: its terminal text seeds the work line (line-runner.js)
       let lastRunId = '';        // the runId actually delivered under (the last attempt's)
       let reply;
       let choiceEntry = null;    // the registered choice keyboard for a TASK_QUESTION reply (null = plain text)
       let finalAgentId = agentId;   // WHO produced the delivered reply — the LAST stage of the work line, not the first
       let firstStageText = null;    // what the ENTRY dock itself said, when a work line went on to replace it
-      // Hoisted for the finally below: `myRec` lives in the attempt scope, but the stream's clean-up decision
+      let lineOut = null;           // the work line's result (chain.advance), when one ran: the reply settles on it too (a reviewer's hold)
+      // Hoisted for the finally below: the same myRec spans preparation and attempts, and the stream's clean-up decision
       // (finish in place vs. delete the partial) is taken out here, after every return path has run.
       let withdrawn = false;
+      /* AN E-STOP IS NOT A SUPERSEDE. Any endReason abandons this run's now-stale partial reply — but a supersede
+         means a NEWER message owns the conversation and is already running its replacement, while an E-STOP means
+         nothing else is coming at all. Returning the same silence for both made a deliberate stop indistinguishable
+         from a crashed bot on the one surface that has no floor, no browser and no other signal to read. /stop typed
+         from that same chat answers "Stopped the run in progress."; the station's E-STOP owes the chat the same
+         courtesy. Delivered at most once per run, whichever abandon-point is reached first. */
+      let haltNoticeSent = false;
+      const abandoned = async () => {
+        const end = endOf(myRec);
+        if (!end) return false;
+        jobFacts.stopped = true;
+        jobFacts.stopCause = end === 'faulted' ? 'fault' : 'user';
+        if ((end === 'halted' || end === 'faulted') && !haltNoticeSent) {
+          haltNoticeSent = true;
+          // the station's OWN process-fault containment ends the run 'faulted' before it kills it (halt.js markFaulted): that
+          // stop is said as the fault it was, never as an E-STOP nobody pressed (wave 2 repair, conveyor-backend-08)
+          const why = end === 'faulted' ? 'the station hit an internal fault and stopped this run' : 'E-STOP was pressed in the station';
+          try {
+            await deliver(chatId, '⏹ Stopped — ' + why + '. This message got no reply and nothing further will run for it.', myRec.runId || '', 'command');
+          } catch (_) { /* a stop notice must never crash the teardown */ }
+        } else if (end === 'superseded' && !haltNoticeSent && myRec.runId && !(state && state.errMsg)) {
+          /* A NEWER MESSAGE STOPPED THIS RUN — never silently (2026-10-11). This is the fallback when the follow-up
+             could not join the run (no steer seam, a group chat, media, a "stop" the owner did not send, or no live loop to read
+             it): the earlier task's unfinished reply is dropped, so say so once. Its question stays
+             in the transcript, so the newer run can see it. */
+          haltNoticeSent = true;
+          try {
+            await deliver(chatId, '⏹ Stopped the earlier task before it finished so your newer message could be handled — its unfinished reply was dropped. If that earlier request still needs doing, say so.', myRec.runId || '', 'command');
+          } catch (e) { failNote('channels.hub.supersedeNotice', e); }
+        }
+        return true;
+      };
       try {
+      if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
 
       // MEDIA: download + store what the user actually sent (photos/videos/voice/files) BEFORE the turn is built,
       // so the model's view of this message carries the real pixels/files instead of a blind spot it has to
@@ -2233,11 +2012,15 @@
         try { mediaIngest = await ingestMedia(agentId, allMedia); }
         catch (e) { mediaIngest = { attachments: [], notes: ['[media ingest failed: ' + ((e && e.message) || e) + ']'] }; }
       }
+      if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
       // UNTRUSTED ENTRY (run-origin.js entryUntrusted): the same three provenances that start the entry run tainted —
       // a trigger payload (entryTaint), a chat attachment, a forwarded/quoted third-party message. Decided ONCE per
       // message so the entry run and every hop of its line carry one verdict. A SEND TO hand-off's entryTaint is read through
       // the sending job's own verdict (entryUntrusted above): a Commander-typed job stays trusted on the next line.
       const lineEntryUntrusted = !!((entryTaint && entryVerdictUntrusted(msg)) || mediaIngest.attachments.length || carriesThirdPartyText(msg));
+      // the label the entry run starts tainted under (the entry run's own initialTaint below is this very expression; the restrictive taint
+      // a saved hold of this job keeps rides the line's seed: taints)
+      const lineEntryTaint =entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null));
       // …and the sending job's sender verdict (senderWithheld above): a non-owner's job stays withheld on every line it reaches
       const lineWithheld = senderVerdictWithheld(msg);
       const runChannelSender = lineWithheld ? true : tagSenderRuns;
@@ -2271,34 +2054,37 @@
         + (mediaIngest.notes.length ? ((bodyText ? '\n' : '') + mediaIngest.notes.join('\n')) : '');
       const turnText = (editLead ? editLead + '\n' : '') + lineAsk;
 
-      // durable transcript: load prior turns, persist the new user turn, build the replay messages. The persisted
-      // turn carries the media notes with the saved jail-relative .attachments/ names, so an agent in a LATER turn can
-      // still reach the files through its workspace tools even though history replays as plain text (a project-scoped
-      // run sees them placed absolutely by runOnceCore's expandForRun; the stored text never holds a host path).
-      let history = [];
+      // The port proves the chat's history and preserves provider-valid pairs and row identity.
+      const inboundTurnId = inboxIds.length ? 'ch' + fnv1a64x2(inboxIds[0]) : undefined;
+      let past;
       try {
-        history = canonicalStreamId && historyFor ? historyFor(canonicalStreamId, agentId) : store.loadHistory(agentId);
-        if (!Array.isArray(history)) history = [];
-      } catch (_) { try { history = store.loadHistory(agentId); } catch (_) { history = []; } }
-      // A SECOND GO HAS ONE COPY OF THE TURN. The interrupted run already filed these words (the legacy history below, and
-      // its directive row in the canonical stream); with nothing after them, they are this message, not an earlier ask.
+        past = await history.replay({ chat: chatHistory, streamId: canonicalStreamId, agentId, shape: 'pairs',
+          excludeTurnId: priorAttempt ? inboundTurnId || TurnKinds.runTurnId(priorAttempt.runId) : undefined });
+      } catch (e) {
+        if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
+        withdrawn = true; jobFacts.stopCode = 'station_fault'; jobFacts.error = 'This chat history could not be read';
+        intakeSettled = true; await holdHistory(chatId, agentId, intake, e, answers); return;
+      }
+      if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
       const storedTurn = turnText || '[the user sent a media message]';
-      if (priorAttempt && history.length) {
-        const last = history[history.length - 1];
-        if (last && last.role === 'user' && (last.content === storedTurn || last.content === turnText)) history = history.slice(0, -1);
+      // The explicit legacy seam has no durable turn ids. Preserve its previous retry rule only
+      // there; canonical replay already excluded the exact receipt turn and must retain equal text.
+      if (priorAttempt && (history.legacy || !canonicalStreamId) && past.length) {
+        const last = past[past.length - 1];
+        if (last && last.role === 'user' && (last.content === storedTurn || last.content === turnText)) past = TurnView.slice(past, 0, -1);
       }
       // "YES" TO AN OFFER IS A GO: classified on its own, "yes" is chat and the run gets no task prompt. Ask again with the
       // agent's last reply: an affirmation that answers its offer to act ("want me to draft it?") IS the directive.
-      if (!isTask && history.length) {
-        const prior = history[history.length - 1];
+      if (!isTask && past.length) {
+        const prior = past[past.length - 1];
         if (prior && prior.role === 'assistant' && typeof prior.content === 'string') {
           try { isTask = !!classify(msg.text || '', { priorAgentTurn: prior.content }); } catch (e) { failNote('channels.hub.classify.offer', e); }
         }
       }
-      if (!priorAttempt) { try { store.appendTurn(agentId, 'user', storedTurn); } catch (e) { failNote('channels.hub.appendTurn', e); } }
+      if (!priorAttempt && (!bindChats || history.legacy)) { try { history.legacyMirror(agentId, 'user', storedTurn, { chat: chatHistory }); } catch (e) { failNote('channels.hub.legacyMirror', e); } }
       const userTurn = { role: 'user', content: turnText };
       if (mediaIngest.attachments.length) userTurn.attachments = mediaIngest.attachments;
-      let messages = history.map(m => ({ role: m.role, content: m.content })).concat([userTurn]);
+      let messages = TurnView.concat(past, [userTurn]);
       // The attachment refs ride to runOnce as they are: runOnceCore expands them (attachments.js expandForRun) once the
       // run's root is final, for every surface. A host that still wires an expansion here gets it applied; a failed one
       // falls back to the note-only turn (the refs are stripped so no provider ever sees a shape it doesn't know).
@@ -2309,13 +2095,17 @@
         else delete userTurn.attachments;
       }
 
+      if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
       const rec = store.getChatRecord ? store.getChatRecord(chatId) : null;
       const persona = sec.system || personaFor(agentId, rec);   // the agent's REAL composed prompt when configured
       // the dock's standing brief (step editor): when the router holds one for this agent's dock, the run's
       // system context carries it — the SAME section header the chain handoff turn uses. Null-safe: no seam /
       // no floor / no brief composes the exact pre-brief system string.
       let dockBrief = null;
-      if (stageBriefFor) { try { dockBrief = dockId ? stageBriefFor(agentId, dockId) : stageBriefFor(agentId); } catch (_) { dockBrief = null; } }
+      if (stageBriefFor) {
+        try { dockBrief = dockId ? stageBriefFor(agentId, dockId) : stageBriefFor(agentId); }
+        catch (e) { if (e && e.held === true) { await lateHold(e); return; } dockBrief = null; }   // a hold is a refusal; any other miss is just no brief
+      }
       // the one-shot note an interrupted attempt left this chat (reportInterruptedAttempt): read by this run, then cleared
       let interruptedNote = '';
       if (rec && rec.interruptedAttempt && typeof store.saveChatRecord === 'function') {
@@ -2326,7 +2116,11 @@
 
       // B5: if this agent runs at a bound BAY, its tools are that bay room's objects (resolveStation), not the
       // default office — so a routed agent's reach is exactly what the floor granted it. null -> office default.
-      const bayStation = resolveStation ? (dockId ? resolveStation(agentId, dockId) : resolveStation(agentId)) : null;
+      let bayStation = null;
+      if (resolveStation) {
+        try { bayStation = dockId ? resolveStation(agentId, dockId) : resolveStation(agentId); }
+        catch (e) { if (!e || e.held !== true) throw e; await lateHold(e); return; }   // null here would mean the WHOLE default office: a hold refuses instead
+      }
 
       // ---- run with bounded supersede-retry ------------------------------------------------------------------
       // ONE run per conversation: the prev.abort.abort() above told this chat's prior run to stop. But its host-side
@@ -2338,69 +2132,76 @@
       //
       // ONE stable inflight record spans ALL attempts (created here, deleted once after the loop). This is load-
       // bearing: it must stay in `inflight` DURING the backoff sleep so a message arriving mid-backoff still finds it
-      // (prev.superseded=true above) and the parked retry bails instead of firing a stale run. E-STOP (halt.js) reads
+      // (its endReason, above) and the parked retry bails instead of firing a stale run. E-STOP (halt.js) reads
       // the SAME record. Per attempt we swap the live AbortController + runId + startedAt so each field always
       // reflects the attempt currently executing (or last executed).
       // agentId/startedAt ride in the record so GET /api/state/snapshot can list THIS run (attributed to the acting
       // agent, aged from startedAt) — a reconnect then keeps the agent's live floor/HUD state instead of clearing it.
-      // abort/superseded are what halt.js's E-STOP reads; the extra fields are additive and invisible to it.
-      const myRec = { runId: '', abort: null, superseded: false, halted: false, agentId: agentId, startedAt: null };
-      // tool steps this message's runs have BEGUN (entry run, every retry attempt, every line hop), stamped on its receipts
-      // as each one is announced — loop.js emits agent.tool_call before it dispatches, so the count is durable first
+      // abort/endReason are what halt.js's E-STOP uses; the extra fields are additive and invisible to it.
+      // inboxIds/onEnd: whoever stops this run (/stop or "stop", E-STOP, the fault containment: halt.js markEnd) settles its
+      // message's receipts right there, so a crash before it unwinds never replays what was stopped. A run a NEWER message
+      // replaced is not stopped: its message keeps its receipt until it unwinds (its stop notice), and a crash first leaves
+      // it to the attempt rule, as before
+      // Another edit may have superseded this receipt while media/history awaited. It must not
+      // replace that newer handler's inflight owner or dispatch its older text afterwards.
+      if (msg.edited && !delivery.editReady(msg, intake)) {
+        withdrawn = true;
+        if (delivery.editState(msg, intake) === 'superseded') { jobFacts.stopped = true; jobFacts.stopCause = 'user'; }
+        else { jobFacts.stopCode = 'station_fault'; jobFacts.error = 'This edited message could not be confirmed'; }
+        return;
+      }
+      /* tool steps this message's runs have BEGUN (entry run, every retry attempt, every line hop), stamped on its receipts
+         as each one is announced — loop.js emits agent.tool_call before it dispatches, and checks the run's signal between
+         the two. WRITE-AHEAD (review round 1): a step whose mark cannot be written is never dispatched — its mark is taken
+         back, the run is stopped right there (the signal loop.js checks), and the message is held (heldBy, thrown below
+         with its receipt pending) until recovery replays it under the marks that did reach the disk. */
       let attemptTools = 0;
-      const noteToolStep = () => { attemptTools++; markAttempt({ tools: attemptTools }); };
-
-      /* AN E-STOP IS NOT A SUPERSEDE. Both set `superseded`, because both must abandon this run's now-stale
-         partial reply — but a supersede means a NEWER message owns the conversation and is already running its
-         replacement, while an E-STOP means nothing else is coming at all. Returning the same silence for both
-         made a deliberate stop indistinguishable from a crashed bot on the one surface that has no floor, no
-         browser and no other signal to read. /stop typed from that same chat answers "Stopped the run in
-         progress."; the station's E-STOP owes the chat the same courtesy. halt.js sets `halted` for exactly
-         this. Delivered at most once per run, whichever abandon-point is reached first. */
-      let haltNoticeSent = false;
-      const abandoned = async () => {
-        if (!myRec.superseded) return false;
-        if (myRec.halted && !haltNoticeSent) {
-          haltNoticeSent = true;
-          // the station's OWN process-fault containment marks the run `faulted` before it kills it (halt.js markFaulted): that
-          // stop is said as the fault it was, never as an E-STOP nobody pressed (wave 2 repair, conveyor-backend-08)
-          const why = myRec.faulted ? 'the station hit an internal fault and stopped this run' : 'E-STOP was pressed in the station';
-          try {
-            await deliver(chatId, '⏹ Stopped — ' + why + '. This message got no reply and nothing further will run for it.', myRec.runId || '', 'command');
-          } catch (_) { /* a stop notice must never crash the teardown */ }
-        } else if (!myRec.halted && myRec.supersededBy === 'message' && !haltNoticeSent && myRec.runId && !(state && state.errMsg)) {
-          /* A NEWER MESSAGE STOPPED THIS RUN — never silently (2026-10-11). This is the fallback when the follow-up
-             could not join the run (no steer seam, a group chat, media, a "stop" the owner did not send, or no live loop to read
-             it): the earlier task's unfinished reply is dropped, so say so once. Its question stays
-             in the transcript, so the newer run can see it. */
-          haltNoticeSent = true;
-          try {
-            await deliver(chatId, '⏹ Stopped the earlier task before it finished so your newer message could be handled — its unfinished reply was dropped. If that earlier request still needs doing, say so.', myRec.runId || '', 'command');
-          } catch (e) { failNote('channels.hub.supersedeNotice', e); }
-        }
-        return true;
+      let heldBy = null;
+      const noteToolStep = () => {
+        attemptTools++;
+        if (markAttempt({ tools: attemptTools }, { undo: true })) return true;
+        attemptTools--;
+        if (!heldBy) heldBy = ledgerHeld();
+        try { if (myRec.abort) myRec.abort.abort(); } catch (e) { failNote('channels.hub.held.abort', e); }
+        return false;
       };
-      inflight.set(chatId, myRec);
+
       let attempt = 0;
       try {
+      // DELETE may arrive while the durable job is being adopted (before media/config preparation ends).
+      // Its book receipt survives replacement of the queued stopHandle by this actual adapter owner.
+      if (lineJob && lineJob.stopRequested) {
+        markEnd(myRec, lineJob.stopRequested === 'fault' ? 'faulted' : 'halted');
+        if (await abandoned()) { withdrawn = true; return; }
+      }
       for (;;) {
+        if (endOf(myRec)) { withdrawn = true; await abandoned(); return; }
         const runId = newId();
         lastRunId = runId;
         const ac = new AbortController();
         myRec.runId = runId; myRec.abort = ac; myRec.startedAt = now ? now() : null;
 
-        // assemble the reply by buffering agent.token deltas — the SAME reassembly harness.js does in the browser.
+        // assemble the reply from the agent.token deltas — the SAME reassembly harness.js does in the browser.
         // transient rides alongside errMsg so the retry gate can tell the workspace-mutex race from a hard error.
         state = { runId, buf: '', errMsg: null, reason: null, transient: false, toolsRan: 0 };
+        const assembler = makeReplyAssembler();
         const sink = (name, payload) => {
           let p; try { p = redact(payload); } catch (_) { p = payload; }
-          if (name === 'agent.run.start') state.runId = p.runId || state.runId;
+          // THE LEAD'S OWN RUN settles the reply (typed-outcomes, the /v1 rule): team.dispatch / team.spawn forward a worker's
+          // agent.run.error / .end onto this stream under the WORKER's runId (orchestration.js FORWARD) — a worker that failed
+          // is the lead's tool result, never this message's outcome; its spend still counts (usd below)
+          const lead = !p || !p.runId || String(p.runId) === String(runId);
+          if (name === 'agent.run.end' && lead) state.end = p;   // the end itself, stamped with its outcome by the station (RunOutcome)
+          const fed = assembler.feed(name, p);
+          if (fed) { state.buf = assembler.text(); state.toolsRan = assembler.toolsRan; }   // counted: an 'empty' end after tools is not "nothing was done"
           // The reply is already being assembled here, delta by delta — so this is also where it can be SHOWN.
           // stream.push is fire-and-forget and throttled; it can never delay or fail the run.
-          else if (name === 'agent.token') { state.buf = joinReplyDelta(state.buf, p.delta); if (stream) stream.push(state.buf); }
-          else if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; noteToolStep(); }   // counted: an 'empty' end after tools is not "nothing was done"
-          else if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
+          if (fed === 'token') { if (stream) stream.push(state.buf); }
+          else if (fed === 'tool') noteToolStep();
+          else if (name === 'agent.run.start') state.runId = p.runId || state.runId;
+          else if (name === 'agent.run.error') { if (lead) { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; } }
           else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
+          else if (name === 'agent.run.end' && !lead) { if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
           else if (name === 'agent.run.end') { state.reason = p.reason; state.finishReason = p.finishReason || null; state.unpricedModel = p.unpricedModel || null; state.unpricedCapTokens = Number(p.unpricedCapTokens) || 0; state.subscriptionModel = p.subscriptionModel || null; state.subscriptionCapTokens = Number(p.subscriptionCapTokens) || 0; state.budgetScope = p.budgetScope || null; state.budgetCapUsd = (typeof p.budgetCapUsd === 'number' && isFinite(p.budgetCapUsd)) ? p.budgetCapUsd : null; state.budgetCapIsBalance = p.budgetCapIsBalance === true; state.budgetProjected = p.budgetProjected === true; if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd || 0, p.usd); }
         };
 
@@ -2429,16 +2230,29 @@
           return Promise.resolve(asked).then(function (d) { ask.decision = d; stampConsent(chatId, ask); return d; }).finally(release);
         } : undefined;
 
-        // the receipt now names the run that is about to start (written AFTER the user turn was filed above)
-        markAttempt({ runId: runId });
+        // the receipt now names the run that is about to start (written AFTER the user turn was filed above); a second go
+        // counts itself, so a message that stops twice before any tool step is settled, never run a third time. A run whose
+        // mark could not be written does not start: the message is held, its receipt pending (the mark stays in memory, so
+        // its replay is the second go it is, and the turn already filed is not filed again)
+        if (msg.edited && !delivery.editReady(msg, intake)) {
+          markEnd(myRec, delivery.editState(msg, intake) === 'superseded' ? 'superseded' : 'faulted');
+          withdrawn = true; await abandoned(); return;
+        }
+        if (!markAttempt({ runId: runId, replay: !!priorAttempt && attempt === 0 })) { withdrawn = true; throw ledgerHeld(); }
+        entryRan = null;
         try {
-          await runOnce({
-            key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask,
+          entryRan = await runOnce({
+            key: usingCodex ? '' : sec.key, model: sec.model, provider, baseUrl: sec.baseUrl || sec.base_url || '', reasoningEffort, system, messages, agentId, isTask, wireSource: sec.wireSource || undefined,
             emit: sink, signal: ac.signal, runId, lineId, trigger: 'event',
             streamId: canonicalStreamId || undefined,
+            handoffReads,
             // a second go of an interrupted run reuses that run's durable directive row instead of filing the words again
             // (runOnceCore retryDirective: matched by run id, agent, stream AND exact text, so it can only ever dedupe this)
             retryUserRunId: (priorAttempt && attempt === 0) ? priorAttempt.runId : undefined,
+            // TURN IDENTITY: this message's turn, named by its first receipt (a keyboard tap has none: the station mints 'r' + runId),
+            // and the receipt's station time; a recovered replay reuses its directive under the station's reuse contract
+            turnId: inboundTurnId, turnAt: (intake && Number.isSafeInteger(intake.inboxAt)) ? intake.inboxAt : undefined,
+            typedDirective: written || (Array.isArray(mediaIngest.transcripts) ? mediaIngest.transcripts.join('\n') : ''),
             // a VOICE NOTE is a spoken turn: the voice chat model may answer it (never a work line's stage)
             voiceTurn: (!!spoken && !lineId) || undefined,
             initialTaint: entryTaint || (mediaIngest.attachments.length ? 'channel attachment' : (carriesThirdPartyText(msg) ? 'forwarded message' : null)),
@@ -2479,6 +2293,7 @@
         // E-STOP nothing is coming, so abandoned() says so instead of returning the same silence. `withdrawn`
         // is what tells the finally to DELETE the streamed partial: a half answer to a question that has been
         // taken back is worse than no answer, and the E-STOP notice must not appear underneath one.
+        if (heldBy) { withdrawn = true; throw heldBy; }   // a tool step's mark could not be written: held, never answered
         if (await abandoned()) { withdrawn = true; return; }
 
         // Retry ONLY the same-agent workspace-mutex race, and only while attempts remain. On the final failed
@@ -2499,13 +2314,24 @@
          resolveAgent picked WHICH dock; the belts past it say what happens to its output. Deliberately INSIDE
          the inflight try: myRec stays registered for the whole line, so E-STOP (halt.js reads this record) and
          a superseding message reach the downstream stages too — a chain that outlived its own abort handle
-         would be an unstoppable spend. The reply that finally leaves is the LAST stage's. */
-      if (chain && !state.errMsg && !myRec.superseded && String(state.buf || '').trim()) {
-        const line = await chain.advance({
-          agentId: agentId, dockId: dockId || undefined, text: state.buf, originalText: lineAsk || msg.text, runId: myRec.runId,
+         would be an unstoppable spend. The reply that finally leaves is the LAST stage's.
+         ONLY A SUCCEEDED ENTRY HANDS ON (typed-outcomes, review 4.2 — the routine's cron-driver gate and Run Now's rule): a reply the
+         provider cut, a spending or step limit, a question and a run that never reported its end raise no agent.run.error, and each
+         bought every downstream stage on stage one's partial answer. The entry's own reply (with its end note) goes out instead.
+         The line is SEEDED with the entry run's returned TERMINAL text (line-runner.js): the reply streamed to the chat may carry the
+         host's private-files note or a steer echo, and neither is stage one's work. */
+      const entryOk = !state.errMsg && !!RunOutcome && RunOutcome.ofEnd(state.end || null, null).ok;   // the LEAD run's own outcome
+      if (lineJob) lineRunner.track(lineJob, lastRunId, entryRan);   // only the final admitted entry attempt, never a transient refused retry
+      jobFacts.error = state.errMsg || null;
+      if (entryRan && entryRan.lineStop && entryRan.lineStop.code === 'day_limit') jobFacts.stop = entryRan.lineStop;
+      const entryText = (entryRan && typeof entryRan.text === 'string') ? entryRan.text : String(state.buf || '');
+      if (lineRunner && entryOk && !endOf(myRec) && entryText.trim()) {
+        const line = lineOut = await lineRunner.runLineJob({ job: lineJob, seed: {
+          agentId: agentId, dockId: dockId || undefined, text: entryText, originalText: lineAsk || msg.text, runId: myRec.runId,
           // the entry run's reconciled spend: the chain's $ ceiling covers the whole line, stage one included
           // (2026-08-10 audit). `line.usd` stays hop-only, so onLineOutcome's accounting is unchanged.
           entryUsd: state.usd || 0,
+          handoffReads,
           // WORK BELONGS TO A LINE: only work the floor routed in through this line's own INBOX advances it.
           // A /talk-bound or fallback-resolved message carries no lineId and stops at the dock that answered.
           lineId: lineId,
@@ -2517,62 +2343,25 @@
              under the same ones; a seed without them (routines, Run Now, anything older) hands on as untrusted + withheld. */
           entryTrusted: lineEntryUntrusted ? undefined : true,
           hostPowerKept: (runChannelSender === true && runChannelSenderOwner !== true) ? undefined : true,   // run-origin.js hostPowerWithheldFor's own test
-          signal: myRec.abort ? myRec.abort.signal : null,
-          runAgent: async function (h) {
-            // a hop is a plain autonomous run of ANOTHER agent: its OWN composed persona (never this channel's
-            // configured system prompt — that belongs to the agent the connection names), its OWN bay station,
-            // its OWN durable transcript. No consent keyboard: a downstream stage is machine-to-machine.
-            // GRANTS LAW (2026-08-04): unattended grants never flow down a line — this call deliberately passes
-            // NO unattendedGrants (a routine's grant names ONE agent; see cron-driver.js). `ownerTrusted` below
-            // is different by design and stays: the owner initiated this line on their own channel.
-            const hopRunId = newId();
-            myRec.runId = hopRunId; myRec.agentId = h.agentId; myRec.startedAt = now ? now() : null;
-            const hs = { buf: '', errMsg: null, usd: 0 };
-            let hopConfig = {};
-            if (resolveRunConfig) {
-              try { hopConfig = resolveRunConfig(h.agentId); }
-              catch (e) { return { text: '', usd: 0, error: 'target agent configuration failed: ' + ((e && e.message) || e) }; }
-              if (!hopConfig || hopConfig.ok === false) {
-                return { text: '', usd: 0, error: (hopConfig && hopConfig.error) || ('target agent ' + h.agentId + ' is not configured') };
-              }
-            }
-            const hopSink = (name, payload) => {
-              let p; try { p = redact(payload); } catch (_) { p = payload; }
-              if (name === 'agent.run.end' && p && p.reason === 'cancelled') hs.stopped = true;   // STOP on this step: the line stops here, never hands its half answer on
-              if (name === 'agent.token') hs.buf = joinReplyDelta(hs.buf, p.delta);
-              else if (name === 'agent.tool_call') { hs.buf = ''; noteToolStep(); }   // a hop's step is this message's step too
-              else if (name === 'agent.run.error') hs.errMsg = p.message || 'run error';
-              else if (name === 'capdenied') hs.errMsg = hs.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
-              else if (name === 'agent.run.end') { if (typeof p.usd === 'number' && isFinite(p.usd)) hs.usd = p.usd; }
-            };
-            // THIS chat's line history for THIS dock — never the agent's shared history (see hopHistoryKey)
-            const hopKey = hopHistoryKey(chatId, lineId, h.dockId || h.agentId);
-            let hist = [];
-            try { hist = store.loadHistory(hopKey); } catch (_) {}
-            try { store.appendTurn(hopKey, 'user', h.text); rememberHopKey(chatId, hopKey); } catch (e) { failNote('channels.hub.appendTurn', e); }
-            try {
-              await runOnce({
-                key: hopConfig.key, model: hopConfig.model, provider: hopConfig.provider,
-                baseUrl: hopConfig.baseUrl || hopConfig.base_url || '', reasoningEffort: hopConfig.reasoningEffort || hopConfig.reasoning_effort,
-                system: hopConfig.system || personaFor(h.agentId, rec), messages: hist.map(m => ({ role: m.role, content: m.content })).concat([{ role: 'user', content: h.text }]),
-                agentId: h.agentId, isTask: true, emit: hopSink, signal: h.signal, runId: hopRunId, trigger: 'event',
-                ceilingUsd: h.ceilingUsd,   // what is left of the line's $ ceiling (lower-only)
-                streamId: canonicalStreamId || undefined, parallelBranch: !!h.parallel,   // the whole line shares one canonical transcript; a PARALLEL branch hop skips its one-turn-at-a-time queue (chain.js runBatch)
-                resumeSeed: false,   // THIS dock's own history rides `hist` above; never the whole line stream's transcript (runOnceCore seed)
-                initialTaint: 'upstream agent output',
-                untrustedEntry: lineEntryUntrusted || undefined,   // a hop of a payload-started line stays under the taint lock
-                surface: 'autonomous', ownerTrusted: ownerTrusted, broadcast: true, reflect: true,
-                channelSender: runChannelSender, channelSenderOwner: runChannelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
-                // the hop's OWN dock room (multi-bay: never the union of the agent's bays)
-                station: (resolveStation ? (h.dockId ? resolveStation(h.agentId, h.dockId) : resolveStation(h.agentId)) : null) || undefined,
-                taskKey: 'chain:' + channel + ':' + chatId + ':' + h.agentId + (h.dockId ? '@' + h.dockId : ''), taskSource: channel,
-                lineId: lineId || undefined, dockId: h.dockId || undefined, workitemId: h.workitemId || undefined   // LINE WATCH: the hop's line + bay on its run row (+ its crate on run.start)
-              });
-            } catch (e) { hs.errMsg = hs.errMsg || ('run failed: ' + ((e && e.message) || e)); }
-            if (hs.buf.trim() && !hs.errMsg) { try { store.appendTurn(hopKey, 'assistant', hs.buf); } catch (e) { failNote('channels.hub.appendTurn', e); } }
-            return { text: hs.buf, usd: hs.usd, error: hs.errMsg || (hs.stopped ? 'stopped by you' : null) };
-          }
-        });
+          /* THE SAVED HOLD'S ADMISSION (line-hold lane): a walk that parks at a reviewer's gate keeps how this job came in. The door's own
+             facts (o.jobOrigin: the trigger and SEND TO hubs know theirs) else this chat's, and the entry's restrictive taint label. Facts
+             only: the host's originOf (index.js) decides whether they name an origin, and a hold that cannot be named ends as it did. */
+          origin: jobOriginFacts(chatId, msg, boundAgentId),
+          taints: lineEntryTaint ? [lineEntryTaint] : [],
+          signal: myRec.abort ? myRec.abort.signal : null
+        }, profile: lineRunner.profiles.channel({
+          // a hop is a plain autonomous run of ANOTHER agent (line-runner.js): its OWN roster config and composed persona (never this
+          // channel's configured system prompt), its OWN bay room, no consent keyboard (machine-to-machine), no unattended grant.
+          // `ownerTrusted` is different by design and stays: the owner initiated this line on their own channel.
+          channel: channel, chatId: chatId, streamId: canonicalStreamId, config: resolveRunConfig, persona: (agentId) => personaFor(agentId, rec),
+          station: resolveStation, ownerTrusted: ownerTrusted, untrustedEntry: lineEntryUntrusted,
+          channelSender: runChannelSender, channelSenderOwner: runChannelSenderOwner,   // a hop keeps the entry sender's Full Power verdict
+          // a REAL chat's line history for THIS dock: its earlier jobs only, never the agent's shared history (hopLineage); a one-job hub none
+          history: bindChats ? hopLineage(chatId, lineId, chatHistory) : null,
+          redact: redact, onToolStep: noteToolStep,   // a hop's step is this message's step too
+          onRun: (runId, h) => { myRec.runId = runId; myRec.agentId = h.agentId; myRec.startedAt = now ? now() : null; }   // E-STOP and the snapshot read the hop
+        }) });
+        jobFacts.line = line;
         if (onLineOutcome) {
           // a throwing outcome hook is the HOST's bug (the trigger runner records every fire's truth through it): never
           // let it abort the reply, but never swallow it silently either — the failopen ledger names it
@@ -2580,21 +2369,23 @@
           // unapproved (additive, GitHub #122): a review loop ran out of passes and sent the work on — delivered, never approved
           // outboxId (additive, 2026-10-15): the OUTBOX this job landed in (chain.js out.outboxId) — the only one a SEND TO hand-off
           // ever leaves from, so the sample route names only ITS destination to station.test_line (absent = unknown)
-          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; if (line.partial) lo.partial = String(line.partial); if (line.unapproved) lo.unapproved = String(line.unapproved); if (line.outboxId) lo.outboxId = String(line.outboxId); onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
+          try { const lo = { agentId: line.agentId, stopped: line.stopped || null, stop: line.stop || null, jobId: lineJob ? lineJob.id : null, hops: line.hops.slice(), usd: line.usd }; if (line.dockId) lo.dockId = line.dockId; if (line.partial) lo.partial = String(line.partial); if (line.unapproved) lo.unapproved = String(line.unapproved); if (line.outboxId) lo.outboxId = String(line.outboxId); if (line.halted) lo.halted = true; onLineOutcome(lo); } catch (e) { failNote('channels.hub.lineOutcome', e); }
         }
-        if (!myRec.superseded && line.hops.length) {
+        if (!endOf(myRec) && line.hops.length) {
           // the line's answer replaces the first stage's — and the floor/channel agree on who produced it
           firstStageText = state.buf;
-          state.buf = line.text + chain.stopNote(line);
+          state.buf = line.text + lineRunner.stopNote(line);
           finalAgentId = line.agentId;
-        } else if (!myRec.superseded && line.stopped && line.stopped !== 'stopped') {
-          state.buf = state.buf + chain.stopNote(line);   // stage one answered but the line never got going — say so
+        } else if (!endOf(myRec) && line.stopped && (line.stopped !== 'stopped' || line.halted)) {
+          state.buf = state.buf + lineRunner.stopNote(line);   // stage one answered but the line never got going — say so (a STOP before its first hop too: review r7)
         }
       }
+      if (heldBy) { withdrawn = true; throw heldBy; }   // a hop's tool step could not be marked: held like the entry run's
       if (await abandoned()) { withdrawn = true; return; }
       } finally {
-        // release the (single) inflight record exactly once — but only if a NEWER message hasn't already replaced it
-        // (the supersede path installs its own record under this chatId; clobbering it would drop the live run).
+        if (lineJob) lineRunner.track(lineJob, lastRunId, entryRan);
+        // Finished attempts leave the live map before reply delivery, as before. The outer
+        // finally also covers preparation exits, always conditional on this exact owner.
         if (inflight.get(chatId) === myRec) inflight.delete(chatId);
       }
 
@@ -2661,8 +2452,10 @@
            output under its own id (and the delivering stage's transcript holds the delivered text), so the
            entry dock gets back what IT actually produced. */
         const ownReply = (firstStageText != null) ? firstStageText : reply;
-        if (ownReply) { try { store.appendTurn(agentId, 'assistant', ownReply); } catch (e) { failNote('channels.hub.appendTurn', e); } }
+        if (ownReply && (!bindChats || history.legacy)) { try { history.legacyMirror(agentId, 'assistant', ownReply, { chat: chatHistory }); } catch (e) { failNote('channels.hub.legacyMirror', e); } }
         if (state.reason) reply += endNote(state.reason, state);   // 'done' adds a note only when the provider cut the reply short
+        // no agent.run.end at all: nothing proves the run finished (RunOutcome: failed / no_terminal_outcome), so the reply says so
+        else if (RunOutcome && RunOutcome.ofEnd(state.end || null, null).failureCode === RunOutcome.NO_TERMINAL) reply += NO_END_NOTE;
       }
 
       // all three die BEFORE deliver — none of them may outlive the reply it announced. The stream is ABANDONED
@@ -2670,8 +2463,19 @@
       } finally { stopTyping(); clearAck(); if (stream && withdrawn) stream.abandon(); }
       // seal() hands deliver() the streamed message so chunk 0 replaces it in place. It also closes the stream,
       // so a late token delta can never race the final text back out of order.
-      const dr = await deliverHeld(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'done'), finalAgentId,
-        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '', inboxIds);
+      // THE INTAKE'S CRATE (typed-outcomes, the family law): the host rides this message's conveyor crate to the OUTBOX only for a reply
+      // whose LEAD run SUCCEEDED — a failed, cut, limited or asking run's reply still goes out, but it is no delivered work (COMMS' rule).
+      // Settled before the send, so the crate reports how the run ended whatever the send does. A work line
+      // that ran settles it too (RunOutcome.ofLine, as a routine's fire does): a line a reviewer BLOCKED held the work — no delivered crate.
+      // Review 4.3: nor does a line that STOPPED short (a hop failed, a ceiling, a refusal) or whose joiner sent on PARTIAL (lineDelivered,
+      // the one crate rule the routine's fire, Run Now, chain.js's own line-output receipt and the trigger / SEND TO runners hold).
+      jobFacts.output = reply;
+      const result = settleJob();
+      const leadOk = result ? result.delivered : !state.errMsg && !!RunOutcome && RunOutcome.ofLine(RunOutcome.ofEnd(state.end || null, null), lineOut).ok && lineDelivered(lineOut);
+      if (intake && typeof intake.onSettled === 'function') { intakeSettled = true; try { intake.onSettled({ runId: lastRunId || '', ok: leadOk, jobId: lineJob ? lineJob.id : null, result }); } catch (e) { failNote('channels.hub.onSettled', e); } }
+      // the delivery records how the run ended — a run that never reported its end is an error, never 'done' (typed-outcomes)
+      const dr = await deliver(chatId, reply, lastRunId, state.errMsg ? 'error' : (state.reason || 'error'), finalAgentId,
+        choiceEntry ? { reply_markup: keyboardFor(choiceEntry) } : undefined, stream ? stream.seal() : '', answers);
       // Stitch the delivered message onto the keyboard's registry entry so a tap can edit THAT message in place.
       // A send that failed retires the token immediately: leaving it would let a phantom keyboard (buttons the
       // user can see from a partially-sent reply) resolve against a question they never fully received.
@@ -2679,32 +2483,76 @@
         if (dr && dr.ok && dr.messageId) { prompts.attach(choiceEntry.token, dr.messageId); choiceEntry.meta.text = dr.text || reply; }
         else if (!dr || !dr.ok) prompts.take(choiceEntry.token);
       }
+      } catch (e) {
+        jobFacts.stopCode = 'station_fault';
+        jobFacts.error = (e && e.message) || String(e);
+        throw e;
+      } finally {
+        // Every preparation/attempt/transport exit releases only its own stop owner. A late
+        // read or older run's finally cannot erase a newer request's record.
+        if (inflight.get(chatId) === myRec) inflight.delete(chatId);
+        // Early refusals, superseded messages and throws all finish the same record. Reply transport cannot rewrite a
+        // result already settled before sending. Wrappers adopt that result and never run a second status ladder.
+        const result = settleJob();
+        if (!intakeSettled && result && intake && typeof intake.onSettled === 'function') {
+          try { intake.onSettled({ ok: result.delivered, jobId: lineJob.id, result }); } catch (e) { failNote('channels.hub.onSettled', e); }
+        }
+      }
     }
 
     // ---- inline-keyboard taps (C6) -------------------------------------------------------------------------
     // One tap = { chatId, userId, data, callbackId, messageId }. The adapter has ALREADY owner-gated this (a
     // non-owner's tap never reaches here), so this is the display/decision hop only. Order matters and mirrors
-    // the reference harness: resolve the token (single-use) → ACK the tap → stamp the message → act.
+    // the reference harness: resolve the token (single-use) → ACK the tap → stamp the message → act (a choice's
+    // receipt is written before its token is spent, below).
     //
     // The ack is not optional politeness: until answerCallbackQuery lands, Telegram spins a loader on the button
     // and eventually shows the user a client-side error, so an unacked tap reads as a broken bot even when the
     // decision was recorded perfectly. It therefore happens BEFORE the (slower, failure-prone) edit and action.
-    async function onCallback(cb) {
-      if (!cb || !prompts || !answerCallback) return;
+    //
+    // A CHOICE TAP IS DURABLE BEFORE ANY OF THAT (channel-delivery-ledger S3). The message it stands for (the option's
+    // own text) gets a receipt in the delivery ledger like a typed message, keyed by the tap ('…|cb:<callbackId>'), and
+    // only then is the button spent and the tap answered. So this is a SYNC function that returns a promise (which never
+    // rejects): a receipt that cannot be written throws out to the adapter, which does not acknowledge the update, and
+    // Telegram hands the same tap over again to a button nothing has spent. From the receipt on, a crash replays the
+    // choice like any message, the attempt rule included. A consent tap keeps no receipt: the run that asked waits in
+    // this process, and a restart has already denied it.
+    function onCallback(cb) {
+      if (!cb || !prompts || !answerCallback) return Promise.resolve();
       const chatId = String(cb.chatId == null ? '' : cb.chatId);
-      const ack = async (text) => { try { await answerCallback(cb.callbackId, text); } catch (_) {} };
+      const ack = async (text) => { try { await answerCallback(cb.callbackId, text); } catch (e) { failNote('channels.hub.callback.ack', e); } };
 
       const hit = prompts.parse(cb.data);
-      if (!hit) { await ack(); return; }   // a stale keyboard from an older build — ack so the spinner stops
+      if (!hit) return ack();   // a stale keyboard from an older build — ack so the spinner stops
 
       // SINGLE-USE. A double-tap, a tap on a question the conversation already moved past, and a tap that lost
       // the race with a typed answer all land here. Say so plainly rather than silently doing nothing — and
-      // never re-run a decision. The chatId re-check makes a token from one chat unusable in another.
-      const entry = prompts.take(hit.token);
-      if (!entry || entry.chatId !== chatId) { await ack('That question is no longer open.'); return; }
+      // never re-run a decision. The chatId re-check makes a token from one chat unusable in another (and, read
+      // without spending it, never spends it for the chat it belongs to).
+      const entry = prompts.peek(hit.token);
+      if (!entry || entry.chatId !== chatId) return ack('That question is no longer open.');
       const opt = entry.options[hit.idx];
-      if (!opt) { await ack('That option is no longer available.'); return; }
-
+      if (!opt) return ack('That option is no longer available.');
+      // the choice's receipt FIRST (it throws when it cannot be written: nothing is spent, nothing answered); its message
+      // keeps messageId '' — no quote, no edit anchor — and carries the tap that keys it
+      const tap = entry.kind === 'consent' ? null : {
+        channel: channel, chatId: chatId, chatType: entry.chatType,
+        userId: cb.userId == null ? '' : String(cb.userId), userName: '',
+        text: opt.value, messageId: '', ts: now ? now() : 0,
+        tap: { callbackId: cb.callbackId == null ? '' : String(cb.callbackId), messageId: cb.messageId == null ? '' : String(cb.messageId) }
+      };
+      const received = tap ? delivery.receive(tap) : null;
+      prompts.take(hit.token);
+      // Stamp the CHOICE into the original message and strip the spent buttons: a durable edit like a consent stamp, so a
+      // crash during the tapped run still stamps it. Cosmetic ONLY in the sense that the answer is already taken whether or
+      // not this edit lands. The lane sends it on the next turn, so the tap's answer below stays first on the wire.
+      if (tap && editMessage && entry.messageId) {
+        try { delivery.stamp(chatId, { id: 'choice:' + hit.token, messageId: entry.messageId, text: String(entry.meta.text || '') + '\n\n▸ ' + String(opt.display || opt.value) }); }
+        catch (e) { failNote('channels.hub.callback.stamp', e); }
+      }
+      return answerTap(chatId, entry, opt, ack, tap, received);
+    }
+    async function answerTap(chatId, entry, opt, ack, tap, received) {
       // Only add the tick when the label doesn't already open with its own marker — a consent button reads
       // "✅ Allow for this session", and prefixing that produced a doubled "✓ ✅" in the live toast.
       const shown = String(opt.display || opt.label).trim().slice(0, 60);
@@ -2740,81 +2588,61 @@
       // stamped, and the toast above says what happened. A second edit here could only disagree with that stamp.
       if (entry.kind === 'consent') return;
 
-      // Stamp the CHOICE into the original message and strip the spent buttons. Cosmetic ONLY in the sense that the
-      // answer is already taken whether or not this edit lands (Telegram 400s a no-op edit, and the message may have
-      // been deleted by the user) — which is why it is fired inside its own guard and its result is not read.
-      if (editMessage && entry.messageId) {
-        try { await editMessage(chatId, entry.messageId, String(entry.meta.text || '') + '\n\n▸ ' + String(opt.display || opt.value), {}); } catch (_) {}
-      }
-
       // A CHOICE tap re-enters the NORMAL inbound path carrying the option's own text — byte-identical to the
       // Commander having typed that option. So history, agent routing, Task Brief continuity and the run itself
       // are all exactly the typed-answer path; there is no second, divergent "button answer" code path to keep
-      // in sync. (processInbound is fire-and-forget from the adapter's perspective; a throw here must not escape
-      // into the poll loop, hence the guard.)
+      // in sync — under the receipt written above, settled or answered like any message's (never batched: it is one
+      // decision). The guard keeps a throw out of the poll loop.
       try {
-        await processInbound({
-          channel: channel, chatId: chatId, chatType: entry.chatType,
-          userId: cb.userId == null ? '' : String(cb.userId), userName: '',
-          text: opt.value, messageId: '', ts: now ? now() : 0
-        });
+        await (received ? received.start() : processInbound(tap));
       } catch (e) {
-        try { console.error('[' + channel + '] choice tap failed for chat ' + chatId + ':', (e && e.message) || e); } catch (_) {}
+        try { console.error('[' + channel + '] choice tap failed for chat ' + chatId + ':', (e && e.message) || e); } catch (ce) { failNote('channels.hub.console', ce); }
       }
     }
 
     // adapter transport health -> channel.connect telemetry (poll up / network down / fatal token error).
-    // An 'up' is also the durable-outbox recovery cue: the transport just PROVED a round-trip, so any reply
-    // queued while it was down (or while the sidecar was off — the outbox survives restarts) redelivers now.
+    // An 'up' is also the redelivery cue: the transport just PROVED a round-trip, so every lane of this channel retries
+    // now (a reply kept while it was down, or while the sidecar was off — the ledger survives restarts) and pending
+    // receipts replay (hub-delivery.js up).
     function onStatus(s) {
-      try { emit('channel.connect', { channel, state: (s && s.state) || 'down', detail: (s && s.detail) || '' }); } catch (_) {}
-      if (s && s.state === 'up') {
-        try { kickOutbox(); } catch (_) {}
-        try { const p = recoverInbox(); if (p && typeof p.catch === 'function') p.catch(function () {}); } catch (_) {}
-      }
+      try { emit('channel.connect', { channel, state: (s && s.state) || 'down', detail: (s && s.detail) || '' }); } catch (e) { failNote('channels.hub.connect.emit', e); }
+      if (s && s.state === 'up') delivery.up();
     }
 
     /* OUR OWN MEMBERSHIP CHANGED — we were blocked, kicked, or let back in.
        This was invisible before: the notifier went on posting into a chat that could never receive it, every
        send failed, every failure queued another retry, and nothing in the product ever said why. The DETECTION
        was deliberately not built alone — a stamped field with no reader is one of this project's named bug
-       classes — so it lands here with its consumer:
+       classes — so it lands here with its consumer, the delivery ledger (keyed '<channel>|<chatId>', so a Telegram
+       chat that blocks us never touches a Discord chat with the same id):
 
-         · the chat is marked `unreachable`, which stops deliver() queueing anything new for it;
-         · its already-queued backlog is dropped NOW, each with the same honest `redelivery-gave-up` delivery
-           event a repeatedly-failed item gets. It is the same fact — we are not going to deliver this — and
-           inventing a new event name would mean editing the owned shared/events.js contract.
-
-       Clearing is not done here: `left` can arrive for reasons that are not a block, so the flag is lifted by
-       the chat actually speaking again (processInbound), which is proof rather than inference. */
+         · kicked / left: the chat is marked dead, and its queued replies become tombstones NOW, each with the same
+           honest `redelivery-gave-up` delivery event a given-up reply gets (inventing a new event name would mean
+           editing the owned shared/events.js contract). The mark never stops a later attempt: a later reply gets one
+           send, a refusal gives it up, a success clears the mark;
+         · member / administrator / creator / restricted: the platform says the bot is back, so the mark is cleared
+           (a quiet chat that unblocked us used to stay marked until it spoke); the chat speaking clears it too. */
     function onMembership(ev) {
       const chatId = String((ev && ev.chatId) || '');
       const status = String((ev && ev.status) || '');
       if (!chatId || !status) return;
       const gone = status === 'kicked' || status === 'left';
-      if (!gone) return;                                    // added/promoted/restricted: nothing to stop doing
+      if (!gone) { delivery.chatBack(chatId); return; }
       /* A GROUP THAT REMOVED US IS NO LONGER ADMITTED. The owner's /allow admitted the room as it was; whoever adds the
          bot back later (any group admin) must not re-open the owner's station to it without a fresh /allow there. Only
          an admission THIS channel granted is withdrawn — the chat map is shared across platforms (chatAdmitted). */
-      const patch = { unreachable: true };
-      if (String((ev && ev.chatType) || '') === 'group' && chatAdmitted(chatId)) patch.admittedOn = '';
-      try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, patch); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
-      try { console.error('[' + channel + '] chat ' + chatId + ' has ' + (status === 'kicked' ? 'blocked or banned' : 'removed') + ' this bot — queued replies for it are being dropped'); } catch (_) {}
-      if (typeof store.loadOutbox !== 'function' || typeof store.removeOutbox !== 'function') return;
-      let items = [];
-      try { items = store.loadOutbox(channel) || []; } catch (_) { items = []; }
-      for (const it of items) {
-        if (String(it.chatId) !== chatId) continue;
-        try { store.removeOutbox(it.id); } catch (e) { failNote('channels.hub.outbox.remove', e); }
-        try { emit('channel.delivery', { channel, chatId: chatId, runId: it.runId || '', ok: false, chunks: 0, reason: 'redelivery-gave-up' }); } catch (_) {}
+      if (String((ev && ev.chatType) || '') === 'group' && chatAdmitted(chatId)) {
+        try { if (typeof store.saveChatRecord === 'function') store.saveChatRecord(chatId, { admittedOn: '' }); } catch (e) { failNote('channels.hub.chatRecord.save', e); }
       }
+      try { console.error('[' + channel + '] chat ' + chatId + ' has ' + (status === 'kicked' ? 'blocked or banned' : 'removed') + ' this bot — queued replies for it are being dropped'); } catch (e) { failNote('channels.hub.console', e); }
+      delivery.dropBacklog(chatId, status);
     }
 
     return {
-      onInbound, onCallback, onStatus, onMembership, close, chatAdmitted,
-      _internals: { agentIdFor, chunkText, endNote, deliver, inflight, handleCommand, currentBoundAgent, isSupersedeRaceRefusal, flushOutbox, scheduleOutboxRetry, recoverInbox, activeInbox, inboxId, OUTBOX_ESCALATE_TRIES, TASK_SUFFIX, DEFAULT_PERSONA, keyboardFor, btnLabel, sendConsentPrompt, buttonsOk, replyPreamble, MAX_REPLY_MEDIA, noteRoute, routeOpts, routes, MAX_ROUTES, editIsCurrent, startAck, ACK_EMOJI, observeTurn, startStream, streamOk, notModified }
+      onInbound, onCallback, onStatus, onMembership, close, chatAdmitted, countHistory, historyContext: chatContext,
+      _internals: { agentIdFor, chunkText, endNote, deliver, inflight, handleCommand, currentBoundAgent, isSupersedeRaceRefusal, drain: delivery.drain, recoverInbox, activeInbox, inboxId, ledger: delivery.ledger, TASK_SUFFIX, DEFAULT_PERSONA, keyboardFor, btnLabel, sendConsentPrompt, buttonsOk, replyPreamble, MAX_REPLY_MEDIA, noteRoute, routeOpts, routes, MAX_ROUTES, editIsCurrent, startAck, ACK_EMOJI, observeTurn, startStream, streamOk, notModified }
     };
   }
 
-  return { makeChannelHub, dockSystem, joinReplyDelta, chunkText, chunkTextParts, remainderOf, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
+  return { makeChannelHub, DEFAULT_AGENT_PREFIX, dockSystem, joinReplyDelta, chunkText, chunkTextParts, endNote, parseCommand, parseUserCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, REPLY_QUOTE_MAX, COMMANDS, commandNeedsOwner, _internals: { TASK_SUFFIX, DEFAULT_PERSONA, NOTE_CMDS, parseCommand, matchAgent, fmtAgentLine, isSupersedeRaceRefusal, coerceChoice, menuCommands, helpText, replyPreamble, COMMANDS } };
 });

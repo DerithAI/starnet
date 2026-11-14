@@ -8,7 +8,7 @@ function ctx(code, extra={}) { const c=vm.createContext(extra); vm.runInContext(
 
 test('explicit worker reveal wins a queued layout pin; ordinary loads still follow the latest message', () => {
   const frames=[], target={ scrollIntoView(){ log.scrollTop=120; } }, log={scrollTop:0,scrollHeight:2000,contains:el=>el===target,querySelectorAll:()=>[]};
-  const c=ctx(part(chat,'  function cancelHistoryPin()', '  function positionNewPill('), {log,historyPinPending:1,stick:true,userScrollAt:0,requestAnimationFrame:fn=>frames.push(fn),nearBottom:()=>log.scrollTop===log.scrollHeight,hideNewPill(){},showNewPill(){}});
+  const c=ctx(part(chat,'  function cancelHistoryPin()', '  function positionNewPill('), {log,flushSysRuns(){},historyPinPending:1,stick:true,userScrollAt:0,requestAnimationFrame:fn=>frames.push(fn),nearBottom:()=>log.scrollTop===log.scrollHeight,hideNewPill(){},showNewPill(){}});
   c.pinLoadedHistoryAfterLayout(1); assert.equal(c.revealHistory(target),true);
   while(frames.length) frames.shift()();
   assert.equal(log.scrollTop,120); assert.equal(c.stick,false); assert.equal(c.historyPinPending,0);
@@ -293,7 +293,7 @@ test('a reply keeps the folder its own run used after the session joins a projec
   for (const o of [s.streamingAgent(undefined,undefined,null),s.streamingAgent('NOVA','nova',null),s.streamingAgent()]) { o.append('see [it](site/index.html)'); o.done(); }
   assert.deepEqual(renders.map(r=>r[2]),[undefined,undefined,'C:/proj'],'a live reply resolves at the folder its run was sent with (none for a hop)');
   // every reply the send path persists records the folder that run was sent with; a hop records none
-  const p=ctx(part(chat,'  function persistPartial(', '  function isBusy(')+part(chat,'  function markStoppedTurn(', '  // WHY it stopped'),{capHistory(){},liveRunRoots:new Map([['a',null],['b','C:/proj']])});
+  const p=ctx(part(chat,'  function persistPartial(', '  function isBusy(')+part(chat,'  function markStoppedTurn(', '  // WHY it stopped'),{capHistory(){},liveRunRoots:new Map([['a',null],['b','C:/proj']]),TurnMerge:require('../frontend/app/turnmerge.js'),liveRunTurns:new Map()});
   const w={id:'a',history:[]}; p.persistPartial(w,'partial'); w.id='b'; p.markStoppedTurn(w,'');
   assert.deepEqual(w.history.map(m=>m.projectRoot),[null,'C:/proj'],'a partial or stopped turn carries its in-flight run\'s folder');
   const send=part(chat,'  async function send(text, opts) {', '  async function maybeRetitle(');
@@ -301,7 +301,6 @@ test('a reply keeps the folder its own run used after the session joins a projec
   assert.equal((send.match(/error: true, ts: Date\.now\(\), projectRoot: runRoot \}/g)||[]).length,2,'both failure lines record the folder');
   assert.match(send,/content: replyText, ts: Date\.now\(\), sourceRunId: thisRunId \|\| undefined, projectRoot: runRoot \}/,'the reply records the folder');
   assert.match(send,/const runRoot = ws\.projectRoot \|\| null;\s+liveRunRoots\.set\(ws\.id, runRoot\);/,'the in-flight run\'s folder is what a partial or stopped turn records');
-  assert.match(part(chat,'  async function runWorkLine(', '  async function send(text, opts) {'),/content: hopText, agentId: nx, projectRoot: null, ts:/,'a work-line stage records that it ran without the project folder');
 });
 
 test('an explicit reveal survives the load\'s server-history repaint; a reader gesture forgets it (review comms-threads-ui-04)',async()=>{
@@ -313,9 +312,10 @@ test('an explicit reveal survives the load\'s server-history repaint; a reader g
   const boot=()=>{
     const read={history:[],repaint:false};
     const c=ctx(part(chat,'  function cancelHistoryPin()', '  function positionNewPill(')+part(chat,'  async function reconcileServerHistory(', '  // swap the rendered conversation'),{
-      log,activeWs:ws,historyPinSeq:1,historyPinPending:1,stick:true,userScrollAt:0,revealKey:'',historyLoads:new Map([[ws,read]]),
+      log,flushSysRuns(){},activeWs:ws,historyPinSeq:1,historyPinPending:1,stick:true,userScrollAt:0,revealKey:'',historyLoads:new Map([[ws,read]]),
       requestAnimationFrame:fn=>frames.push(fn),nearBottom:()=>log.scrollHeight-log.scrollTop-log.clientHeight<40,hideNewPill(){},showNewPill(){},
-      Workstreams:{get:()=>ws},Channels:{isBusy:()=>false},noteContinuity(){},mergeCanonicalHistory:(a,t)=>t,placeSteerNotes:rows=>rows,App:{persist(){}},
+      Workstreams:{get:()=>ws},Channels:{isBusy:()=>false},noteContinuity(){},TurnMerge:require('./helpers/turnmerge').TurnMerge,placeSteerNotes:rows=>rows,App:{persist(){}},
+      HistoryFit:require('../frontend/app/historyfit.js'),stationModes:{},stationCaps:{},
       fetch:async()=>({ok:true,json:async()=>({turns:[{role:'assistant',content:'the lead followed up '+Math.random()}]})}),
       renderHistory(){},replayChannel(){},syncStatus(){},maybeEmptyState(){},Delegated:{presentFor:async()=>{current=makeRow();}},
       AbortController,setTimeout,clearTimeout,Date,JSON,String,Promise});

@@ -11,6 +11,9 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
+  // the run-outcome resolver (frontend/app/runoutcome.js): a job's last run reads as its outcome, never the loop's bare 'done'
+  const RunOutcome = (typeof require === 'function') ? require('../../../frontend/app/runoutcome.js') : (typeof globalThis !== 'undefined' ? globalThis.RunOutcome : null);
+  const Scheduler = (typeof require === 'function') ? require('../../scheduler-state.js') : null;
   const ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
   const NAME_CHARS = 80;
   const PROMPT_CHARS = 12000;
@@ -129,29 +132,49 @@
 
   // describe (injected by the host) turns a job into plain words: { when, next } on the host's wall clock. The model
   // reports a routine's cadence back to the Commander, and reading `cron 0 10 * * 1` it once told them "bi-weekly".
-  function packJob(job, describe) {
+  // wireOf (injected by the host: index.js routineWireRow -> run-wire.js) is the {provider, model, source} the routine's
+  // next run really goes out on — the raw provider/model fields are what the routine itself saved (a bare model has no
+  // provider of its own; an empty pair follows its agent). null for a script-only routine; absent host -> no `wire`.
+  function packJob(job, describe, wireOf, scheduler) {
     if (!job) return null;
     let words = null;
     try { words = typeof describe === 'function' ? describe(job) : null; } catch (_) { words = null; }
+    let wire;
+    if (typeof wireOf === 'function') {
+      const w = wireOf(job);
+      wire = w ? { provider: w.provider || null, model: w.model || null, source: w.source || null } : null;
+    }
+    const nextFireAt = scheduler && Scheduler ? Scheduler.nextFireOf(scheduler, job) : job.nextRunAt;
     return {
       id: job.id,
       name: job.name,
       agentId: job.agentId,
       scheduleDisplay: job.scheduleDisplay,
       when: (words && words.when) || undefined,
-      nextRunLocal: (words && words.next) || undefined,
+      nextRunLocal: nextFireAt ? (words && words.next) || undefined : null,
       enabled: !!job.enabled,
       state: job.state,
-      nextRunAt: job.nextRunAt,
+      nextRunAt: nextFireAt,
+      nextFireAt,
+      held: scheduler && Scheduler ? Scheduler.holdOf(scheduler) : undefined,
       lastRunAt: job.lastRunAt,
-      lastStatus: job.lastStatus,
+      // a fire someone STOPPED is 'stopped' (review r7), never 'error' — an older record kept 'error' beside its outcome 'stopped', and a
+      // record a pre-lane station settled kept it beside the stop's own end word 'cancelled', with no outcome at all (review 9.3)
+      lastStatus: (job.lastStatus === 'error' && (job.lastOutcome === 'stopped' || (!job.lastOutcome && job.lastReason === 'cancelled'))) ? 'stopped' : job.lastStatus,
       lastError: job.lastError || (job.blockedConfig && job.blockedConfig.reason) || null,
-      lastReason: job.lastReason || null,
+      // (review 5.1) the last run's outcome-aware end word and its outcome code: a record a cut fire settled (or one written before the
+      // fire's reason read its outcome) told the lead lastStatus 'error' beside lastReason 'done' (an older record with no outcome: its status).
+      // Review 9.3: the status names the failure only beside 'done'. A pre-lane record kept lastStatus 'error' beside EVERY unsuccessful fire's
+      // own end word (a stop's 'cancelled', a limit's 'budget' / 'max_iters', a 'refusal', a question's 'clarifying'), and a 'failed' stamp
+      // invented from that status overrode each one ('error') once reasonOf honoured a stamp its reason contradicts. A real stamp still decides.
+      lastReason: job.lastReason ? (RunOutcome ? RunOutcome.reasonOf({ reason: job.lastReason, outcome: job.lastOutcome || (job.lastStatus === 'error' && job.lastReason === 'done' ? 'failed' : undefined) }) : job.lastReason) : null,
+      lastOutcome: job.lastOutcome || undefined, lastFailureCode: job.lastFailureCode || undefined,
       lastLine: job.lastLine || null,   // the work line stopped short / came out partial / unapproved on its last fire (quick win 25)
       deliver: job.deliver || 'local',
       completedRuns: job.repeat && job.repeat.completed || 0,
       provider: job.provider || null,
-      model: job.model || null
+      model: job.model || null,
+      wire
     };
   }
 
@@ -192,6 +215,14 @@
      added to the store later is then withheld by default instead of quietly becoming agent-writable.
      (test/tool-withheld-message.test.js additionally source-greps this file to prove no code path here even
      NAMES that grant field — which is why the sentence above describes it instead of spelling it.) */
+  /* A ROUTINE NEVER STORES A PROVIDER WITHOUT A MODEL (run-wire-resolver lane, sidecar/run-wire.js). A provider with no
+     model names no model, so the host would store it cleared and the routine would follow its agent — refuse it here
+     instead, so the tool never answers "updated (provider)" over a value that did not stick. A model alone is fine and is
+     stored as it is: each run borrows the provider its agent runs on (so it follows a station provider switch), and the
+     job in the reply names the pair that run uses (`wire`). */
+  function providerOnlyRefusal(provider) {
+    return 'provider ' + provider + ' needs a model too: a provider alone names no model. Pass both, or omit provider to run on the agent\'s own model';
+  }
   const AGENT_PATCHABLE = ['name', 'prompt', 'schedule', 'model', 'provider', 'repeatTimes', 'timezone', 'monitorMode', 'deliver', 'attachToSession'];
 
   function makeRoutineTools(deps) {
@@ -209,22 +240,29 @@
     const getRoutineNotepad = deps.getRoutineNotepad;
     const setRoutineNotepad = deps.setRoutineNotepad;
     const armScheduler = deps.armScheduler;
-    const schedulerState = typeof deps.schedulerState === 'function' ? deps.schedulerState : function () { return false; };
+    const schedulerSnapshot = function () {
+      if (typeof deps.scheduler === 'function') return deps.scheduler();
+      const legacy = { enabled: typeof deps.schedulerState === 'function' && deps.schedulerState() === true,
+        halted: typeof deps.schedulerHalted === 'function' && deps.schedulerHalted() === true };
+      return Scheduler ? Scheduler.schedulerState(legacy) : legacy;
+    };
+    const schedulerState = () => schedulerSnapshot().enabled === true;
     /* THE E-STOP IS A SECOND, INDEPENDENT FACT. `schedulerArmed` reports the arm INTENT, which E-STOP deliberately
        leaves true — so every readout here said "armed" about a scheduler the Commander had durably stood down, and
        run_now told the model the routine "fires on its next tick (within ~1 minute)" when no tick was coming. */
-    const schedulerHalted = typeof deps.schedulerHalted === 'function' ? deps.schedulerHalted : function () { return false; };
+    const schedulerHalted = () => schedulerSnapshot().halted === true;
     /* (org wire AUTO-P16-1) the Commander TURNED SCHEDULING OFF: a create keeps it off (the one arm rule), so the note names their
        choice and their switch — never "DISARMED" as if a create could fix it */
     const schedulerOffByChoice = typeof deps.schedulerOffByChoice === 'function' ? deps.schedulerOffByChoice : function () { return false; };
     const armedNote = function () {
       if (schedulerHalted()) return "the scheduler is STOPPED by the Commander's E-STOP — nothing fires until they resume it";
+      if (schedulerSnapshot().degraded) return 'scheduler storage needs recovery — no routine fire is promised until it is recovered';
       if (schedulerState()) return null;
       if (schedulerOffByChoice()) return 'scheduling is OFF because the Commander turned it off — saving a routine keeps it off, so nothing fires until they turn scheduling on (AUTOMATE › SCHEDULES › ▶ TURN SCHEDULING ON)';
       return 'the scheduler is DISARMED — nothing fires until it is armed';
     };
     const roster = typeof deps.roster === 'function' ? deps.roster : function () { return new Map(); };
-    const pack = function (job) { return packJob(job, deps.describeSchedule); };
+    const pack = function (job) { return packJob(job, deps.describeSchedule, deps.wireOf, schedulerSnapshot()); };
     // W6: the plain anti-retry line + the per-agent "you already maintain: …" summary. Injected so this tool
     // stays node-testable; defaults keep it a no-op when the host doesn't wire the mint ledger.
     const ANTI_RETRY = 'this routine already exists — do not recreate it';
@@ -249,7 +287,7 @@
     })();
 
     const listTool = {
-      name: 'routine.list', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'routine.list', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'List StarNet ROUTINES scheduled jobs; check them before creating another.',
       schema: { type: 'object', properties: { agentId: { type: 'string' } } },
       run: async (args) => {
@@ -262,7 +300,7 @@
     };
 
     const createTool = {
-      name: 'routine.create', capability: 'orchestrator', scope: 'write', requiresConsent: true, timeoutMs: 15000, taintLocked: true,
+      name: 'routine.create', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true, timeoutMs: 15000, taintLocked: true,
       /* Trimmed 2026-07-26 (tool-schema cost pass). Re-sent every turn, so it keeps only what changes a
          decision and lives nowhere better: what this is, the trigger words that route work HERE instead of
          to a shell, and the check-first rule. Dropped: the agentId auto-routing and `arm` default, both of
@@ -305,6 +343,7 @@
         if (args && args.provider != null && args.provider !== '') {
           provider = normalizeProvider(args.provider);
           if (!provider) throw new Error('provider must be openrouter or codex');
+          if (!clean(args.model, 120)) throw new Error(providerOnlyRefusal(provider));
         }
         const repeatTimes = (args && Object.prototype.hasOwnProperty.call(args, 'repeatTimes')) ? args.repeatTimes : null;
         const spec = {
@@ -394,7 +433,7 @@
        the SCHEDULER fire it on its next tick through the ordinary unattended path — which is also what the
        reference harness's trigger_job does. It reports the armed time, never "it ran". */
     const manageTool = {
-      name: 'routine.manage', capability: 'orchestrator', scope: 'write', requiresConsent: true, timeoutMs: 15000,
+      name: 'routine.manage', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true, timeoutMs: 15000,
       // taint lock per ACTION (taint.js): a run that read outside content may still pause a routine (stopping work
       // schedules nothing); update/resume/run_now re-arm what a later run obeys and remove throws it away. Same
       // action reading as run() below, so the lock and the tool can never disagree about which action this is.
@@ -446,22 +485,23 @@
         if (action === 'run_now') {
           if (typeof triggerRoutine !== 'function') throw new Error('routine trigger unavailable');
           const updated = await triggerRoutine(job.id);
-          const halted = !!schedulerHalted();
-          const armed = !!schedulerState() && !halted;
+          const state = schedulerSnapshot(), halted = !!state.halted, degraded = !!state.degraded;
+          const armed = state.enabled === true && !halted && !degraded;
           return {
             content: JSON.stringify({
-              ok: true, action: action, queued: true, schedulerArmed: !!schedulerState(), schedulerHalted: halted,
+              ok: true, action: action, queued: true, schedulerArmed: state.enabled === true, schedulerHalted: halted,
               // TRUTHFUL TELEMETRY: this did NOT run the routine, it moved its next fire to now. Say so, or the
               // model reports "I ran it" to the Commander and then reads no result. And an E-STOP means no tick
               // is coming at all — promising one "within ~1 minute" is the same lie with a deadline on it.
               note: halted
                 ? "queued, but the scheduler is STOPPED by the Commander's E-STOP so nothing will fire until they resume it"
+                : degraded ? 'queued, but scheduler storage needs recovery; nothing will fire until it is recovered'
                 : armed
                   ? 'queued — the scheduler fires this routine on its next tick (within ~1 minute); it has not run yet'
                   : 'queued, but the scheduler is DISARMED so nothing will fire until it is armed',
               job: pack(updated || job)
             }),
-            summary: 'queued routine "' + job.name + '" to fire on the next tick' + (armed ? '' : ' (scheduler disarmed)')
+            summary: 'queued routine "' + job.name + '"' + (armed ? ' to fire on the next tick' : halted ? ' (scheduler stopped)' : degraded ? ' (scheduler storage needs recovery)' : ' (scheduler disarmed)')
           };
         }
 
@@ -494,6 +534,7 @@
         if (args && args.provider != null && args.provider !== '') {
           const p = normalizeProvider(args.provider);
           if (!p) throw new Error('provider must be openrouter or codex');
+          if (!patch.model && !String(job.model || '').trim()) throw new Error(providerOnlyRefusal(p));
           patch.provider = p;
         }
         if (args && Object.prototype.hasOwnProperty.call(args, 'repeatTimes')) patch.repeatTimes = args.repeatTimes;

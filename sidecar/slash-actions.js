@@ -14,12 +14,30 @@
    Deps are injected (same pattern as makeChannelHub) so this module stays testable without a live sidecar. */
 'use strict';
 
+const RunOutcome = require('../frontend/app/runoutcome.js');   // how a routine's last fire ended, as the page reads it
+const SchedulerState = require('./scheduler-state.js');
 const MAX_LIST = 25;                       // a chat readout is a glance, not a database dump
 const RESERVED_AWAY = ['on', 'off', 'list', 'status', 'now'];
+
+/* review 9.3: the outcome a routine RECORD names. A stamped record's is its lastOutcome. A record a PRE-LANE station settled kept none, only
+   lastStatus 'error' beside the fire's own end word, and that word names the outcome (RunOutcome.ofWord): a stop's 'cancelled', a limit's
+   'budget' and a question's 'clarifying' each read "last error (…)". A 'done' (or no word) beside 'error' is the failure the status says, and
+   a word outside the end vocabulary (a config block's) names no outcome. Nor does a bare 'blocked': that is a security scan's refusal (cron-driver), and
+   a reviewer's hold is always stamped. Same rule as the ROUTINES window (frontend/app/windows/routines.js). */
+function recordOutcome(j) {
+  if (RunOutcome.isOutcome(j.lastOutcome)) return j.lastOutcome;
+  const word = String(j.lastReason || '');
+  if (!word || word === 'done') return j.lastStatus === 'error' ? 'failed' : null;
+  const named = RunOutcome.ofWord(word).outcome;
+  return named === 'failed' || named === 'succeeded' || named === 'blocked' ? null : named;
+}
 
 function makeSlashActions(deps) {
   const d = deps || {};
   const cron = d.cron || {};
+  const scheduler = () => typeof cron.scheduler === 'function' ? cron.scheduler() : SchedulerState.schedulerState({
+    enabled: typeof cron.armed === 'function' && cron.armed() === true,
+    halted: typeof cron.halted === 'function' && cron.halted() === true });
   const workshop = d.workshop || {};
   const tools = d.tools || {};
   const budget = d.budget || {};
@@ -54,10 +72,19 @@ function makeSlashActions(deps) {
   // panel), so a row owned by someone else is named — otherwise a positional /routine rm could delete another
   // agent's routine with nothing on screen to warn you.
   function jobLine(j, i, me) {
-    const state = j.enabled === false ? 'paused' : 'scheduled';
+    const s = scheduler(), next = SchedulerState.nextFireOf(s, j);
+    const state = j.enabled === false ? 'paused' : s.held ? 'held' : 'scheduled';
     const when = j.enabled === false ? 'paused'
-      : (j.nextRunAt ? ('next ' + j.nextRunAt) : 'no next fire');
-    const last = j.lastStatus ? ('; last ' + j.lastStatus + (j.lastError ? ' (' + String(j.lastError).slice(0, 60) + ')' : '')) : '';
+      : (next ? ('next ' + next) : 'no next fire');
+    // a fire someone STOPPED (review r7: lastStatus 'stopped'; an older record's 'error' beside lastOutcome 'stopped', or a pre-lane one's beside
+    // its 'cancelled') is said as the stop, never "last error (…cancelled before it finished…)". Review 9.3: a fire that asked or did not finish
+    // (a limit, a refusal, a cut or empty reply) says so in its outcome's words; only a failed one is "last error (…)"
+    const oc = j.lastStatus === 'error' ? recordOutcome(j) : null;
+    const status = oc === 'stopped' ? 'stopped' : j.lastStatus;
+    const ended = oc && oc !== 'stopped' && oc !== 'failed' ? RunOutcome.line({ outcome: oc, failureCode: j.lastFailureCode || '' }) : '';
+    const last = status === 'stopped' ? '; last run stopped before it finished'
+      : ended ? (oc === 'asked' ? '; last run ' + ended : '; last run did not finish (' + ended + ')')
+      : status ? ('; last ' + status + (j.lastError ? ' (' + String(j.lastError).slice(0, 60) + ')' : '')) : '';
     const owner = (me && j.agentId && String(j.agentId) !== String(me)) ? ' (' + j.agentId + '’s)' : '';
     return (i + 1) + '. ' + (j.name || '(unnamed)') + owner + ' — ' + (j.scheduleDisplay || 'no schedule')
       + ' [' + state + ', ' + when + ']' + last;
@@ -68,7 +95,9 @@ function makeSlashActions(deps) {
   // The scheduler being DISARMED is the single most confusing state in this subsystem: routines exist, look
   // healthy, and never fire. Every routine readout that could be misread as "this will run" carries this.
   function armedNote() {
-    if (typeof cron.halted === 'function' && cron.halted()) return " Routines are STOPPED by the Commander's E-STOP, so nothing will fire — /cron on to resume them.";
+    const s = scheduler();
+    if (s.halted) return " Routines are STOPPED by the Commander's E-STOP, so nothing will fire — /cron on to resume them.";
+    if (s.degraded) return ' Scheduler storage needs recovery; no routine fire is promised until it is recovered.';
     if (typeof cron.armed !== 'function') return '';
     if (cron.armed()) return '';
     // the Commander turned scheduling OFF (org wire AUTO-P16-1): a save keeps it off — said as their choice, never as a fault
@@ -155,10 +184,11 @@ function makeSlashActions(deps) {
       // Render the first fire in LOCAL wall-clock via the same preview path the panel uses. j.nextRunAt is a raw
       // UTC ISO string; showing that for "0 9 * * *" reads as 13:00 to a New Yorker who asked for 9am (G4.1).
       let first = '';
-      if (j.nextRunAt) {
+      const next = SchedulerState.nextFireOf(scheduler(), j);
+      if (next) {
         let local = null;
         try { const p = cron.preview(schedule); if (p && p.ok !== false && p.localNext && p.localNext.length) local = p.localNext[0]; } catch (_) {}
-        first = ', first fire ' + (local || j.nextRunAt);
+        first = ', first fire ' + (local || next);
       }
       // ONE ARM RULE (org wire AUTO-P16-1): the host's save turned a never-set switch on — said as it happened
       const nowOn = !!(r.scheduler && r.scheduler.armedNow);
@@ -187,7 +217,9 @@ function makeSlashActions(deps) {
       // expired one-shot, so "is now scheduled" would assert a run that can never happen — /routine list would
       // immediately contradict it with "no next fire".
       if (!nj.nextRunAt) return say('"' + nm + '" is un-paused, but its schedule has no future fire left, so it will not run. Delete it, or make a new routine with a fresh schedule.');
-      return say('"' + nm + '" is now scheduled — next fire ' + nj.nextRunAt + '.' + armedNote());
+      const next = SchedulerState.nextFireOf(scheduler(), nj);
+      if (!next) return say('"' + nm + '" is un-paused.' + armedNote());
+      return say('"' + nm + '" is now scheduled — next fire ' + next + '.' + armedNote());
     }
 
     if (verb === 'rm' || verb === 'remove' || verb === 'delete') {
@@ -220,7 +252,10 @@ function makeSlashActions(deps) {
     'bad-agent': 'that agent id is not one of your station agents',
     // these two come back with fired:TRUE — the shift ran and produced nothing usable. See awayAction.
     'run-failed': 'the build run itself failed',
-    'no-manifest': 'the run finished but produced no valid deliverable'
+    'no-manifest': 'the run finished but produced no valid deliverable',
+    'stopped': 'the build was stopped before it finished',   // a stop is no failed build (review r7)
+    // fired:false — a saved floor that cannot be proved right now HOLDS the shift before it claims anything (not a failed build, nothing parked)
+    'routing-held': 'the saved floor cannot be proved right now, so nothing was tried and the queue is untouched'
   };
   function shiftReason(code) {
     const c = String(code || '').trim();
@@ -275,6 +310,8 @@ function makeSlashActions(deps) {
       // A shift that RAN but produced no valid manifest still returns fired:true (reason 'run-failed' /
       // 'no-manifest'). Reporting that as "finished work waits in OUTBOX" would be a flat lie: nothing landed,
       // and the item may have been PARKED, which means it will never be retried unless it is re-queued.
+      // a shift someone STOPPED (review r7) failed nothing: its item stays queued, uncounted
+      if (r.reason === 'stopped') return say('The away shift was stopped before it finished — that item stays queued for the next shift.');
       if (r.reason && r.reason !== 'built') {
         return fail('An away shift ran but produced nothing usable — ' + shiftReason(r.reason)
           + (r.parked ? '. That item is now parked and will NOT be retried — /away <the same idea> to queue it again.' : '.'));

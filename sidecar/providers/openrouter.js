@@ -57,7 +57,10 @@
         max_completion_tokens: (m.top_provider && m.top_provider.max_completion_tokens) || null,
         pricing: m.pricing,
         supported_parameters: Array.isArray(m.supported_parameters) ? m.supported_parameters.slice() : [],
-        supportsTools: !!(m.supported_parameters && m.supported_parameters.indexOf('tools') >= 0),
+        // the row's word when it lists its parameters (OpenRouter always does); null when it lists none at all — an
+        // OpenAI-shaped list (an OpenRouter-compatible proxy, a gateway) says nothing about tools, and false there refused
+        // every task as toolless (openai-compatible.js reads the same silence as unknown)
+        supportsTools: Array.isArray(m.supported_parameters) ? m.supported_parameters.indexOf('tools') >= 0 : null,
         supportsReasoning: !!(m.supported_parameters && (m.supported_parameters.indexOf('reasoning') >= 0 || m.supported_parameters.indexOf('reasoning_effort') >= 0 || m.supported_parameters.indexOf('include_reasoning') >= 0)),
         reasoningEfforts: normalizeEffortList(m.reasoningEfforts || m.reasoning_efforts || m.supportedReasoningEfforts || m.supported_reasoning_efforts),
         // architecture.input_modalities: true/false when the catalog says, null when it does not (provider.imageInputOf)
@@ -128,8 +131,8 @@
   function supportsExplicitCache(model) {
     return /anthropic\/|claude/i.test(String(model || ''));
   }
-  function applyCacheControl(messages, model, cacheSystemPrefix) {
-    if (!Array.isArray(messages) || !supportsExplicitCache(model)) return messages;
+  function applyCacheControl(messages, model, cacheSystemPrefix, neverReread) {
+    if (neverReread === true || !Array.isArray(messages) || !supportsExplicitCache(model)) return messages;
     let idx = -1;
     for (let i = 0; i < messages.length; i++) {
       if (messages[i] && messages[i].role === 'system') idx = i; else break;   // last of the LEADING system block
@@ -330,7 +333,7 @@
       // A model the catalog (or its own earlier refusal) calls text-only gets each image as a short note instead: OpenRouter
       // refuses the whole request otherwise (404 "No endpoints found that support image input"). Unknown keeps them.
       const sent = supportsImages(req.model) === false ? provider.withoutImageParts(req.messages, req.model) : req.messages;
-      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(chatRoleProjection(provider.prepareWireMessages(sent, 'chat'), req.model)), req.model, req.cacheSystemPrefix), stream: true, usage: { include: true } };
+      const body = { model: req.model, messages: applyCacheControl(provider.chatWireMessages(chatRoleProjection(provider.prepareWireMessages(sent, 'chat'), req.model)), req.model, req.cacheSystemPrefix, req.neverReread === true && !(req.tools && req.tools.length)), stream: true, usage: { include: true } };
       if (effort !== 'none' || allowed.length > 1) body.reasoning = { effort };
       if (req.tools && req.tools.length) {
         // Grammar-safe property keys on every tool (OpenRouter fronts Anthropic/Bedrock, which 400 the whole request
@@ -367,7 +370,9 @@
         try { return { json: JSON.parse(data) }; } catch (e) { return null; }
       }
       // one decoded chunk -> 0..n normalized HarnessEvents (shared by the loop + end-of-stream flush)
+      let generationId = '';
       function* emitFrom(j) {
+        if (!generationId) { generationId = provider.generationId(j && j.id); if (generationId) yield { type: 'generation', id: generationId }; }
         if (j.error) {
           /* IN-BAND ERROR. OpenRouter has already answered 200 (its keep-alives precede the upstream), so a numeric
              error.code here IS the HTTP-equivalent status: say so in the adapter's own sentence, which classifyApiError
@@ -402,7 +407,7 @@
             }
           }
         }
-        if (j.usage) yield { type: 'usage', usage: j.usage };
+        if (j.usage) yield { type: 'usage', usage: generationId ? Object.assign({}, j.usage, { generation_id: generationId }) : j.usage };
         if (choice && choice.finish_reason && !doneEmitted) {
           doneEmitted = true;
           yield { type: 'done', finishReason: normalizeFinish(choice.finish_reason), truncated: false };
@@ -477,8 +482,8 @@
       const i = parseFloat(m.pricing.prompt) * 1e6, o = parseFloat(m.pricing.completion) * 1e6;
       return (isFinite(i) && isFinite(o)) ? { in: i, out: o } : null;
     }
-    // true/false once the catalog is warm; null = unknown (cold catalog) so callers don't false-refuse.
-    function supportsTools(id) { const m = findModel(id); return m ? !!m.supportsTools : null; }
+    // true/false once the catalog is warm; null = unknown (cold catalog, or a row that lists no parameters) so callers don't false-refuse.
+    function supportsTools(id) { const m = findModel(id); return (m && typeof m.supportsTools === 'boolean') ? m.supportsTools : null; }
     // Image input: false once this model refused an image here, else the catalog's word (true/false), else null (unknown).
     function supportsImages(id) {
       if (provider.refusedImages(baseUrl, id)) return false;
@@ -582,7 +587,11 @@
       }
     }
 
-    return { stream, listModels, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, supportsImages, reasoningEfforts };
+    function verifyCredential(o) {
+      return provider.verifyResponse(doFetch, baseUrl + '/auth/key', { headers: { Authorization: 'Bearer ' + (key || ''), Accept: 'application/json' }, signal: o && o.signal },
+        j => j && j.data && typeof j.data === 'object' && !Array.isArray(j.data) ? [{ credential: true }] : [], !!key, classifyApiError);
+    }
+    return { stream, listModels, verifyCredential, warmCatalog, contextLimit, outputLimit, priceOf, supportsTools, supportsImages, reasoningEfforts };
   }
 
   return { makeOpenRouterProvider, applyCacheControl, attachCatalogCache, _internals: { normalizeReasoningEffort, reasoningEffortsForModel, clampReasoningEffortForModel, repairToolPairs } };

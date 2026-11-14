@@ -5,7 +5,7 @@
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Deliverables = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const esc = s => (typeof U !== 'undefined' ? U : require('../js/util.js')).esc(s);
   function safeMarkdown(raw) {
     return String(raw || '').slice(0, 512 * 1024).split(/\r?\n/).map(line => {
       let s = esc(line).replace(/\*\*([^*]{1,500})\*\*/g, '<strong>$1</strong>').replace(/`([^`]{1,500})`/g, '<code>$1</code>');
@@ -297,6 +297,8 @@
     implemented: { label: 'IMPLEMENTED', cls: 'ok' },
     pending: { label: 'NEEDS A DECISION', cls: 'warn' },
     failed: { label: 'FAILED', cls: 'bad' },
+    // a run SOMEONE STOPPED (review r7): no failure, no success — never the red FAILED pill
+    stopped: { label: 'STOPPED', cls: 'off' },
     discarded: { label: 'DISCARDED', cls: 'off' }
   };
   function pillOf(status) {

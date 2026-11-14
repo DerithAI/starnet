@@ -4,12 +4,12 @@
    never boot into a workspace a live desktop owns, a NAMED port that is dead is an error not a spawn) · the
    desktop port-discovery parsers · agent/model selection · the run-event reducer (text = the real token deltas,
    reason ONLY from agent.run.end, a dropped stream is never "done") · exit codes · the bootstrap documents the
-   desktop can resume (and that the recovery gate classifies them as STATE_EVIDENCE) · the JSON receipt shape.
+   desktop can resume (and that the station record counts both as proof of a station) · the JSON receipt shape.
    Part of test:fast. */
 'use strict';
 const A = require('./_assert.js');
 const core = require('../bin/lib/cli-core.js');
-const lineage = require('../sidecar/workspace-lineage.js');
+const StationRecord = require('../sidecar/station-record.js');
 
 // ---- parseArgs ----------------------------------------------------------------------------------
 {
@@ -179,6 +179,24 @@ const lineage = require('../sidecar/workspace-lineage.js');
   A.eq(bare.agentId + '/' + bare.model, 'agent/env/default', 'an empty roster runs the bare agent on the station default model');
   const none = core.pickAgent({ agents: [{ agentId: 'agent', name: 'X', model: '', provider: 'openrouter' }] }, {});
   A.ok(!none.ok && /--model/.test(none.error), 'no model anywhere → an actionable error');
+  // --provider names the provider the station's alias map knows (sidecar/providers/registry.js): `openai-codex` IS the
+  // 'codex' the agent runs on, so it is no bare provider to refuse; an id the registry does not know is still refused
+  const alias = core.pickAgent(rt, { agent: 'researcher', provider: 'openai-codex' });
+  A.ok(alias.ok && alias.provider === 'codex' && alias.model === 'gpt-5', '--provider openai-codex is the codex the agent runs on: ' + JSON.stringify(alias));
+  const aliasModel = core.pickAgent(rt, { agent: 'agent', provider: 'OR', model: 'x/y' });
+  A.eq([aliasModel.provider, aliasModel.model], ['openrouter', 'x/y'], '--provider resolves its alias with --model too');
+  const unknownProv = core.pickAgent(rt, { agent: 'researcher', provider: 'not-a-provider' });
+  A.ok(!unknownProv.ok && /--provider "not-a-provider" is not a provider this station knows/.test(unknownProv.error), 'an unknown bare --provider is still refused: ' + JSON.stringify(unknownProv));
+  // (review round 4) ...and so is an unknown --provider WITH --model: it was sent as typed, and the station's /api/run ran
+  // it on openrouter with its own key (`starnet run --provider olama --model llama3` ran openrouter/llama3)
+  for (const typo of ['olama', 'open-router', 'chatgpt']) {
+    const sel = core.pickAgent(rt, { agent: 'researcher', provider: typo, model: 'llama3' });
+    A.ok(!sel.ok && sel.error === '--provider "' + typo + '" is not a provider this station knows', '--provider ' + typo + ' --model llama3 is refused: ' + JSON.stringify(sel));
+  }
+  // the help says what --model / --provider really do (the run-wire rule), not "override the agent's provider"
+  const help = core.USAGE;
+  A.ok(!/override the agent's provider/.test(help) && /a provider alone names no/.test(help) && /--model <slug>\s+run this model instead of the agent's \(on the agent's provider unless --provider names one\)/.test(help),
+    'the help text states the --model / --provider rule');
   const body = core.buildRunBody(d, 'do it', { cwd: '/proj' });
   A.eq(body.messages[0].role + ':' + body.messages[0].content, 'user:do it', 'one user message');
   A.eq(body.placed.map(p => p.objectType).join(','), 'computer,cabinet,workbench,dish,notebook', 'the headless coding office is placed');
@@ -266,9 +284,10 @@ const lineage = require('../sidecar/workspace-lineage.js');
   A.eq(d.save.doc.prov, 'openrouter', 'the provider rides doc.prov (the desktop restores it before the credential check)');
   A.eq(d.save.updatedAt + ':' + d.save.doc.updatedAt, '1700000000123:1700000000123', 'timestamps come from the injected clock');
   A.ok(Array.isArray(d.save.doc.agents) && d.save.doc.station === null && d.save.doc.workstreams.length === 0, 'the rest of the golden shape is present');
-  // the recovery gate must see these as a REAL station, never as an empty root to recover into
-  const STATE_EVIDENCE = lineage._internals.STATE_EVIDENCE;
-  A.ok(STATE_EVIDENCE.test('agent.save.json') && STATE_EVIDENCE.test('agent.roster.json'), 'both bootstrap files are STATE_EVIDENCE to workspace-lineage');
+  // the recovery gate must see these as a REAL station, never as an empty root to recover into: either file is proof of a
+  // station to the station record (P1: whatever a record says) and to its frozen fallback
+  const proof = name => StationRecord._internals.HARD_PROOF.test(name) && StationRecord.STATE_EVIDENCE.test(name);
+  A.ok(proof('agent.save.json') && proof('agent.roster.json'), 'both bootstrap files are proof of a station to the station record');
   const long = core.bootstrapDocs({ name: 'X'.repeat(80) });
   A.eq(long.roster.agents[0].name.length, 40, 'names are clipped to the roster limit');
 }

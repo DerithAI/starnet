@@ -74,6 +74,7 @@ A.eq(v1.schema, R.SCHEMA, 'bundle schema is explicit');
 A.eq(v1.version, R.VERSION, 'bundle version is explicit');
 A.eq(v1.report.complete, true, 'all required semantic categories are present');
 A.eq(v1.report.requirements.filter(x => x.status === 'present').length, R.REQUIRED_CATEGORIES.length, 'every required category is accounted for');
+A.eq(R.categoriesFor('channels/delivery.json'), ['conversations'], 'the delivery ledger is conversation state, like the outbox it replaced (messages waiting for an answer, replies waiting to land)');
 A.eq(v1.recoveryPoint.completedMutationsLostAtPoint, 0, 'successful quiescent snapshot establishes zero loss through its mutation barrier');
 A.eq(v1.recoveryPoint.continuousRpoCompletedMutations, null, 'bundle does not invent an unproven continuous RPO');
 const bundleText = JSON.stringify(v1);
@@ -114,7 +115,8 @@ A.eq(cleanBrowser['starnet.station.v1'], browserV1['starnet.station.v1'], 'brows
 A.eq(cleanBrowser['starnet.byok.key'], undefined, 'browser credential is not restored');
 A.ok(read(cleanTarget, 'agent/workshop/run-1/report.md').includes('User-created deliverable bytes survive'), 'deliverable bytes restore');
 A.ok(!JSON.parse(read(cleanTarget, 'permissions.allow.json')).allow.includes('path:C:/Projects/demo'), 'clean profile never inherits machine-specific path authority');
-A.ok(JSON.parse(read(cleanTarget, 'permissions.allow.json')).allow.includes('fs.write:workspace'), 'portable non-path permissions are preserved');
+A.eq(JSON.parse(read(cleanTarget, 'permissions.allow.json')).allow, [], 'no "always allow" travels: a restored file was never that click');
+A.ok(restoredV1.reauthentication.some(x => x.kind === 'approval' && x.id === 'fs.write:workspace'), 'and each one is listed to approve again');
 const recaptured = R.capture({ workspaceRoot: cleanTarget, browserStore: cleanBrowser, now: 1001, appVersion: '0.9.0-test', lastCompletedMutation: 100 });
 A.eq(JSON.stringify(R.semanticFingerprint(recaptured)), JSON.stringify(R.semanticFingerprint(v1)), 'clean-profile semantic fingerprint exactly matches the recovery point');
 

@@ -1,4 +1,16 @@
 'use strict';
+const Kinds = require('../frontend/app/turnkinds.js');
+/* THE ACCEPTED ANSWER IS THE WORKER'S WORDS, so it quotes whatever the worker (and its repair run) read (turn identity commit 11): the sessions
+   named on their run records (quotes + quotesAt; the saturated ['*'] included) become the final row's stamp, and a delete of one of them takes
+   the row with it. {} when neither read another session. */
+function quotedBy(records) {
+  const entries = [];
+  for (const r of records) {
+    if (!r || !Array.isArray(r.quotes)) continue;
+    r.quotes.forEach((id, i) => entries.push({ id, at: Array.isArray(r.quotesAt) && Number.isSafeInteger(r.quotesAt[i]) ? r.quotesAt[i] : 0 }));
+  }
+  return Kinds.quoteStamp(entries);
+}
 // A run's accepted answer cannot predate the run: bound the lookup so finalize never re-reads a long stream's
 // whole lifetime (non-coordinator workers all write to 'global').
 function runSince(source) {
@@ -15,7 +27,7 @@ function finalizeDispatchDelivery(deps, runId, value) {
   const final = { state: 'final', text, reason: String(value.reason || 'error'), repairRunId: String(value.repairRunId || ''),
     textLength: text.length, textSha256: hash(text) };
   const streamId = source.streamId || 'global';
-  const rows = transcriptStore.history(streamId, { sourceRunId: runId, dispatchState: 'final', limit: 1, strict: true, proof: true, since: runSince(source) });
+  const rows = transcriptStore.view('proof', streamId, { sourceRunId: runId, dispatchState: 'final', limit: 1, strict: true, since: runSince(source) });
   const prior = rows.find(row => row.dispatchState === 'final');
   const saved = source.dispatchDelivery;
   if (prior && !require('./transcriptstore.js').isFinalDeliveryRow(prior, hash, saved)) throw new Error('The first accepted dispatch projection is incomplete or unverifiable.');
@@ -31,10 +43,13 @@ function finalizeDispatchDelivery(deps, runId, value) {
   }
   if (!prior) {
     const repair = final.repairRunId && runStore.latest(final.repairRunId);
+    // THE ROW STAMP, not the first source: a worker that inherited its lead's bare attachment latch and then read a page or the saved
+    // file has taintedBy = the attachment (which decays on replay) and rowTaintedBy = what it read (which does not). This row is the
+    // only replayable row of the run, so it must carry the read. A record from before rowTaintedBy existed falls back to taintedBy.
     const written = transcriptStore.appendStrict({ streamId, agentId: source.agentId,
       role: 'assistant', sourceRunId: runId, content: text, dispatchState: 'final',
       dispatchPrompt: source.deliveryPrompt, dispatchReason: final.reason, dispatchRepairRunId: final.repairRunId,
-      textLength: final.textLength, textSha256: final.textSha256, taint: source.taintedBy || (repair && repair.taintedBy) || undefined });
+      textLength: final.textLength, textSha256: final.textSha256, taint: source.rowTaintedBy || source.taintedBy || (repair && (repair.rowTaintedBy || repair.taintedBy)) || undefined, ...quotedBy([source, repair]) });
     if (!written || written.content !== text || written.textLength !== text.length || written.textSha256 !== final.textSha256
         || written.sourceRunId !== runId || written.streamId !== streamId) {
       throw new Error('The full accepted dispatch answer was not durably preserved.');
@@ -51,7 +66,7 @@ function recoverPendingDeliveries(deps) {
     if (!source.dispatchDelivery || source.dispatchDelivery.state !== 'pending') continue;
     try {
       const streamId = source.streamId || 'global';
-      const prior = transcriptStore.history(streamId, { sourceRunId: source.runId, dispatchState: 'final', limit: 1, strict: true, proof: true, since: runSince(source) })[0];
+      const prior = transcriptStore.view('proof', streamId, { sourceRunId: source.runId, dispatchState: 'final', limit: 1, strict: true, since: runSince(source) })[0];
       if (!prior) continue;
       if (!require('./transcriptstore.js').isFinalDeliveryRow(prior, hash) || !Number.isSafeInteger(prior.textLength)
           || prior.streamId !== streamId || prior.sourceRunId !== source.runId || !prior.dispatchReason) {

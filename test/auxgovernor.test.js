@@ -112,18 +112,40 @@ const G = require('../sidecar/auxgovernor.js');
     A.eq(G.PRIORITY, ['reflection', 'failure-review', 'study', 'threadmine', 'scout', 'skill-review', 'skill-curator'], 'PRIORITY export is a copy — decide never mutates it');
   }
 
-  // ---- RESERVED LANE (skill nudge, 2026-09-28): a due pass spends OUTSIDE the ceiling, never deferred ----
+  // ---- RESERVED LANE (skill nudge 2026-09-28, counted since issue #105): a due pass takes its slot first ----
   {
     const all = ['reflection', 'study', 'scout', 'skill-review', 'skill-curator'];
     const r = G.decide({ candidates: all, budget: 2, reserved: ['skill-review'] });
-    A.eq(r.spend, ['reflection', 'study', 'skill-review'], 'a reserved skill-review spends even with two higher beats holding the budget');
-    A.eq(r.deferred, ['scout', 'skill-curator'], 'the governed passes defer exactly as before (the reserved one takes no slot)');
+    A.eq(r.spend, ['reflection', 'skill-review'], 'a reserved skill-review still spends against two higher beats, and now counts: two passes on a budget of two');
+    A.eq(r.deferred, ['study', 'scout', 'skill-curator'], 'the beat it displaced is deferred, so it retries next run');
     A.eq(r.reserved, ['skill-review'], 'the plan reports which passes rode the reserved lane (truthful telemetry)');
     const without = G.decide({ candidates: all, budget: 2 });
     A.eq(without.spend, ['reflection', 'study'], 'CONTROL: without the reserve the same skill-review is deferred (the bug this lane fixes)');
     A.eq(G.decide({ candidates: ['scout'], budget: 1, reserved: ['skill-review'] }).spend, ['scout'], 'a reserved name that is not a candidate spends nothing');
     A.eq(G.decide({ candidates: ['skill-review'], budget: 0, reserved: ['skill-review'] }).spend, ['skill-review'], 'unlimited still spends it once');
-    A.eq(G.decide({ candidates: ['skill-review', 'skill-review', 'reflection'], budget: 1, reserved: ['skill-review'] }).spend, ['reflection', 'skill-review'], 'dups collapse; order stays the locked priority');
+    A.eq(G.decide({ candidates: ['skill-review', 'skill-review', 'reflection'], budget: 2, reserved: ['skill-review'] }).spend, ['reflection', 'skill-review'], 'dups collapse; order stays the locked priority');
+    const one = G.decide({ candidates: ['reflection', 'skill-review'], budget: 1, reserved: ['skill-review'] });
+    A.eq(one.spend, ['skill-review'], 'a budget of one is one pass, the reserved one');
+    A.eq(one.deferred, ['reflection'], 'and reflection retries next run');
+    const two = G.decide({ candidates: ['a', 'b', 'c'], budget: 1, reserved: ['a', 'b'] });
+    A.eq([two.spend, two.deferred, two.reserved], [['a'], ['b', 'c'], ['a']], 'more reserved passes than budget: the ceiling still holds, and the plan does not report the deferred one as reserved');
+  }
+
+  // ---- TOKEN CEILING (issue #105): binds only on an unmetered route ----
+  {
+    const d = G.DEFAULT_TOKEN_CEILING;
+    A.eq(G.tokenGate({ unmetered: true, ceiling: d, used: d - 1 }).blocked, false, 'under the ceiling: passes run');
+    A.eq(G.tokenGate({ unmetered: true, ceiling: d, used: d }).blocked, true, 'at the ceiling: passes stop');
+    A.eq(G.tokenGate({ unmetered: false, ceiling: 1, used: 9e9 }), { applies: false, blocked: false, ceiling: 1, used: 9e9 }, 'a metered route keeps its dollar guards');
+    A.eq(G.tokenGate({ unmetered: true, ceiling: 0, used: 9e9 }).blocked, false, '0 is off');
+    A.eq(G.tokenGate({ unmetered: true, ceiling: 'junk', used: d }).blocked, true, 'a bad ceiling reads as the default, never as off');
+    // CE3: Number() reads the whitespace, hex, array and exponent forms as numbers, several of them as 0 (off)
+    for (const bad of ['', null, undefined, -1, 1.5, 'x', true, G.MAX_TOKEN_CEILING + 1, '   ', '\n0', '\t0', '0\n', '0x0', '1e3', '-1', '1.5', [], [0], {}, NaN, Infinity]) A.eq(G.parseTokenCeiling(bad), null, 'refused: ' + JSON.stringify(bad));
+    for (const junk of ['   ', '\n0', '\t0', '0x0', [], [0]]) A.eq(G.tokenGate({ unmetered: true, ceiling: junk, used: d }).blocked, true, 'junk never turns it off: ' + JSON.stringify(junk));
+    A.eq(G.TOKEN_WINDOW_MS, 24 * 60 * 60 * 1000, 'the window the panel states is 24 hours');
+    A.eq(G.CEILING_KINDS, ['reflection', 'failure-review', 'study', 'threadmine', 'scout', 'quest-refresh', 'skill-review', 'skill-curator'], 'the automatic passes it counts: no embedding, no station one-shot');
+    A.eq(G.parseTokenCeiling('50000'), 50000, 'a number string is a number');
+    A.eq(G.parseTokenCeiling(0), 0, '0 is a real setting');
   }
 
   A.report('auxgovernor.test');

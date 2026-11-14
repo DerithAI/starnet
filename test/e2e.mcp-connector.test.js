@@ -16,6 +16,7 @@ const { bootToken } = require('./_httpToken.js');
 // message) quotes earlier chats as RECENT ACTIVITY, so a raw-content match would route a routine on a previous chat
 const { userWords } = require('./helpers/host-notes.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
+const { seedActiveStation } = require('./helpers/station.js');   // a crew lives on a founded station: before one, the roster is held, never written
 
 const HOST = '127.0.0.1';
 const INDEX = path.resolve(__dirname, '..', 'sidecar', 'index.js');
@@ -157,7 +158,8 @@ function boot(port, env, attemptsLeft) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 9000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 
@@ -232,6 +234,7 @@ async function readNdjson(res) {
   const mcp = await startMockMcp();
   const llm = await startMockOpenRouter();
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'sk-mcp-e2e-'));
+  seedActiveStation(ws);
   const env = {
     SKYNET_WORKSPACES: ws,
     STARNET_WORKSPACES: ws,

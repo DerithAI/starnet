@@ -148,7 +148,11 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     const other = { role: 'system', content: 'Another prompt entirely.' };
     await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: stable });   // 9
     await call({ messages: [other, { role: 'user', content: 'x' }], cacheSystemPrefix: '' });       // 10
+    // issue #105: a prefix opening on whitespace (a persona that is all learned state: the prefix starts at the tool notes) still names the route
+    await call({ messages: [{ role: 'system', content: '\n\nTOOL NOTES\n\nlearned one' }, { role: 'user', content: 'x' }], cacheSystemPrefix: '\n\nTOOL NOTES' });   // 11
+    await call({ messages: [{ role: 'system', content: '\n\nTOOL NOTES\n\nlearned two' }, { role: 'user', content: 'x' }], cacheSystemPrefix: '\n\nTOOL NOTES' });   // 12
     const keys = seen.map(s => s.body.prompt_cache_key);
+    A.eq(keys[12], keys[11], 'a learned tail does not move the route when the prefix opens on whitespace');
     A.ok(keys.every(k => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(k)), 'every request names a uuid-shaped route (an unreadable token still gets one)');
     A.eq(keys[1], keys[0], 'the route holds as the conversation grows');
     A.eq(keys[2], keys[0], 'a tool.search reveal (one more tool) does not move the route');
@@ -388,6 +392,36 @@ async function collect(provider, req) { const out = []; for await (const e of pr
     A.ok(at > 0 && /const auxModel = resolveAuxModel\(\);/.test(quest), 'quest refresh reads the aux model once');
     const providerAt = quest.indexOf('provider = selectProvider'), pickAt = quest.search(/if \(usingCodex && !auxModel\) model = await codexLiveDefaultModel\(\(\) => provider\.listModels\(\), CODEX_DEFAULT_MODEL, \d+\);/);
     A.ok(providerAt > 0 && pickAt > providerAt && pickAt < quest.indexOf('const req = {'), 'a Codex quest refresh with no aux model asks its own provider\'s live list before the request');
+  }
+
+  // W. WHAT THE SILENT STREAM IS DOING: reasoning and tool-argument streaming are reported once per change of activity
+  // as { type:'waiting' } notes — never the reasoning summary's text — and visible text clears the note
+  {
+    const sse = [
+      ev({ type: 'response.created', response: { id: 'r1' } }),
+      ev({ type: 'response.output_item.added', output_index: 0, item: { type: 'reasoning' } }),
+      ev({ type: 'response.reasoning_summary_part.added', output_index: 0 }),
+      ev({ type: 'response.reasoning_summary_text.delta', output_index: 0, delta: 'PRIVATE-SUMMARY-TEXT' }),
+      ev({ type: 'response.reasoning_summary_text.delta', output_index: 0, delta: 'more' }),
+      ev({ type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning' } }),
+      ev({ type: 'response.output_item.added', output_index: 1, item: { type: 'message', role: 'assistant' } }),
+      ev({ type: 'response.output_text.delta', output_index: 1, delta: 'Writing it.' }),
+      ev({ type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', call_id: 'call_1', name: 'fs_write' } }),
+      ev({ type: 'response.function_call_arguments.delta', output_index: 2, delta: '{"path":"a"}' }),
+      ev({ type: 'response.output_item.done', output_index: 2, item: { type: 'function_call', call_id: 'call_1' } }),
+      ev({ type: 'response.completed', response: { status: 'completed' } }),
+      'data: [DONE]', ''
+    ].join('\n');
+    const p = makeCodexProvider({ fetch: sseFetch(sse), token: 'acc' });
+    const evs = await collect(p, { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }], tools: [{ type: 'function', function: { name: 'fs_write' } }] });
+    A.eq(evs.filter(e => e.type === 'waiting'), [
+      { type: 'waiting', phase: 'streaming', note: 'reasoning' },
+      { type: 'waiting', phase: 'streaming', note: '' },
+      { type: 'waiting', phase: 'streaming', note: 'writing fs_write arguments' }
+    ], 'one note per change of activity: reasoning, cleared by visible text, then the tool being written');
+    A.ok(!JSON.stringify(evs).includes('PRIVATE-SUMMARY-TEXT'), 'the reasoning summary text is never forwarded');
+    A.eq(evs.filter(e => e.type === 'text').map(e => e.delta).join(''), 'Writing it.', 'text still streams');
+    A.eq(evs.find(e => e.type === 'done').finishReason, 'tool_calls', 'the turn still finishes as a tool call');
   }
 
   A.report('provider.codex.test');

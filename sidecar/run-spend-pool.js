@@ -33,8 +33,9 @@
    A call with no price goes out only beside priced calls that leave room, and nothing goes out while it is in flight.
    What a reservation cannot cover: a provider billing a call above the catalog's token prices (counted once it
    books: no later reservation is less than it), a prompt-cache write premium and a prompt the provider counts above
-   the loop's ruler (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass, a summarizer
-   fold), which is counted when it is booked. The price of the bound is TIME: near the cap, with a model whose calls
+   the loop's ruler (loop.js nextCallUsd), and spend booked outside a model call (a tool's own paid pass), which is
+   counted when it is booked. Compaction attempts reserve their own request before each summary call.
+   The price of the bound is TIME: near the cap, with a model whose calls
    it must reserve high, or with a model it cannot price, workers take turns instead of calling at once. That wait is
    not work: team.spawn's timeout, a team.dispatch worker's slice and the liveness sweep's stall clock of every worker
    the subagent manager runs pause while a call is held (watchHolds below, orchestration.js poolHoldClock and
@@ -141,6 +142,21 @@
       if (usd(finalUsd) > m.spent) m.spent = usd(finalUsd);
       closeCall(m, false);
     }
+    /* IMAGES WHOSE COST NOBODY KNOWS (#164): they book $0, so no dollar figure here ever moves for them. The family counts them
+       instead. running: generations started and not over. unknown: those that came back with no price. A generation that
+       failed or was cancelled, or that came back priced, leaves no count. spend.js makeMediaSpendCheck holds the rule. */
+    let mediaRunning = 0, mediaUnknown = 0, mediaWake = null;
+    function mediaCount() { return { running: mediaRunning, unknown: mediaUnknown }; }
+    function mediaBegin() { mediaRunning++; }
+    function mediaEnd(unknownCharges) {
+      mediaRunning = Math.max(0, mediaRunning - 1);
+      mediaUnknown += Math.max(0, Math.floor(Number(unknownCharges) || 0));
+      if (mediaWake) { const w = mediaWake; mediaWake = null; w.resolve(); }
+    }
+    function nextMediaEnd() {
+      if (!mediaWake) { let resolve; const p = new Promise(r => { resolve = r; }); mediaWake = { p, resolve }; }
+      return mediaWake.p;
+    }
     function status() {
       let inFlight = 0, reservedUsd = 0, unpricedInFlight = 0;
       for (const m of members.values()) {
@@ -151,7 +167,7 @@
       return { capUsd: cap, spentUsd: spent(), members: members.size, inFlight, reservedUsd, unpricedInFlight, calls, largestCallUsd: largest };
     }
 
-    const api = { join, admit, booked, idle, withdraw, settle, status, capUsd: cap };
+    const api = { join, admit, booked, idle, withdraw, settle, status, mediaCount, mediaBegin, mediaEnd, nextMediaEnd, capUsd: cap };
     return api;
   }
 

@@ -39,6 +39,8 @@ const Understanding = require('../frontend/app/understanding.js');
 const NR = require('../frontend/app/nightreport.js');
 const nightshift = require('../sidecar/nightshift.js');
 const { makeNightshiftDriver } = require('../sidecar/nightshift-driver.js');
+const BillingClass = require('../sidecar/billing-class.js');
+const billing = BillingClass.makeBilling({ profileOf: require('../sidecar/providers/registry.js').getProviderProfile });
 
 const ROOT = path.resolve(__dirname, '..');
 const sidecarSrc = readSidecarSource();
@@ -63,11 +65,16 @@ for (const header of ['async function runNightshiftBeat(', 'async function runNi
 function makeHost(runs) {
   const ctx = vm.createContext({
     Autopilot, Autonomy,
-    fs: { mkdirSync() {} }, saveResilient() {}, loadResilient() { return null },
+    fs: { mkdirSync() {} }, saveResilient() {}, loadResilient() { return null }, failNote() {},
+    // the write gate for pushed beliefs (derivedAdmission, turn identity commit 14) is proved by forget.dossier.http; here a station that deleted nothing admits
+    derivedAdmission: () => ({ admitted: true, reason: '', forgotten: [] }), PROV_RUN_RE: /^[A-Za-z0-9_.:-]{1,80}$/, PROV_MAX_RUNS: 256,
     WORKSPACES: '/ws', AUTONOMY_POSTURE_FILE: '/ws/_commander.autonomy.json',
-    budget: { check: () => null }, NIGHTSHIFT_AGENT: 'agent',
+    // the one governor the host binds (billing-class.js), over a clear budget and the registry's payer
+    governor: BillingClass.makeGovernor({ budget: { check: () => null }, auxTokenGate: () => ({ blocked: false }), classOfProvider: id => billing.classOf(id) }), NIGHTSHIFT_AGENT: 'agent',
     cronProviderFor: () => 'openrouter', cronModelFor: () => 'test/model', cronHasCredential: () => true, cronKeyFor: () => 'k',
-    nightshiftUserRunCount: () => runs
+    nightshiftUserRunCount: () => runs,
+    // the held-floor gate reads the agent's room and the saved-floor hold: a fresh station has neither (held-floor behaviour is routing.held-floor-away.e2e)
+    workshopOf: () => null, routingHold: () => null
   });
   return vm.runInContext(postureSrc + ';\n' + precheckSrc + '\n' + viewSrc + '\n({ commanderPosture, nightshiftPrecheck, nightshiftReadinessView })', ctx);
 }
@@ -82,6 +89,7 @@ function realStore() {
     Dossier, Understanding,
     fetch: (url, opts) => { posts.push({ url: url, body: opts && opts.body ? JSON.parse(opts.body) : null }); return Promise.resolve({ ok: true, json: () => Promise.resolve({}) }); }
   });
+  ctx.Harness = { api: { post: async (url, body) => { const r = await ctx.fetch(url, { method: 'POST', body: JSON.stringify(body) }); const j = await r.json(); return { ok: !!r.ok && !(j && j.ok === false), status: 200, j }; } } };   // the page's one JSON client over the same stub fetch, as harness.js readReply gives it
   const store = vm.runInContext(dossierStoreSrc + '\nDossierStore', ctx);
   store.init({});
   const snapshot = () => { const last = posts.filter(p => p.url === '/api/autonomy/posture' && p.body && p.body.beliefs).pop(); return last ? last.body.beliefs : null; };

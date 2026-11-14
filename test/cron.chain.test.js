@@ -59,6 +59,7 @@ async function fireAndSettle(s, reply) {
     A.ok(entryText.indexOf('UPSTREAM DIGEST') >= 0, 'fixture: the entry run was given the upstream context');
     A.ok(s.chainCalls.length === 1 && s.chainCalls[0].originalText.indexOf('UPSTREAM DIGEST: three findings from yesterday') >= 0, 'the line is handed the upstream context as part of the original ask');
     A.ok(s.chainCalls[0].originalText.indexOf('research the thing') > s.chainCalls[0].originalText.indexOf('UPSTREAM DIGEST'), '...with the routine directive after it, exactly as the entry run read it');
+    A.eq([s.chainCalls[0].jobId, s.chainCalls[0].runId], ['j1', 'run-1'], 'the line seam is told the routine and the fire it belongs to (a work line that parks at a reviewer\'s gate names them: index.js advanceChain)');
     A.eq(s.chainCalls[0].ask, 'research the thing', '...and the bare directive as `ask` (what a SEND TO record carries on)');
   }
 
@@ -93,11 +94,12 @@ async function fireAndSettle(s, reply) {
     A.eq(makeChainRunner({ plan: () => null, runAgent: async () => ({}) }).stopNote({ stopped: 'x' }), lineStopNote({ stopped: 'x' }), 'the channel hub and the routine say it in ONE wording (chain.stopNote is lineStopNote)');
   }
   {
-    // Run Now (index.js handleCronRun) calls chainRunner.advance itself: it must fold the line through the SAME helper
+    // Run Now (index.js handleCronRun) runs its line itself (lineRunner.runLineJob): it must fold the line through the SAME helper
     const { sidecarTopLevelFunction } = require('./helpers/source.js');
     const runNow = sidecarTopLevelFunction('handleCronRun');
-    A.ok(runNow.length > 1000 && /chainRunner\.advance\(/.test(runNow), 'fixture: handleCronRun is sliced and runs the line');
-    A.ok(/foldLineIntoFire\(state, line\)/.test(runNow), 'Run Now folds its line through foldLineIntoFire (stop note + stop facts), like the scheduled fire');
+    A.ok(runNow.length > 1000 && /lineRunner\.runLineJob\(/.test(runNow), 'fixture: handleCronRun is sliced and runs the line');
+    // (with the text it seeded the line with: stage one's TERMINAL text, line-job-runner — a line that changed nothing keeps the reply)
+    A.ok(/foldLineIntoFire\(state, line, pressedText\)/.test(runNow), 'Run Now folds its line through foldLineIntoFire (stop note + stop facts), like the scheduled fire');
     A.ok(!/state\.buf = line\.text/.test(runNow), 'and no longer takes only the line\'s text');
   }
   {

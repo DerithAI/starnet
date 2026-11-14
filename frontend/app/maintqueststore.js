@@ -35,7 +35,7 @@ const MaintQuestStore = (() => {
   const MIN = () => (typeof MaintQuests !== 'undefined' && MaintQuests.MIN_HITS) || 2;
 
   // if the log is open, refresh it so the new/cleared row lands immediately (a no-op when closed).
-  function poke() { try { if (typeof StationUI !== 'undefined' && StationUI.rerender) StationUI.rerender('quests', false); } catch (_) {} }
+  function poke() { try { if (typeof StationUI !== 'undefined' && StationUI.invalidate) StationUI.invalidate('quests'); } catch (_) {} }
 
   /* ---------- the SLAG source: tally the live ring, mint recurring causes, clear cleared ones ---------- */
   function ring() { try { return (typeof World !== 'undefined' && World.slagPostmortems) ? (World.slagPostmortems() || []) : []; } catch (_) { return []; } }
@@ -47,7 +47,7 @@ const MaintQuestStore = (() => {
      ring itself is untouched — the LOGBOOK's SLAG tab still shows the history; only the live tally forgets. */
   let settled = new WeakSet();
   function onRunEnd(p) {
-    if (!p || p.reason !== 'done') return;
+    if (!p || !(typeof RunOutcome !== 'undefined' ? RunOutcome.ofEnd(p, null).ok : p.reason === 'done')) return;   // (typed-outcomes) a SUCCEEDED run: a provider-cut 'done' is not clean
     let any = false;
     for (const d of ring()) {
       if (!d || typeof d !== 'object' || settled.has(d)) continue;

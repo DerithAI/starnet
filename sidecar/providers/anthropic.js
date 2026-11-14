@@ -573,6 +573,9 @@
       applyThinking(body, req, wire);   // must run BEFORE the breakpoints: it can add top-level keys, never blocks
       const tools = toAnthropicTools(req.tools);
       if (tools) body.tools = tools;
+      // A disposable, toolless extraction is never read again. Avoid a cache-write premium without
+      // changing any model input or generation setting. Tool loops always retain their reusable cache.
+      const stamp = req.neverReread === true && !tools ? blocks => blocks : breakpoint;
       // One breakpoint for the whole static prefix. System is the preferred anchor because it sits AFTER the
       // tools and so caches both; with no system prompt the last tool is the only anchor that covers them.
       let systemAnchors = 1;
@@ -593,14 +596,14 @@
              a new conversation can reuse. Only a SPLIT system (a task run's cacheSystemPrefix + its per-conversation
              tail) takes this layout: an unsplit system has no stable block to keep, so it keeps the old one system
              anchor over the tools + 3 sliding tail anchors. */
-          breakpoint(tools);
-          body.system = texts.map((text, i) => (i === 0 ? breakpoint([{ type: 'text', text }])[0] : { type: 'text', text }));
+          stamp(tools);
+          body.system = texts.map((text, i) => (i === 0 ? stamp([{ type: 'text', text }])[0] : { type: 'text', text }));
           systemAnchors = 2;
         } else {
           systemAnchors = texts.length;
-          body.system = texts.map(text => breakpoint([{ type: 'text', text }])[0]);
+          body.system = texts.map(text => stamp([{ type: 'text', text }])[0]);
         }
-      } else if (tools) breakpoint(tools);
+      } else if (tools) stamp(tools);
       /* SLIDING TAIL ANCHORS: up to THREE messages (TWO with a split system) each carry a
          breakpoint — with the static-prefix anchor above, exactly the API's 4-breakpoint maximum.
          One trailing anchor was fragile for a mechanical reason: a breakpoint only looks BACK 20 content
@@ -610,7 +613,7 @@
          the anchors they slide off remain valid READ points as the tail grows. */
       const msgs = converted.messages;
       for (let k = Math.max(0, msgs.length - (4 - systemAnchors)); k < msgs.length; k++) {
-        if (msgs[k]) breakpoint(msgs[k].content);
+        if (msgs[k]) stamp(msgs[k].content);
       }
       return body;
     }
@@ -694,6 +697,8 @@
       }
       // additive field on the terminal event; absent when nothing was dropped (byte-identical otherwise)
       function withDrops(ev) { if (droppedThinking > 0) ev.thinkingDropped = droppedThinking; return ev; }
+      let generationId = '';
+      function withGeneration(usage) { return generationId ? Object.assign({}, usage, { generation_id: generationId }) : usage; }
       function* emitFrom(ev) {
         if (!ev || typeof ev !== 'object') return;
         if (ev.error) {
@@ -704,6 +709,7 @@
         }
         switch (ev.type) {
           case 'message_start': {
+            if (!generationId) { generationId = provider.generationId(ev.message && ev.message.id); if (generationId) yield { type: 'generation', id: generationId }; }
             baseUsage = Object.assign({}, (ev.message && ev.message.usage) || {});
             const tx = ev.message && ev.message.input_transformations;
             if (Array.isArray(tx) && tx.length) {
@@ -715,7 +721,7 @@
               }
               failNote('providers.anthropic.thinking_dropped', 'the API dropped ' + droppedThinking + ' replayed thinking block(s) on ' + String(body.model || '') + ' (' + Object.keys(reasons).map(k => k + ' x' + reasons[k]).join(', ') + ')');
             }
-            if (ev.message && ev.message.usage) yield { type: 'usage', usage: normalizeUsage(ev.message.usage) };
+            if (ev.message && ev.message.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(ev.message.usage)) };
             return;
           }
           case 'content_block_start': {
@@ -775,7 +781,7 @@
           case 'message_delta': {
             const d = ev.delta || {};
             if (d.stop_reason) lastStopReason = d.stop_reason;
-            if (ev.usage) yield { type: 'usage', usage: normalizeUsage(Object.assign({}, baseUsage, ev.usage)) };
+            if (ev.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(Object.assign({}, baseUsage, ev.usage))) };
             if (d.stop_reason && !doneEmitted) {
               doneEmitted = true;
               yield withDrops({ type: 'done', finishReason: normalizeFinish(d.stop_reason) });
@@ -958,7 +964,11 @@
     // dock asks this before a catalog fetch has necessarily landed.
     function reasoningEfforts(id) { return effortsFor(id); }
 
-    return { stream, listModels, warmCatalog, catalogHttpStatus, catalogFetchError, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts };
+    function verifyCredential(o) {
+      return provider.verifyResponse(doFetch, baseUrl + '/models', { headers: headerBag(key, 'application/json'), signal: o && o.signal },
+        j => (Array.isArray(j.data) ? j.data : []).map(normalizeModel).filter(Boolean), !!key, classifyApiError);
+    }
+    return { stream, listModels, verifyCredential, warmCatalog, catalogHttpStatus, catalogFetchError, contextLimit, outputLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
   return { makeAnthropicProvider, _internals: { messagesToAnthropic, toAnthropicTools, normalizeUsage, normalizeModel, cleanBaseUrl, headerBag } };

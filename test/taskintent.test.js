@@ -71,8 +71,8 @@ A.ok(/name: 'team\.summon'[^\n]*\n\s*briefExempt: true/.test(require('fs').readF
 {
   const { makeRegistry } = require('../sidecar/tools/registry.js');
   const reg = makeRegistry();
-  const hire = reg.register({ name: 'team.summon', capability: 'orchestrator', scope: 'write', requiresConsent: true, briefExempt: true, run: async () => ({ content: 'ok' }) });
-  const write = reg.register({ name: 'fs.write', capability: 'files', scope: 'write', requiresConsent: true, run: async () => ({ content: 'ok' }) });
+  const hire = reg.register({ impact: 'none', name: 'team.summon', capability: 'orchestrator', scope: 'write', requiresConsent: true, briefExempt: true, run: async () => ({ content: 'ok' }) });
+  const write = reg.register({ impact: 'none', name: 'fs.write', capability: 'files', scope: 'write', requiresConsent: true, run: async () => ({ content: 'ok' }) });
   A.eq(Policy.canMutate({ status: 'ready' }, reg.get('team.summon')).ok, true, 'the registered team.summon passes an unsettled brief (the flag survives registration)');
   A.eq([hire.briefExempt, write.briefExempt], [true, false], 'only a tool that opts in is exempt');
   A.eq(Policy.canMutate({ status: 'ready' }, reg.get('fs.write')).ok, false, 'a registered write still waits for brief_proceed');
@@ -427,9 +427,9 @@ A.eq(Policy.canMutate({ status: 'executing' }, { scope: 'execute' }).ok, true, '
     A.eq(Fork.stripMarkers(plain), plain, 'prose without a marker is returned byte-identical');
     A.eq(Fork.strip('x\nFORK: q? || a | b\nFORK: r? || c | d'), 'x', 'Fork.strip removes every FORK line');
     const chatSrcT = fs.readFileSync(path.join(__dirname, '../frontend/app/chat.js'), 'utf8');
-    A.ok(/const forkAsked = [^\n]*Fork\.parse\(replyText\)/.test(chatSrcT) && chatSrcT.indexOf('const forkAsked') < chatSrcT.indexOf('replyText = shown;'), 'the FORK is parsed from the raw reply before the markers are stripped');
+    A.ok(/const forkAsked = [^\n]*Fork\.parse\(replyText\)/.test(chatSrcT) && chatSrcT.indexOf('const forkAsked') < chatSrcT.indexOf('finalReply = (typeof Fork'), 'the FORK is parsed from the raw reply before the display projection strips markers');
     // (the stripped text may be split around folded [steering] lines first — every prose part still comes from shownText)
-    A.ok((/renderProse\(r\.body, shownText[,)]/.test(chatSrcT) || (/renderProse\(r\.body, parts\[pi\][,)]/.test(chatSrcT) && /const parts = [^\n]*shownText\.split\(/.test(chatSrcT))) && /const shownText = [^\n]*Fork\.stripMarkers\(m\.content\)/.test(chatSrcT), 'history re-renders strip markers from server-synced rows');
+    A.ok((/renderProse\(r\.body, shownText[,)]/.test(chatSrcT) || (/renderProse\(r\.body, parts\[pi\][,)]/.test(chatSrcT) && /const parts = [^\n]*shownText\.split\(/.test(chatSrcT))) && /const taskText = [^\n]*TaskIntent\.strip\(m\.content\)/.test(chatSrcT) && /const shownText = [^\n]*Fork\.stripMarkers\(taskText\)/.test(chatSrcT), 'history re-renders strip task and fork markers from server-synced rows');
   }
 
   const cx = CommanderContext.compose({ brief: resumed, dossier: 'COMMANDER DOSSIER\n- Goals: ship', existingSystem: '', patterns: s2.patterns(5) });
@@ -507,7 +507,7 @@ A.eq(Policy.canMutate({ status: 'executing' }, { scope: 'execute' }).ok, true, '
   A.ok(/offerTaskQuestion/.test(chatSrc) && /TaskIntent\.strip/.test(chatSrc), 'COMMS strips the marker and renders the natural decision');
   A.ok(/clarificationRuns\.has\(runId\)/.test(chatSrc) && /clarificationRuns\.add\(thisRunId\)/.test(chatSrc), 'clarification turns do not count as completed-work beats');
   A.ok(/endReason !== 'done' && endReason !== 'clarifying' && !taskQuestion/.test(chatSrc), 'the neutral clarification terminal is not rendered as a stopped/error run');
-  A.ok(/endReason:\s*taskQuestion\s*\?\s*'done'/.test(chatSrc), 'the visible presence line describes the completed decision turn without claiming task delivery');
+  A.ok(/resolvePresence\(ws, \{ outcome: chipOc, endReason: endWord,/.test(chatSrc) && /asked: Object\.freeze\(\{ word: '▲ ASKED YOU'/.test(chatSrc), 'the visible presence line reads the run\'s outcome: a decision turn says it asked, without claiming task delivery');
   A.ok(/function restoreTaskQuestion/.test(chatSrc) && /status=clarifying/.test(chatSrc), 'reload or stream-switch re-presents the real unanswered durable brief');
   const offer = chatSrc.slice(chatSrc.indexOf('function offerTaskQuestion'), chatSrc.indexOf('function offerTaskQuestion') + 1400);
   A.ok(!/DossierStore\.upsert/.test(offer), 'task-specific answers never pollute the global dossier');

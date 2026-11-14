@@ -12,6 +12,7 @@ const os = require('os');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
+const { floorOf, publishFloor, fetchApi } = require('./helpers/saved-floor.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
 
 const HOST = '127.0.0.1';
@@ -74,7 +75,8 @@ function boot(port, env, attemptsLeft) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 9000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 
@@ -152,17 +154,14 @@ async function startSseCollector(url, onEvent) {
       if (event.name !== 'station.command') return;
       await fetch(B + '/api/station/ack', { method: 'POST', headers, body: JSON.stringify({ id: event.payload.id, ok: true, result: { folded: true } }) });
     });
-    const Pipeline = require('../frontend/app/pipeline.js');
     const belt = (x, y, dir) => ({ x, y, dir });
-    const plan = Pipeline.compileRoutingPlan({
+    await publishFloor(fetchApi(B, headers), floorOf({
       props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
               { id: 'b1', t: 'bay', x: 4, y: 0, w: 1, h: 1, agentId: 'research-agent' },
               { id: 'b2', t: 'bay', x: 7, y: 0, w: 1, h: 1, agentId: 'writer-agent' },
               { id: 'o', t: 'outbox', x: 10, y: 0, w: 1, h: 1 }],
       belts: [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(3, 0, 'E'), belt(5, 0, 'E'), belt(6, 0, 'E'), belt(8, 0, 'E'), belt(9, 0, 'E')]
-    });
-    for (const b of plan.bays.concat(plan.dockBays)) b.objects = ['computer'];
-    A.eq((await fetch(B + '/api/routing', { method: 'POST', headers, body: JSON.stringify(plan) })).status, 200, 'the two-stage line deploys');
+    }), { label: 'the two-stage line' });
 
     // stage two (the writer's LINE HOP) hangs at the provider: it is driven by the chain with its own run id, never in `runs`
     mock.holdWhen(req => (req.messages || []).some(m => m.role === 'user' && String(m.content || '').indexOf('AI news found') >= 0));

@@ -26,6 +26,7 @@
         feedbackRef, the threads mined there stay, and those conversations read as before. */
 'use strict';
 const { readSidecarSource } = require('./helpers/source');
+const { makeMemoryTranscriptIo } = require('./helpers/memory-transcript-io.js');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -188,7 +189,7 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       return store;
     } finally { remove(dir); }
   }
-  await storePaths('ram', () => ({ readAll() { return []; }, append() {} }));
+  await storePaths('ram', makeMemoryTranscriptIo);
   await storePaths('segmented', dir => makeSegmentedTranscriptIo({ fs, path, root: path.join(dir, 'history'), segmentBytes: 700, recentPerStream: 4 }));
 
   // a stream RAM has trimmed is answered from disk: the disk answer forgets too (segmented io, tiny RAM window)
@@ -490,11 +491,11 @@ const clockAt = start => { let t = start; return { now: () => t, set: v => { t =
       'the purge runs only over unpurged deletes (an adopted one never is) and announces every removed record as memory.forget');
     A.ok(/if \(fresh\.length\) forgetDeletedSessionMemory\(\)/.test(src) && /if \(sessionTombstones\.unpurged\(\)\.length\) forgetDeletedSessionMemory\(\)/.test(src), 'a fresh delete purges memory, and an unfinished purge is retried at boot');
     const recent = src.slice(src.indexOf('function nightshiftRecentRuns()'), src.indexOf('function nightshiftContextPack('));
-    A.ok(/!sessionRunForgotten\(r\)/.test(recent), 'RECENT ACTIVITY skips a deleted session\'s runs');
+    A.ok(/runView\('nightshift', r\)/.test(recent), 'RECENT ACTIVITY skips a deleted session\'s runs (through runView, the one run-title filter)');
     const away = src.slice(src.indexOf('async function awayBriefingInputs('), src.indexOf('function tzOffsetOf('));
-    A.ok(/filter\(r => !sessionRunForgotten\(r\)\)/.test(away), 'the away briefing never reports a deleted session\'s runs');
+    A.ok(/filter\(r => runView\('briefing', r\)\)/.test(away), 'the away briefing never reports a deleted session\'s runs (through runView)');
     const focus = src.slice(src.indexOf('function nightFocusInputs()'), src.indexOf('function nightFocusInputs()') + 2000);
-    A.ok(/!sessionRunForgotten\(r\)/.test(focus), 'the night focus never counts a deleted session\'s titles');
+    A.ok(/runView\('nightfocus', r\)/.test(focus), 'the night focus never counts a deleted session\'s titles (through runView)');
   }
 
   A.report('session-tombstones');

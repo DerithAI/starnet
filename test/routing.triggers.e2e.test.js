@@ -22,6 +22,7 @@ const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
 const Pipeline = require('../frontend/app/pipeline.js');
 const Events = require('../shared/events.js');
+const { floorOf, publishFloor, fetchApi } = require('./helpers/saved-floor.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
 
 const HOST = '127.0.0.1';
@@ -86,7 +87,8 @@ function boot(port, env, attemptsLeft) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 20000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 function stop(child) { return new Promise(r => { if (!child || child.exitCode != null) return r(); child.once('exit', () => r()); try { child.kill(); } catch (_) { r(); } }); }
@@ -115,17 +117,15 @@ async function startSseCollector(url) {
   return { events, close() { try { ac.abort(); } catch (_) {} } };
 }
 
-function twoStagePlan() {
+function twoStageFloor() {
   const belt = (x, y, dir) => ({ x, y, dir });
-  const plan = Pipeline.compileRoutingPlan({
+  return floorOf({
     props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1 },
             { id: 'b1', t: 'bay', x: 4, y: 0, w: 1, h: 1, agentId: 'research-agent', brief: 'Dig in.' },
             { id: 'b2', t: 'bay', x: 7, y: 0, w: 1, h: 1, agentId: 'writer-agent', brief: 'Write it up.' },
             { id: 'o', t: 'outbox', x: 10, y: 0, w: 1, h: 1 }],
     belts: [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(3, 0, 'E'), belt(5, 0, 'E'), belt(6, 0, 'E'), belt(8, 0, 'E'), belt(9, 0, 'E')]
   });
-  for (const b of plan.bays.concat(plan.dockBays)) b.objects = ['computer'];
-  return plan;
 }
 
 (async () => {
@@ -157,9 +157,8 @@ function twoStagePlan() {
     /* ---- 1. auth + refusals ---- */
     const bare = await fetch(B + '/api/routing/triggers', { headers: { Origin: B } });
     A.eq(bare.status, 403, 'GET triggers without the launch token -> 403');
-    const posted = await fetch(B + '/api/routing', { method: 'POST', headers, body: JSON.stringify(twoStagePlan()) });
-    A.eq(posted.status, 200, 'the two-stage floor deploys');
-    const lineId = Pipeline.lineOf(twoStagePlan(), 'research-agent');
+    const two = await publishFloor(fetchApi(() => B, () => headers), twoStageFloor(), { label: 'the two-stage floor' });
+    const lineId = Pipeline.lineOf(two.plan, 'research-agent');
     A.ok(!!lineId, 'the compiled floor names the line: ' + lineId);
     const email = await api('/api/routing/triggers', 'POST', { kind: 'email', lineId });
     A.ok(email.status === 400 && /no mail connector/.test(email.j.error), 'an email trigger is refused honestly: ' + JSON.stringify(email.j));
@@ -213,9 +212,13 @@ function twoStagePlan() {
     A.eq((await api('/api/routing/triggers')).j.triggers.find(t => t.id === wid).fires, 0, 'refused calls never fired');
     const okHook = await hook(wid, { 'X-StarNet-Hook-Key': key });
     A.eq(okHook.status, 202, 'the right key -> 202 accepted: ' + JSON.stringify(okHook.j));
-    A.ok(okHook.j && okHook.j.accepted === true && okHook.j.durable === false, 'the 202 says honestly that the waiting item is not on disk yet (a restart before it runs drops it)');
+    A.ok(okHook.j && okHook.j.accepted === true && okHook.j.durable === true && /^job-[a-z0-9]{8,24}$/.test(okHook.j.jobId || ''), 'the 202 names the durable admitted job');
+    const acceptedJob = await api('/api/line-jobs/' + okHook.j.jobId);
+    A.eq(acceptedJob.j && acceptedJob.j.job && [acceptedJob.j.job.id, acceptedJob.j.job.entry, acceptedJob.j.job.streamId],
+      [okHook.j.jobId, 'trigger', okHook.j.streamId], 'the exact accepted job can be read immediately');
     const wdone = await waitFor(async () => { const t = (await list()).find(x => x.id === wid); return t && t.lastOutcome ? t : null; }, 30000, 'the webhook fire to finish');
     A.ok(wdone && wdone.lastOutcome.ok === true && wdone.lastOutcome.runs === 2, 'the webhook ran BOTH docks to the OUTBOX: ' + JSON.stringify(wdone && wdone.lastOutcome) + ' err=' + (wdone && wdone.lastError));
+    A.eq(wdone && wdone.lastOutcome.jobId, okHook.j.jobId, 'the completed walk belongs to the accepted durable job');
     A.ok(mock.requests.some(rq => JSON.stringify(rq).indexOf('blue widget') >= 0), 'the webhook body reached the entry dock');
     const viaQuery = await hook(wid, null, '?key=' + encodeURIComponent(key), 'plain text ping slow-lane-probe');
     A.eq(viaQuery.status, 202, '?key= works for senders that can only set a URL');

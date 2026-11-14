@@ -32,6 +32,17 @@ async function waitFor(check, label) {
 
 const WORKER_TEXT = 'Phobos and Deimos, both captured asteroids.';
 
+/* Added to a count assertion's message: nothing while the count holds, and each extra model call's last user words and
+   whether it offered tools when it does not. A call this test did not ask for has only been seen on a loaded gate. */
+function extraCalls(mock, from) {
+  const extra = mock.requests.slice(from).map(r => {
+    const user = (r.messages || []).filter(m => m.role === 'user').pop();
+    const words = user ? (typeof user.content === 'string' ? user.content : JSON.stringify(user.content)) : '';
+    return { user: words.slice(0, 160), tools: !!(r.tools && r.tools.length) };
+  });
+  return extra.length ? ' | extra calls: ' + JSON.stringify(extra) : '';
+}
+
 /* The mock model. The LEAD's first call delegates; the WORKER's own agent loop then hits this same server and
    answers as itself; the lead's follow-up wraps up. Keyed on the agent the request is for rather than a call
    counter, because the worker's run is interleaved with the lead's and a counter would be order-fragile. */
@@ -148,7 +159,9 @@ async function run(label, dispatchArgs, sessions, body, options) {
     SKYNET_OPENROUTER_BASE: mock.base, STARNET_OPENROUTER_BASE: mock.base,
     SKYNET_OPENROUTER_KEY: 'sk-or-v1-local-proof', STARNET_OPENROUTER_KEY: 'sk-or-v1-local-proof',
     SKYNET_DEFAULT_MODEL: 'test/model', STARNET_DEFAULT_MODEL: 'test/model',
-    SKYNET_FULL_ACCESS: '1', STARNET_FULL_ACCESS: '1'
+    SKYNET_FULL_ACCESS: '1', STARNET_FULL_ACCESS: '1',
+    // the quest refresh looks 3 s after each boot and can ask the model, which this test's counts would read as dispatch work
+    SKYNET_QUEST_REFRESH: '0'
   } });
   const page = { close: () => {} };
   let running = null;
@@ -337,9 +350,9 @@ for (const validRepair of [true, false]) {
         console.log('delivery proof: ' + JSON.stringify({ characters: acceptedText.length, sha256: hash(acceptedText), originalId, repairId: repair.runId, tail: 'COMPLETE_TAIL' }));
       }
       const rawOriginal = await fixture.json('GET', '/api/transcript?stream=ws_r1&runId=' + encodeURIComponent(originalId));
-      A.eq(rawOriginal.body.turns.filter(t => t.role === 'assistant').map(t => t.content), ['raw invalid JSON'], label + ': ordinary exact original read keeps raw execution evidence');
+      A.eq(rawOriginal.body.turns.filter(t => t.role === 'assistant').map(t => t.content), [acceptedText], label + ': exact-run display keeps only the accepted conversation');
       const rawRepair = await fixture.json('GET', '/api/transcript?stream=ws_r1&runId=' + encodeURIComponent(repair.runId));
-      A.eq(rawRepair.body.turns.filter(t => t.role === 'assistant').map(t => t.content), [repairedText.slice(0, 200000)], label + ': exact internal repair read retains bounded raw execution evidence in its worker stream');
+      A.eq(rawRepair.body.turns, [], label + ': exact-run display cannot expose internal repair execution');
       const internalFinal = await fixture.json('GET', '/api/transcript?stream=ws_r1&runId=' + encodeURIComponent(repair.runId) + '&delivery=1');
       A.eq(internalFinal.body.turns, [], label + ': internal repair has no independently finalized delivery');
       const beforeSpend = runs.reduce((sum, row) => sum + row.usd, 0);
@@ -352,7 +365,7 @@ for (const validRepair of [true, false]) {
       A.eq(replayed.map(row => ({ runId: row.runId, ts: row.ts, usd: row.usd, reason: row.reason, dispatchDelivery: row.dispatchDelivery })), before,
         label + ': a real sidecar restart preserves exactly the original and internal repair rows');
       A.eq(replayed.reduce((sum, row) => sum + row.usd, 0), beforeSpend, label + ': restart does not duplicate execution spend');
-      A.eq(mock.requests.length, requestCount, label + ': restart does not rerun completed dispatch work');
+      A.eq(mock.requests.length, requestCount, label + ': restart does not rerun completed dispatch work' + extraCalls(mock, requestCount));
       A.eq((await fixture.json('GET', canonicalRoute)).body.turns, canonical.body.turns, label + ': reopening after real restart keeps only the full finalized conversation');
       A.eq((await fixture.json('GET', finalRoute)).body.turns, finalView.body.turns, label + ': exact authoritative delivery survives real restart without truncation');
     },
@@ -372,7 +385,7 @@ for (const validRepair of [true, false]) {
         const conversation = await fixture.json('GET', '/api/transcript?stream=ws_r1&limit=200');
         A.eq(conversation.body.turns, [], label + ': pending raw output and internal repair cannot leak through conversation history');
         const raw = await fixture.json('GET', '/api/transcript?stream=ws_r1&runId=' + encodeURIComponent(originalId));
-        A.eq(raw.body.turns.filter(t => t.role === 'assistant').map(t => t.content), ['raw invalid JSON'], label + ': pending execution remains inspectable by exact original run');
+        A.eq(raw.body.turns, [], label + ': exact-run display also withholds unaccepted pending execution');
         const final = await fixture.json('GET', '/api/transcript?stream=ws_r1&runId=' + encodeURIComponent(originalId) + '&delivery=1&limit=1');
         A.eq(final.body.turns, [], label + ': pending original has no finalized delivery to recover');
         releaseRepair();
@@ -443,7 +456,7 @@ await run('run-final-patch-failure',
     A.eq(replay[0].dispatchDelivery.textSha256, hash(accepted.content), 'recovered run envelope proves exact accepted payload');
     A.eq(replay[0].dispatchDelivery.textLength, accepted.content.length, 'recovered run envelope proves exact accepted length');
     A.eq(replay[0].usd, original.usd, 'recovering an interrupted patch preserves execution spend');
-    A.eq(mock.requests.length, requests, 'boot finalization recovery never starts another model run');
+    A.eq(mock.requests.length, requests, 'boot finalization recovery never starts another model run' + extraCalls(mock, requests));
     A.eq((await fixture.json('GET', finalRoute)).body.turns, [accepted], 'boot recovery retains exactly one first accepted projection');
     await restart();
     A.eq((await fixture.json('GET', '/api/runs?agent=researcher&limit=20')).body.runs[0].dispatchDelivery, replay[0].dispatchDelivery, 'repeated restart is idempotent after final patch recovery');

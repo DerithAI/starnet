@@ -10,7 +10,7 @@
                        the same guard as fs.write (a relative path lands in the project folder of a project-
                        scoped run, else the agent's JAILED workspace — issue #77), emit a 'deliverable' event so
                        the UI shows it, and hand back the absolute location + the /api/file viewer URL.
-                       Default model: google/gemini-2.5-flash-image (override via args.model — e.g.
+                       Default model: DEFAULT_IMAGE_MODEL below, google/gemini-3.1-flash-image (override via args.model — e.g.
                        black-forest-labs/flux.2-pro, recraft/recraft-v4).
                        TRANSPARENCY: args.transparent (or a prompt that plainly asks for a transparent background)
                        renders on a route that outputs a real alpha channel, then VERIFIES the saved bytes. No
@@ -24,9 +24,11 @@
                             was the root of a live user bug: blind agents asked users for a key they never needed.
 
    makeImageTools({ openrouter:{apiKey, model?, baseUrl?}, fsp, pathMod, root, fetchImpl?, imageModel?, visionModel?,
-                    auxVision?, runModelSeesImages? })   // auxVision: async ({ messages, timeoutMs }) -> text (session-provider one-shot)
+                    auxVision?, runModelSeesImages?, keyGone? })   // auxVision: async ({ messages, timeoutMs }) -> text (session-provider one-shot)
                     // runModelSeesImages: (model) => true|false|null — the run provider's supportsImages(model), asked
                     // about the model this route would post; false keeps it off the vision route (DEFAULT_VISION_MODEL answers)
+                    // keyGone: () => '' | sentence — the run host's in-flight watch over the route's key (credential-store
+                    // lane): every keyed post asks first, and a sentence refuses that post with it
      -> { generateTool, analyzeTool, register(reg), _internals }
 
    Node 18+ (global fetch). No dependencies. Reuses the fs.js workspace jail so a generated/analyzed path
@@ -406,6 +408,20 @@
     const openAIImageUrl = orBaseUrl ? orBaseUrl + '/images/generations' : DEFAULT_OPENAI_IMAGE_URL;
     const openAIEditUrl = openAIImageUrl.replace(/\/images\/generations$/, '/images/edits');
     const codexUrl = (isCodex && orBaseUrl ? orBaseUrl : DEFAULT_CODEX_URL) + '/responses';
+    /* #164: a generation is paid before its cost is known, so a run already at a limit never starts one. spendStop: async
+       ({ signal, holdTimeout }) => why not (a string or { why, todo }), or '' (the run host: spend.js makeMediaSpendCheck; it
+       may wait for the family's other calls). Every '' is answered by spendEnd({ unknown, charged }) however the call ends. The ChatGPT plan is flat-rate and books nothing, so it does not ask. charges: what
+       onUsage booked for each provider answer OF THIS CALL (callScope: parallel calls never read each other's). No price is ever made up:
+       with no provider figure and no catalog price, the cost is unknown and the receipt says so. */
+    const spendStop = typeof deps.spendStop === 'function' ? deps.spendStop : null;
+    const spendEnd = typeof deps.spendEnd === 'function' ? deps.spendEnd : null;
+    const callScope = new (require('node:async_hooks').AsyncLocalStorage)();
+    const bookUsage = (usage, usedModel) => {
+      if (typeof deps.onUsage !== 'function') return;
+      const c = deps.onUsage(usage, usedModel);
+      const call = callScope.getStore();
+      if (call && c && typeof c === 'object') call.charges.push(c);
+    };
     const fsp = deps.fsp, P = deps.pathMod, ROOT = deps.root;
     if (!fsp || !P || !ROOT) throw new Error('image.js requires { fsp, pathMod, root }');
     const doFetch = deps.fetchImpl || (typeof fetch !== 'undefined' ? fetch : null);
@@ -465,9 +481,19 @@
       ctx.emit('deliverable', d);
     }
 
+    /* The run host builds these tools once per run, on the route's key; a key removed or rotated away mid-run used to go out on
+       every later post until the run ended (credential-store lane, review r1). Each keyed post asks the host's in-flight watch
+       first, and a gone key refuses that post with the host's sentence. A check that throws reads as held, as the loop's does. */
+    function keyStillHeld() {
+      if (typeof deps.keyGone !== 'function') return;
+      let why = '';
+      try { why = String(deps.keyGone() || ''); } catch (e) { require('../../failopen.js').note('image.key-gone', e); }
+      if (why) throw new Error(why);
+    }
     async function orPost(body, timeoutMs, parentSignal) {
       checkCancelled(parentSignal);
       if (!apiKey) throw new Error('STUDIO image generation is unavailable: no media connection is configured. Open SETTINGS and connect an OpenRouter API key for image generation, or link this station to your StarNet account, then retry; no image was produced.');
+      keyStillHeld();
       const res = await withTimeout(signal => doFetch(orUrl, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json', 'HTTP-Referer': 'https://starnet.local', 'X-Title': 'STARNET' },
@@ -477,9 +503,7 @@
         const json = await r.json().catch(require('../../failopen.js').swallow('image.openrouter.response-json', null));
         // Book the provider's response before checking cancellation or decoding the artifact.
         // A billed refusal, failed download, or cancelled publication still incurred this cost.
-        if (typeof deps.onUsage === 'function' && (r.status >= 200 && r.status < 300 || json && json.usage)) {
-          deps.onUsage(json && json.usage, body.model);
-        }
+        if (r.status >= 200 && r.status < 300 || json && json.usage) bookUsage(json && json.usage, body.model);
         return { status: r.status, json, text: null };
       }), timeoutMs, parentSignal || deps.signal);
       if (res.status < 200 || res.status >= 300) {
@@ -492,6 +516,7 @@
     async function openAIImagePost(body, timeoutMs, parentSignal) {
       checkCancelled(parentSignal);
       if (!apiKey) throw new Error('STUDIO image generation is unavailable: no media connection is configured. Open SETTINGS and connect an OpenAI or OpenRouter API key for image generation, or link this station to your StarNet account, then retry; no image was produced.');
+      keyStillHeld();
       const res = await withTimeout(signal => doFetch(openAIImageUrl, {
         method: 'POST',
         headers: { 'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json' },
@@ -499,7 +524,7 @@
         signal
       }).then(async r => {
         const json = await r.json().catch(require('../../failopen.js').swallow('image.openai.response-json', null));
-        if (typeof deps.onUsage === 'function' && (r.status >= 200 && r.status < 300 || json && json.usage)) deps.onUsage(json && json.usage, body.model);
+        if (r.status >= 200 && r.status < 300 || json && json.usage) bookUsage(json && json.usage, body.model);
         return { status: r.status, json };
       }), timeoutMs, parentSignal || deps.signal);
       if (res.status < 200 || res.status >= 300) {
@@ -514,13 +539,14 @@
     async function openAIEditPost(fields, ref, timeoutMs, parentSignal) {
       checkCancelled(parentSignal);
       if (!apiKey) throw new Error('STUDIO image generation is unavailable: no media connection is configured. Open SETTINGS and connect an OpenAI or OpenRouter API key for image generation, or link this station to your StarNet account, then retry; no image was produced.');
+      keyStillHeld();
       const res = await withTimeout(signal => {
         const form = new FormData();
         for (const k of Object.keys(fields)) if (fields[k] != null) form.append(k, String(fields[k]));
         form.append('image', new Blob([ref.buffer], { type: ref.mime }), 'reference' + (EXT_BY_MIME[ref.mime] || '.png'));
         return doFetch(openAIEditUrl, { method: 'POST', headers: { 'Authorization': 'Bearer ' + apiKey }, body: form, signal }).then(async r => {
           const json = await r.json().catch(require('../../failopen.js').swallow('image.openai-edit.response-json', null));
-          if (typeof deps.onUsage === 'function' && (r.status >= 200 && r.status < 300 || json && json.usage)) deps.onUsage(json && json.usage, fields.model);
+          if (r.status >= 200 && r.status < 300 || json && json.usage) bookUsage(json && json.usage, fields.model);
           return { status: r.status, json };
         });
       }, timeoutMs, parentSignal || deps.signal);
@@ -658,7 +684,7 @@
 
     // ---------------- image_generate ----------------
     const generateTool = {
-      name: 'image_generate', capability: 'studio', scope: 'write', requiresConsent: true, timeoutMs: GEN_TIMEOUT_MS + 15000,
+      name: 'image_generate', capability: 'studio', impact: 'none', scope: 'write', requiresConsent: true, timeoutMs: GEN_TIMEOUT_MS + 15000,
       description: 'Generate an image from a text prompt and SAVE it to a file (returns the absolute saved location + a viewer URL). ' +
         'A relative "path" lands in the project folder when this conversation is scoped to a trusted project, otherwise in your private workspace; an absolute "path" inside a trusted project folder saves there. ' +
         'Use for any "draw / create / generate an image of …" request. Optional "model" picks the image model: ' +
@@ -722,6 +748,15 @@
         const aspect = shape.ratio;
         // the reference is read BEFORE anything is spent: a missing / escaping / non-image path is the caller's to fix
         const ref = await readReference(aid, args.reference, ctx);
+        // #164: the last free moment. Nothing has been sent, so nothing is charged.
+        const stop = !isCodex && spendStop ? await spendStop({ signal: ctx && ctx.signal, holdTimeout: ctx && ctx.holdTimeout }) : '';
+        if (stop) {
+          const why = typeof stop === 'string' ? stop : stop.why;
+          const todo = typeof stop === 'string' ? 'The Commander can change the limit in SETTINGS › SPENDING LIMITS.' : stop.todo;
+          throw new Error('image_generate did not start: ' + why + '. No image was generated and nothing was charged.' + (todo ? ' ' + todo : ''));
+        }
+        const thisCall = callScope.getStore();
+        if (!isCodex && spendStop && thisCall) thisCall.counted = true;
         let refNote = '';   // set when this route could not carry the reference (rendered from the prompt alone)
         const refPrompt = ref ? REFERENCE_PROMPT + genPrompt : genPrompt;
         const baseBody = { messages: [{ role: 'user', content: ref ? [{ type: 'text', text: refPrompt }, { type: 'image_url', image_url: { url: ref.url } }] : genPrompt }], modalities: ['image', 'text'] };
@@ -853,14 +888,34 @@
         const referenceNote = !ref ? '' : refNote
           ? '\nReference NOT used: ' + refNote + ', so this image was rendered from the prompt alone. Do not describe it as matching ' + ref.rel + '.'
           : '\nReference: ' + ref.rel + ' was sent to the model as the style to match.';
+        // #164: what this image cost, as far as anyone can say. Unknown is said as unknown, never as free.
+        const billed = thisCall ? thisCall.charges : [], knownUsd = billed.reduce((t, c) => t + (Number(c.usd) || 0), 0);
+        const costNote = !billed.length ? ''
+          : billed.some(c => c.unpriced)
+            ? '\nCost: UNKNOWN' + (knownUsd > 0 ? ' (at least $' + knownUsd.toFixed(4) + ')' : '') + '. ' + providerLabel + ' reported no cost for this image and StarNet has no price for ' + model
+              + (knownUsd > 0 ? ', so only that $' + knownUsd.toFixed(4) + ' counts toward the spending limits' : ', so it adds nothing to the spending limits')
+              + ', and they cannot stop images like this one' + (spendStop && spendStop.unknownCap ? ' (StarNet stops a run at ' + spendStop.unknownCap + ' of them' + (spendStop.dayLimit ? ', and every run at ' + spendStop.dayLimit + ' in any 24 hours' : '') + ')' : '') + '. Do not describe it as free; the provider\'s own dashboard has the figure.'
+            : '\nCost: $' + knownUsd.toFixed(4) + ' (the provider\'s figure), counted toward the spending limits.';
         return {
           content: 'Generated and saved ' + rel + ' (' + kb + ', ' + mime + ', model ' + model + shapeNote + sizeNote + ').' +
-            (switchNote ? '\nModel: ' + switchNote + '.' : '') + alphaNote + referenceNote +
+            (switchNote ? '\nModel: ' + switchNote + '.' : '') + alphaNote + referenceNote + costNote +
             '\n' + where.line +
             (viewer ? '\nView: ' + viewer : '') + (caption ? '\nModel note: ' + caption : ''),
           summary: 'image → ' + rel
         };
       }
+    };
+
+    // every generation that was let start answers for itself, however it ends: thrown, cancelled, or done (#164)
+    const generateOnce = generateTool.run;
+    generateTool.run = (args, ctx) => {
+      const call = { charges: [], counted: false };
+      return callScope.run(call, async () => {
+        try { return await generateOnce(args, ctx); }
+        finally {
+          if (call.counted && spendEnd) spendEnd({ unknown: call.charges.filter(c => c.unpriced).length, charged: call.charges.length > 0 });
+        }
+      });
     };
 
     // ---------------- image_analyze ----------------
@@ -923,7 +978,7 @@
     }
 
     const analyzeTool = {
-      name: 'image_analyze', capability: 'studio', scope: 'read', requiresConsent: false, timeoutMs: ANALYZE_TIMEOUT_MS + 15000,
+      name: 'image_analyze', capability: 'studio', impact: 'none', scope: 'read', requiresConsent: false, timeoutMs: ANALYZE_TIMEOUT_MS + 15000,
       description: 'Look at an image and answer a question about it (vision). image is EITHER a file (relative = the project folder in a project-scoped conversation, else your workspace; ' +
         'e.g. images/gen-ab12cd.png) OR a public http(s) image URL. prompt is the question (default: a ' +
         'detailed description); model overrides the vision model. Works with the session\'s own model when ' +

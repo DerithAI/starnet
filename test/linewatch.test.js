@@ -60,7 +60,7 @@ A.ok(!w.ack('bC'), 'acking twice is a no-op');
 w.onEvent('workitem.placed', { workitemId: 'w3', agentId: 'mira', dockId: 'bB', kind: 'chain' }, 4000);
 w.onEvent('agent.run.start', { agentId: 'mira', runId: 'r3' }, 4001);
 w.onEvent('agent.run.end', { agentId: 'mira', runId: 'r3', reason: 'refusal' }, 4100);
-A.eq(st('bB', 4200), 'failed', 'a refusal is a failure');
+A.eq(st('bB', 4200), 'unfinished', 'a refusal holds the bay in its own UNFINISHED lamp, never FAILED (review 9.3)');
 w.onEvent('workitem.placed', { workitemId: 'w4', agentId: 'mira', dockId: 'bB', kind: 'chain' }, 4300);
 w.onEvent('agent.run.start', { agentId: 'mira', runId: 'r4' }, 4301);
 A.eq(st('bB', 4302), 'working', 'WORKING outranks the red lamp');
@@ -102,7 +102,7 @@ w2.onEvent('workitem.placed', { workitemId: 'z', agentId: 'ada', dockId: 'bY' },
 w2.onEvent('agent.run.start', { agentId: 'ada', runId: 'new' }, 11);
 w2.onEvent('agent.run.end', { agentId: 'ada', runId: 'new', reason: 'budget' }, 12);
 w2.seedOutcomes({ bY: { runId: 'older', reason: 'done', failed: false } });
-A.eq(w2.status('bY', 13).state, 'failed', 'a stale server answer never overwrites the end this page saw');
+A.eq(w2.status('bY', 13).state, 'unfinished', 'a stale server answer never overwrites the end this page saw (a spend cap: UNFINISHED, review 9.3)');
 
 // ---- step test: PAUSED on the dock that just finished ----
 w2.setStepTest({ id: 'st1', lineId: 'L', state: 'paused', hops: [{ dockId: 'bP' }], paused: { afterHop: 0 } });
@@ -181,12 +181,13 @@ A.eq(LW.fmtDur(61000), '1m', 'minute durations');
 {
   const fs = require('fs'), path = require('path');
   const src = readSidecarSource();
-  const core = src.slice(src.indexOf('async function runOnceCore(o) {'));
+  const core = A.fnBody(src, 'async function runOnceCore(o)');
   A.ok(/if \(o\.dockId\) runStartExtra\.dockId = String\(o\.dockId\);/.test(core) && /if \(o\.workitemId\) runStartExtra\.workitemId = String\(o\.workitemId\);/.test(core), 'runOnceCore carries the run\'s bay + crate');
-  const starts = (core.slice(0, core.indexOf('\n}\n')).match(/emit\('agent\.run\.start', \{[^}]*\}\)/g) || []);
-  A.ok(starts.length > 5 && starts.every(e => /\.\.\.runStartExtra/.test(e)), 'every run.start runOnceCore emits names them (' + starts.length + ')');
-  const hub = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'channels', 'hub.js'), 'utf8');
-  A.ok(/dockId: h\.dockId \|\| undefined, workitemId: h\.workitemId \|\| undefined/.test(hub), 'a hub line hop passes its crate id to the run');
+  A.ok(/RunTable\.refuseRun\(emit, \{[^\n]*extra: runStartExtra/.test(core)
+    && /if \(name === 'agent\.run\.start'[^\n]*payload\.runId === runId[^\n]*payload = Object\.assign\(\{\}, payload, runStartExtra\);/.test(core)
+    && !/\bemit\('agent\.run\.start'/.test(core), 'refusals and the shared live sink both carry the own-run start fields; no direct start bypasses them');
+  const runner = fs.readFileSync(path.join(__dirname, '..', 'sidecar', 'routing', 'line-runner.js'), 'utf8');
+  A.ok(/dockId: h\.dockId \|\| undefined, workitemId: h\.workitemId \|\| crateId \|\| undefined/.test(runner), 'the shared hop executor passes its bay and crate id to the run');
   const ev = require('../shared/events.js');
   const v = ev.validate ? ev.validate('agent.run.start', { agentId: 'a', runId: 'r', trigger: 'event', model: 'm', dockId: 'p1', workitemId: 'w1' }) : { ok: true };
   A.ok(v === true || (v && (v.ok === true || v.valid === true)) || (Array.isArray(v) && !v.length), 'the frozen agent.run.start contract accepts the additive fields: ' + JSON.stringify(v));

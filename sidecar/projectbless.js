@@ -146,6 +146,62 @@
       'project, and tell the Commander to set WORKING FOLDER on this workflow\'s INBOX.';
   }
 
+  /* WHERE THE FILES REALLY ARE, SAID BY THE HOST (#81). workflowNoFolderLine tells the MODEL, and the tool receipts tell it
+     again, but its report is its own prose: "saved to project/reports/x.md" still reached the person with the file sitting in
+     a private workspace nobody else can read. A folderless stage's run now ends with this note, built from what its tools
+     really wrote.
+     THE NAME IS JAIL-RELATIVE, always: this text reaches COMMS, remote viewers and chats, and a chat is never shown an absolute
+     host path (index.js guardOutbound, egress-files.js shownName). So it also holds on Docker and SSH, whose workspaceRoot is
+     not a path here (environment.js): workspaceDir only tells which absolute paths are inside the jail and is never printed.
+     An absolute path outside it is the tool's own proven project location, and is left out.
+     WHO READS IT: this is live reply text (agent.token, loop.js closingNote): COMMS, its remote viewers, and a channel's reply.
+     It is not in the run's messages, so a transcript reloaded later does not have it, and the tool receipts remain the record.
+     The next bay never reads it (withoutHostNotes): it is the host's sentence, not that stage's work. -> the note, or ''. */
+  const HOST_NOTE_HEAD = '[StarNet] Saved in this agent\'s private workspace, not a project folder: ';
+  function workflowPrivateFilesNote(o) {
+    o = o || {};
+    if (o.hasFolder) return '';
+    const pathMod = o.pathMod, rows = Array.isArray(o.artifacts) ? o.artifacts : [], jail = String(o.workspaceDir || '');
+    const inJail = p => {
+      if (!pathMod.isAbsolute(p) && !/^[A-Za-z]:[\\/]/.test(p)) return p.replace(/^\.[\\/]/, '');
+      if (!jail) return '';
+      const rel = pathMod.relative(jail, p);
+      return rel && !rel.startsWith('..') && !pathMod.isAbsolute(rel) ? rel : '';
+    };
+    const files = rows.filter(a => a && (a.kind === 'file' || a.kind === 'image') && a.path).map(a => inJail(String(a.path))).filter(Boolean);
+    if (!files.length) return '';
+    const shown = files.slice(0, 5).join(', ') + (files.length > 5 ? ' and ' + (files.length - 5) + ' more' : '');
+    return HOST_NOTE_HEAD + shown
+      + '. Files this job hands on can be read by its later steps and SEND TO recipient. Set WORKING FOLDER on this workflow\'s INBOX so its files land in the project.';
+  }
+  // the work a stage hands on is its own: the host's note stays with the person (routing/chain.js, every hop's turn and outbox)
+  function withoutHostNotes(text) {
+    const s = String(text == null ? '' : text);
+    if (!s.includes(HOST_NOTE_HEAD)) return s;
+    return s.split('\n').filter(line => !line.startsWith(HOST_NOTE_HEAD)).join('\n').replace(/\n+$/, '\n').replace(/\n$/, '');
+  }
+
+  /* A LINE STAGE'S CREW ARE NOT ITS TO DISPATCH (#28): an owner's Telegram DM holds team.dispatch (project-tools ownerTrusted), and
+     the first bay's run was told to DELEGATE to every other agent, the next bays included, whom the line then runs anyway.
+     ONLY WHEN THAT IS TRUE, read from the same plan the chain walks: this run belongs to the line (lineId is the host's capLine:
+     null for a terminal routine, which buys one run and no downstream, and for a direct order), and the line has a next step
+     after this bay. A last bay or a one-bay line hands to nobody, so it keeps its team and hears nothing about a next bay.
+     WHO IS ON THE LINE comes from the docks: plan.lines[].agents lists an agent under its FIRST line only, so a multi-bay
+     agent stayed in YOUR TEAM on its second line.
+     router: { chainPeek(agentId, ctx) non-advancing, docksOf, lineOfDock }. -> { leaves(agentId): leave it out of YOUR TEAM, note }. */
+  function lineStageTeam(router, o) {
+    const none = { leaves: () => false, note: '' };
+    const lineId = o && o.lineId, agentId = o && o.agentId;
+    if (!router || !lineId || !agentId) return none;
+    let next = null;
+    try { next = router.chainPeek(agentId, { lineId, tag: 'general', dockId: (o.dockId && String(o.dockId)) || undefined }); } catch (_) { next = null; }
+    if (!next) return none;
+    return {
+      leaves: id => String(id) !== String(agentId) && router.docksOf(String(id)).some(d => router.lineOfDock(d) === lineId),
+      note: '\n• THIS RUN IS A STAGE OF A LINE: do this bay\'s part. When you finish, your reply goes to the next bay automatically. Never send the later bays\' work with team.dispatch: the line runs them anyway, so they would do it twice.'
+    };
+  }
+
   /* PROJECT INSTRUCTIONS — the folder's OWN house rules (2026-07-27).
 
      projectScopeLine above tells the agent WHERE it is working. It never told it HOW that project wants to be
@@ -220,5 +276,5 @@
     return { load };
   }
 
-  return { makeProjectBless, projectScopeLine, projectLapsedLine, workflowNoFolderLine, makeProjectInstructions, _internals: { INSTRUCTION_FILES } };
+  return { makeProjectBless, projectScopeLine, projectLapsedLine, workflowNoFolderLine, workflowPrivateFilesNote, withoutHostNotes, lineStageTeam, makeProjectInstructions, _internals: { INSTRUCTION_FILES } };
 });

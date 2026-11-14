@@ -13,9 +13,9 @@
        <audio>. A 'audio' kind would be dropped by that filter — the honest wire is the one that plays.
      • it returns the saved path + the /api/file viewer URL.
 
-   THE LADDER IS INJECTED, not rebuilt. deps.synth is the host's one-shot synthesizer (index.js reuses the
-   SAME ttsSynthKeyed chain + Edge floor that /api/tts drives), so a station with any voice-capable key gets
-   its keyed voice and a zero-key station still gets the free Edge neural floor. With no synth injected at
+   THE LADDER IS INJECTED, not rebuilt. deps.synth is the host's one-shot synthesizer (index.js hands it the ONE
+   speech ladder, sidecar/speech-ladder.js, as the 'agent' surface: the station's voice unless the call names one),
+   so a station with any voice-capable key gets its keyed voice and a zero-key station still gets the free Edge floor. With no synth injected at
    all the tool says so honestly rather than writing a silent file.
 
    makeVoiceTools({ synth, fsp, pathMod, root, defaultVoice? }) -> { generateTool, register(reg), _internals }
@@ -68,7 +68,7 @@
     }
 
     const generateTool = {
-      name: 'voice_generate', capability: 'studio', scope: 'write', requiresConsent: true, timeoutMs: SYNTH_TIMEOUT_MS + 15000,
+      name: 'voice_generate', capability: 'studio', impact: 'none', scope: 'write', requiresConsent: true, timeoutMs: SYNTH_TIMEOUT_MS + 15000,
       description: 'Speak text as neural audio and SAVE it into your workspace as a playable clip (returns the saved '
         + 'path + a viewer URL; the clip appears in chat with a player). Use for any "record / narrate / read this '
         + 'aloud / make a voiceover" request, or to hand the Commander an audio version of something you wrote. This '

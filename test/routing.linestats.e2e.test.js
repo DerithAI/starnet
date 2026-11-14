@@ -23,6 +23,7 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { bootToken } = require('./_httpToken.js');
 const Pipeline = require('../frontend/app/pipeline.js');
+const { floorOf, publishFloor, fetchApi } = require('./helpers/saved-floor.js');
 const { allocatePort, BIND_REFUSED } = require('./helpers/ports.js');
 
 const HOST = '127.0.0.1';
@@ -88,7 +89,8 @@ function boot(port, env, attemptsLeft) {
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) { /* gone */ } reject(new Error('boot timeout:\n' + out)); } }, 45000);   // generous: several lanes gate on one machine
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) { /* gone */ } reject(new Error('boot timeout:\n' + out)); } }, 45000).unref();   // generous: several lanes gate on one machine
   });
 }
 function stopChild(child) {
@@ -100,18 +102,15 @@ function stopChild(child) {
   });
 }
 
-function twoStagePlan() {
+function twoStageFloor() {
   const belt = (x, y, dir) => ({ x, y, dir });
-  const plan = Pipeline.compileRoutingPlan({
+  return floorOf({
     props: [{ id: 'i', t: 'intake', x: 0, y: 0, w: 1, h: 1, limits: { maxUsdPerDay: 5 } },
             { id: 'b1', t: 'bay', x: 4, y: 0, w: 1, h: 1, agentId: 'research-agent' },
             { id: 'b2', t: 'bay', x: 7, y: 0, w: 1, h: 1, agentId: 'writer-agent' },
             { id: 'o', t: 'outbox', x: 10, y: 0, w: 1, h: 1 }],
     belts: [belt(1, 0, 'E'), belt(2, 0, 'E'), belt(3, 0, 'E'), belt(5, 0, 'E'), belt(6, 0, 'E'), belt(8, 0, 'E'), belt(9, 0, 'E')]
   });
-  A.ok(Pipeline.ok(plan), 'fixture: the two-stage floor is deployable');
-  for (const b of plan.bays.concat(plan.dockBays)) b.objects = ['computer'];
-  return plan;
 }
 
 (async () => {
@@ -149,12 +148,12 @@ function twoStagePlan() {
     A.eq(empty.j.spendDay, 'utc', 'the $ ledger day is named');
 
     /* ---- 2. an armed two-dock line with a $5/day budget: zeros ---- */
-    const plan = twoStagePlan();
-    A.eq((await call('POST', '/api/routing', plan)).status, 200, 'the two-stage floor deploys');
+    const { plan } = await publishFloor(fetchApi(B, headers), twoStageFloor(), { label: 'the two-stage floor' });
+    A.ok(Pipeline.ok(plan), 'fixture: the two-stage floor is deployable');
     const lineId = Pipeline.lineOf(plan, 'research-agent');
     let st = await call('GET', '/api/routing/lines/stats?since=' + t0);
     let L = (st.j.lines || []).find(l => l.lineId === lineId);
-    A.eq(L, { lineId, runs: 0, shipped: 0, failed: 0, tests: 0, medianMs: null, usdToday: 0, capUsdPerDay: 5, spendDay: 'utc' }, 'a line with no work answers zeros + its cap (and names its UTC spend day)');
+    A.eq(L, { lineId, runs: 0, shipped: 0, failed: 0, unfinished: 0, tests: 0, medianMs: null, usdToday: 0, capUsdPerDay: 5, spendDay: 'utc' }, 'a line with no work answers zeros + its cap (and names its UTC spend day)');
 
     /* ---- 3. a clean sample through the line ---- */
     const s1 = await call('POST', '/api/routing/sample', { line: lineId, text: 'FIRST JOB: summarize the notes.' });
@@ -181,7 +180,8 @@ function twoStagePlan() {
     st = await call('GET', '/api/routing/lines/stats?since=' + t0);
     L = st.j.lines.find(l => l.lineId === lineId);
     A.eq(L.runs, rows.length, 'runs == the stamped /api/runs rows (' + rows.length + ')');
-    A.eq(L.failed, failedRows.length, 'failed == the failed stamped rows');
+    A.eq(L.failed + L.unfinished, failedRows.length, 'failed + unfinished == the dead stamped rows');
+    A.eq(L.unfinished, 0, 'the writer\'s error is a failure, not an unfinished run');
     A.eq(st.j.docks.b2.failed, true, 'bay b2: last outcome FAILED (the lamp stays red until the next success)');
     A.eq(st.j.docks.b2.runId, failedRows[0].runId, 'bay b2 names the failed run');
     A.eq(st.j.docks.b1.failed, false, 'bay b1 is unaffected');

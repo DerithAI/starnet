@@ -58,6 +58,7 @@ function sidecar(root, storeFs, o) {
   const api = vm.runInNewContext("let _remoteLooksMemo = { stamp: '', looks: null };\nlet _stationEpochMemo = { stamp: '', epoch: 1 };\n" + handlers.join('\n') +
     '\n({ serveSaveLoad, handleSaveWrite, serveSaveConflicts, handleSaveConflictRestore, handleSaveAdopt })', {
     saveStore, workspaceDegraded: false, growthRatings: { latestTs: () => 0 }, readBody: async req => req.body, failNote: () => {},
+    refuseBadAgentId: require('../sidecar/respond.js').refuseBadAgentId,
     observeDeletedSessions: () => [], Buffer,   // the deleted-session ledger feed every landed station save calls (qa/bugs/3e926b6a)
     require: m => { if (m === './save-restore.js') return require('../sidecar/save-restore.js'); throw new Error('unexpected require ' + m); },
     publicWorkspaceLineage: () => ({ version: 1, priorInstallEvidence: false, onboardingAllowed: true, evidence: [] }), URL
@@ -243,7 +244,7 @@ const browserCopy = (over) => Object.assign({
       A.eq(((host.saveStore.load('agent') || {}).agent || {}).name, 'VEGA', '4: and the fresh station is untouched');
       A.ok(!light.banner.some(t => /restore this window/i.test(t)), '4: the reset banner offers no restore (' + JSON.stringify(light.banner) + ')');
 
-      // START FRESH through the sidecar (workspace-lineage.js startFresh): at = an ISO timestamp
+      // START FRESH through an older build's sidecar: at = an ISO timestamp
       const iso = workspace();
       fs.writeFileSync(path.join(iso, '.fresh-start.json'), JSON.stringify({ version: 1, at: new Date(7000).toISOString(), acknowledgedRoots: [], quarantine: null, moved: [] }));
       const isoStore = makeSaveStore({ fs, pathMod: path, root: iso, clock: { now: () => Date.now() } });

@@ -56,6 +56,7 @@ function world(opts) {
     onStopped: opts.onStopped,
     trackRun: opts.trackRun,
     untrackRun: opts.untrackRun,
+    stationFor: opts.stationFor,
     ledger: (e) => ledger.push(e),
     maxParallel: opts.maxParallel,
     maxRunMs: opts.maxRunMs
@@ -214,7 +215,9 @@ function world(opts) {
     // a resolved run can still be incomplete (budget/max_iters/refusal/empty); only done is a candidate
     const wb = world(); wb.seed({}); wb.tick(T0);
     await wb.finish({ reason: 'budget', text: 'partial work' });
-    A.eq(wb.loop().iterations[0].outcome, 'failed', 'a budget-ended run is not parked as an approvable candidate');
+    // review r8: such a pass did not FINISH — its own outcome ('unfinished', unfinishedAs its run's), never a failed pass toward the failure pause
+    A.eq(wb.loop().iterations[0].outcome, 'unfinished', 'a budget-ended run is not parked as an approvable candidate, nor failed');
+    A.eq([wb.loop().iterations[0].unfinishedAs, wb.loop().failStreak], ['out_of_budget', 0], 'it keeps its outcome and costs no failure streak');
     A.ok(/budget/.test(wb.loop().iterations[0].error || ''), 'the failed iteration names its terminal reason');
 
     // an 'empty' end AFTER a tool ran: a file may already be written, so the settlement never says "nothing was done"
@@ -224,7 +227,7 @@ function world(opts) {
     we.calls[0].emit('agent.run.end', { reason: 'empty' });
     await we.finish({ reason: 'empty' });
     const emptyErr = we.loop().iterations[0].error || '';
-    A.eq(we.loop().iterations[0].outcome, 'failed', 'an empty end after a tool step is still not an approvable candidate');
+    A.eq(we.loop().iterations[0].outcome, 'unfinished', 'an empty end after a tool step is still not an approvable candidate, nor failed');
     A.ok(/1 tool step\b/.test(emptyErr) && /\[empty\]$/.test(emptyErr) && !/nothing was done/.test(emptyErr),
       'an empty end after a tool step says the step ran, never "nothing was done": ' + emptyErr);
     // …and with no tool step, the plain empty sentence stands
@@ -232,6 +235,21 @@ function world(opts) {
     we0.calls[0].emit('agent.run.end', { reason: 'empty' });
     await we0.finish({ reason: 'empty' });
     A.ok(/nothing was done/.test(we0.loop().iterations[0].error || ''), 'an empty end with no tool step keeps "nothing was done": ' + we0.loop().iterations[0].error);
+    // TYPED OUTCOMES (review r1 finding: the gate had no behavioural test): only a SUCCEEDED iteration reaches the check — a reply the
+    // provider cut ends 'done' with finishReason 'length' and is unfinished work, never an approvable candidate
+    const wc = world(); wc.seed({}); wc.tick(T0);
+    wc.calls[0].emit('agent.run.end', { runId: wc.calls[0].runId, reason: 'done', finishReason: 'length' });
+    await wc.finish({ reason: 'done', text: 'half an answ' });
+    A.eq(wc.loop().iterations[0].outcome, 'unfinished', 'a provider-cut iteration is not parked as an approvable candidate, nor failed');
+    A.ok(/cut short/.test(wc.loop().iterations[0].error || ''), 'the failed iteration says its reply was cut short: ' + wc.loop().iterations[0].error);
+    // ...and the iteration's OWN run settles it (review r4): a worker it delegated to forwards its 429 and end onto this stream under
+    // its own runId — the iteration that recovered and finished is not failed by it
+    const wd = world(); wd.seed({}); wd.tick(T0);
+    wd.calls[0].emit('agent.run.error', { runId: 'worker-1', message: 'openrouter http 429: rate limited', transient: true });
+    wd.calls[0].emit('agent.run.end', { runId: 'worker-1', reason: 'error' });
+    wd.calls[0].emit('agent.run.end', { runId: wd.calls[0].runId, reason: 'done' });
+    await wd.finish({ reason: 'done', text: 'the finished work' });
+    A.ok(wd.loop().iterations[0].outcome !== 'failed', 'a delegated worker\'s 429 never fails the iteration that finished (got ' + wd.loop().iterations[0].outcome + ': ' + (wd.loop().iterations[0].error || '') + ')');
 
     // a run host that throws synchronously
     const w3 = world({ runThrows: true }); w3.seed({});
@@ -748,6 +766,41 @@ function world(opts) {
     A.ok(/^This routine's folder is no longer an approved/.test(lapsed('schedule', new Error('x')).message), 'a routine still says routine');
     const core = sidecarTopLevelFunction('runOnceCore');
     A.ok(/try \{ cronRoot = cronCanonicalWorkdir\(o\.workdir\); \}[^\n]*\n\s*catch \(e\) \{ throw workdirLapsedError\(o\.trigger, e\); \}/.test(core), 'runOnceCore raises it when the run\'s workdir lapsed');
+  }
+
+  // ---- (saved-floor routing authority) INVARIANT held-is-a-stand-down: an iteration runs in its agent's bay room (stationFor), and a saved floor that
+  // cannot be proved right now throws a typed hold there. The room is named BEFORE the slot is taken, so a hold is a stand-down — no claim, no iteration,
+  // no failure on the record — and the objective is never paused for it. It used to settle the pass as "failed before launch", and the third in a row
+  // PAUSED the loop (in the router's raw error text). Any other throw from the room read is a bug, not a hold: it still fails the pass loudly.
+  {
+    const WHY = 'the saved floor is corrupt; routing is held until it is readable';
+    const heldErr = () => Object.assign(new Error('Saved routing authority is held: corrupt'), { held: true, status: 'corrupt', code: 'EROUTING_SAVED_CORRUPT', why: WHY });
+    let held = true;
+    const w = world({ context: async () => ({ text: '', reachable: true }),   // the host always hands a context (index.js): the production, async launch path
+      stationFor: (agentId) => { if (held) throw heldErr(); return { agents: { [agentId]: { id: agentId, room: 'bay' } }, rooms: { bay: { id: 'bay', objects: [] } } }; } });
+    w.seed({});
+    for (let i = 0; i < 8; i++) { A.eq(w.tick(T0 + i * TICK).fired, 0, i === 0 ? 'a held floor: the loop does not fire' : undefined); await w.flush(); }   // well past FAIL_STREAK_MAX (3)
+    const l = w.loop();
+    A.eq([w.calls.length, l.iterationCount, l.failStreak, l.unfinishedStreak, l.state, l.enabled, l.fireClaim, (l.iterations || []).length],
+      [0, 0, 0, 0, 'idle', true, null, 0], 'a held floor: no run, no slot taken, no claim, no failure of any kind on the record, and the loop is NOT paused');
+    A.eq(w.drv.leases.size, 0, 'and no lease is left behind');
+    const rows = skips(w);
+    A.eq(rows.length, 1, 'eight held ticks write ONE stand-down row (edge-triggered like every precheck)');
+    A.eq(rows[0], { source: 'loop', kind: 'skip', jobId: 'l1', agentId: 'agent', reason: 'precheck', binding: 'precheck', detail: { note: WHY } }, 'saying why in the hold\'s own words, as a precheck decline');
+    held = false;
+    A.eq(w.tick(T0 + 9 * TICK).fired, 1, 'the floor is readable again: the very next tick fires the loop, with no resume');
+    await w.flush();   // the project context hop
+    A.eq(w.calls.length, 1, 'one run');
+    A.ok(w.calls[0].station && w.calls[0].station.agents.agent.room === 'bay', 'in the room that was read before the slot was taken');
+    A.eq(w.loop().iterationCount, 1, 'and the slot is taken only now');
+  }
+  {
+    const w = world({ context: async () => ({ text: '', reachable: true }), stationFor: () => { throw new Error('a bug in the room read'); } });
+    w.seed({});
+    w.tick(T0); await w.flush();
+    const l = w.loop();
+    A.eq([w.calls.length, l.failStreak, l.iterations[0].outcome], [0, 1, 'failed'], 'a throw that is NOT a hold keeps its old path: the pass fails loudly, before any model call');
+    A.ok(/a bug in the room read/.test(l.iterations[0].error), 'with the error it raised: ' + l.iterations[0].error);
   }
 
   A.report('loopjob-driver (LOOP tick driver)');

@@ -261,8 +261,14 @@ const StationCommands = (() => {
   function noteOutcome(ws, runId, reason) {
     const why = typeof reason === 'string' ? reason.trim().slice(0, 80) : '';
     if (!why || !runId || !Workstreams.noteRunEnd) return false;
-    if (ws.lastRunReason === why && ws.lastRunOk === (why === 'done')) return false;
-    return Workstreams.noteRunEnd(ws.id, runId, why === 'done', why);
+    // a worker SOMEONE STOPPED (its lead's Stop: the delivery's reason 'cancelled') is no verdict (null), as a COMMS stop is (chat.js) —
+    // never "last run failed" on its thread's rail dot or the board's failed count (review r7)
+    // review r8: by the word's OUTCOME (RunOutcome.ofWord) — only a FAILED worker is ok=false; a cut reply, a limit, an empty reply, a refusal
+    // or a question is no verdict with its own word, as chat.js files the same end on a COMMS card (a budget-ended worker read ✗ RUN FAILED)
+    const oc = typeof RunOutcome !== 'undefined' ? RunOutcome.ofWord(why).outcome : (why === 'done' ? 'succeeded' : why === 'cancelled' ? 'stopped' : 'failed');
+    const verdict = oc === 'succeeded' ? true : oc === 'failed' ? false : null;
+    if (ws.lastRunReason === why && ws.lastRunOk === verdict) return false;
+    return Workstreams.noteRunEnd(ws.id, runId, verdict, why);
   }
 
   // Recovery and delayed bridge messages may concern an older attempt on this same thread.
@@ -300,6 +306,12 @@ const StationCommands = (() => {
     if (ws.conversationMode === 'group') throw new Error('"' + (ws.title || 'that chat') + '" is a group chat: its transcript belongs to its members, so a worker\'s result cannot be filed into it. Nothing was delivered there');
     const text = String((a && a.text) || '').trim();
     if (!text) throw new Error('nothing to deliver — the worker returned no text');
+    /* A SESSION WHOSE SAVED HISTORY IS STILL PACKED (save v7) cannot say whether this answer is already filed (answerFiled reads its rows) nor
+       where by time it belongs (the splice below): the rows are read back first and the same fold then runs on the whole conversation. One
+       the station cannot return all of is folded as it stands (the delivered row carries its rowId, so the next open merges it once). */
+    if (!opts.hydrated && Workstreams.needsHydration && Workstreams.needsHydration(ws) && typeof Chat !== 'undefined' && Chat.hydrateHistory) {
+      return Chat.hydrateHistory(ws).then(() => foldDelivery(a, Object.assign({}, opts, { hydrated: true })));
+    }
     const runId = String((a && a.runId) || '');
     if (runId && ((ws.runIds || []).indexOf(runId) >= 0 || answerFiled(ws, runId))) {
       const recorded = recordFiledRun(ws, runId, a.ts, opts.beforeRunId);
@@ -317,7 +329,10 @@ const StationCommands = (() => {
     // agent that wrote it — the marker would say the same thing twice
     const turns = [];
     if (prompt && !ws.worker) turns.push({ role: 'system', sys: true, content: '— delegated to ' + who + ': ' + prompt.slice(0, 400) + ' —', ts });
-    turns.push({ role: 'assistant', content: text, agentId: who, ts, sourceRunId: runId || undefined, streamId: ws.id });
+    // the station's row id (a routine's return, written before this command) names a row of the stream it wrote into; a session found by
+    // its title instead is another stream, where that id would name a stranger's row, so only the turn id is taken there
+    const known = ws.id === String((a && (a.streamId || a.sessionId)) || '') ? TurnMerge.idsOf({ rowId: a.rowId, turnId: a.turnId }) : TurnMerge.idsOf({ turnId: a.turnId });
+    turns.push(Object.assign({ role: 'assistant', content: text, agentId: who, ts, sourceRunId: runId || undefined, streamId: ws.id }, known));
     const beforeTurn = opts.recover || opts.beforeRunId ? ws.history.findIndex(m => Number(m && m.ts) > ts) : -1;
     ws.history.splice(beforeTurn < 0 ? ws.history.length : beforeTurn, 0, ...turns);
     if (runId && Workstreams.appendRun) Workstreams.appendRun(ws.id, runId, ts, opts.beforeRunId);
@@ -434,10 +449,8 @@ const StationCommands = (() => {
     const geo = st.projectGeometry(), plan = P.compileRoutingPlan(geo) || {};
     const origin = geo.origin || { tx: 0, ty: 0 };
     const roomAtTile = t => { const id = st.roomAt(t.x + origin.tx, t.y + origin.ty); const r = id && st.roomById(id); return r ? (r.name || r.kind || id) : null; };
-    // advice that is not a routing finding (never painted on the floor at rest) still reaches the lead, in its own words
-    const ADVICE_LABEL = { SEND_TO_PRIVATE_FILES: 'PRIVATE FILES — THE NEXT CREW CANNOT OPEN THEM' };
     const issue = e => {
-      const o = { code: e.code, label: ADVICE_LABEL[e.code] || label(e.code), blocking: !e.warn, propId: e.propId || null };
+      const o = { code: e.code, label: label(e.code), blocking: !e.warn, propId: e.propId || null };
       const f = why(e.code); if (f !== o.label) o.fix = f;
       if (!o.propId && e.tile) { const room = roomAtTile(e.tile); if (room) o.room = room; }   // a belt CYCLE has only a tile: say where it is
       return o;
@@ -450,8 +463,7 @@ const StationCommands = (() => {
       const p = propOf(pid);
       return (p && P.composeStageBrief && P.composeStageBrief(p.brief, p.hands)) || '';
     };
-    // + the SEND TO file advice, only where it is TRUE (Pipeline.sendToFileAdvice: no project folder, a different crew next — M19 / M29)
-    const errors = (plan.errors || []).filter(Boolean).concat(P.sendToFileAdvice ? P.sendToFileAdvice(plan) : []), claimed = new Set();
+    const errors = (plan.errors || []).filter(Boolean), claimed = new Set();
     const onLine = (c, e) => (e.propId != null && c.props.indexOf(e.propId) >= 0) || !!(e.tile && c.tiles && c.tiles[e.tile.x + ',' + e.tile.y])
       || (e.propId == null && !e.tile && [].concat(e.agentId || [], e.agents || []).some(a => c.bays.some(b => b.agentId === a)));
     const unread = (facts && facts.unread) || [];
@@ -607,6 +619,9 @@ const StationCommands = (() => {
     builderPlans.set(planId, { plan: r.plan, at: now });
     return { planId, plan: r.plan };
   }
+  // the design review of a plan or of the floor: advice for the model, so a review that cannot run never stops a plan
+  const designOfPlan = (doc, plan, env) => { try { return StationBuilder.reviewPlan ? StationBuilder.reviewPlan(doc, plan, env) : null; } catch (_) { return null; } };
+  const designOfFloor = (st, env, opts) => { try { return StationBuilder.review ? StationBuilder.review(st.serialize(), env, opts) : null; } catch (_) { return null; } };
   // the card's drawing for a build card: the newest parked plan with that summary (the card shows the plan's own words)
   function previewFor(summary) {
     let best = null;
@@ -777,8 +792,8 @@ const StationCommands = (() => {
     // ROOMS & DECOR (phase 2): a hand-designed room kit (a new room, or furnishing one with clear floor), or every room of a preset
     'station.plan_room': (a) => {
       const { st, env } = builderReady(a);
-      const p = park(StationBuilder.planRoom(st.serialize(), (a && a.request) || {}, env));
-      return { planId: p.planId, summary: p.plan.summary, rooms: p.plan.rooms, lines: p.plan.lines, steps: p.plan.steps, notes: p.plan.notes, expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
+      const doc = st.serialize(), p = park(StationBuilder.planRoom(doc, (a && a.request) || {}, env));
+      return { planId: p.planId, summary: p.plan.summary, rooms: p.plan.rooms, lines: p.plan.lines, steps: p.plan.steps, notes: p.plan.notes, design: designOfPlan(doc, p.plan, env), expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
     },
     /* THE SPATIAL BUILDER (2026-09-30): the lead SEES the floor (station.map: every room's place and size, what joins what,
        what fits where, the floor drawn in characters) and then says where rooms go in words — beside which room, on which
@@ -789,16 +804,18 @@ const StationCommands = (() => {
       if (typeof StationBuilder === 'undefined' || !StationBuilder.mapOf || typeof WorldModel === 'undefined') throw new Error('the station builder is not loaded on this page');
       const crew = (App.agents ? App.agents() : []).map(x => ({ id: x.id, name: x.name }));
       const env = { WorldModel, Pipeline: typeof Pipeline !== 'undefined' ? Pipeline : null, crew,
-        PropSprites: typeof PropSprites !== 'undefined' ? PropSprites : null, RoomStyles: typeof RoomStyles !== 'undefined' ? RoomStyles : null, LineEdit: typeof LineEdit !== 'undefined' ? LineEdit : null };
+        PropSprites: typeof PropSprites !== 'undefined' ? PropSprites : null, RoomStyles: typeof RoomStyles !== 'undefined' ? RoomStyles : null, LineEdit: typeof LineEdit !== 'undefined' ? LineEdit : null,
+        StationTemplates: typeof StationTemplates !== 'undefined' ? StationTemplates : null };
       if (a && a.look != null && a.look !== false) return lookAt(st, env, a.look === true ? null : String(a.look).slice(0, 60));
-      const r = StationBuilder.mapOf(st.serialize(), env, { room: a && a.room != null ? String(a.room) : null, catalog: !!(a && a.catalog) });
+      const r = StationBuilder.mapOf(st.serialize(), env, { room: a && a.room != null ? String(a.room) : null, catalog: !!(a && a.catalog), guide: !!(a && a.guide) });
       if (!r || !r.ok) throw new Error((r && r.error) || 'the map could not be read');
+      if (!(a && (a.catalog || a.guide))) r.map.design = designOfFloor(st, env, r.map.room ? { room: r.map.room } : null);
       return r.map;
     },
     'station.plan_build': (a) => {
       const { st, env } = builderReady(a);
-      const p = park(StationBuilder.planBuild(st.serialize(), (a && a.request) || {}, env));
-      return { planId: p.planId, summary: p.plan.summary, rooms: p.plan.rooms, hallways: p.plan.hallways, lines: p.plan.lines, steps: p.plan.steps, notes: p.plan.notes, expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
+      const doc = st.serialize(), p = park(StationBuilder.planBuild(doc, (a && a.request) || {}, env));
+      return { planId: p.planId, summary: p.plan.summary, rooms: p.plan.rooms, hallways: p.plan.hallways, lines: p.plan.lines, steps: p.plan.steps, notes: p.plan.notes, design: designOfPlan(doc, p.plan, env), expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
     },
     // the one cosmetic change: a room's floor, material or name
     'station.plan_restyle': (a) => {
@@ -815,8 +832,8 @@ const StationCommands = (() => {
       // read from the sidecar as Build mode reads them, so the plan only ever names what the station has
       const ops = Array.isArray(req.refit) ? req.refit : [], want = k => ops.some(o => o && typeof o.op === 'string' && o.op.toLowerCase().trim() === k);
       if (want('folder') || want('bind')) env.services = await builderServices(want('folder'), want('bind'));
-      const p = park(StationBuilder.planEdit(st.serialize(), req, env));
-      return { planId: p.planId, summary: p.plan.summary, steps: p.plan.steps, notes: p.plan.notes, expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
+      const doc = st.serialize(), p = park(StationBuilder.planEdit(doc, req, env));
+      return { planId: p.planId, summary: p.plan.summary, steps: p.plan.steps, notes: p.plan.notes, design: designOfPlan(doc, p.plan, env), expiresInMinutes: PLAN_TTL_MS / 60000, next: NEXT_STEP };
     },
     // a line by name or by a machine on it (station.test_line): the routing plan's lineId and its steps in words
     'station.line_ref': (a) => {
@@ -878,6 +895,7 @@ const StationCommands = (() => {
         + ((r.recruited || []).length ? '; the recruited agents stay on the crew (DELETE AGENT in a Dossier removes one)' : '') + '.';
       // the receipt's body is the builder's own (StationBuilder.receipt): every line it laid or touched, with the floor's readiness
       const result = Object.assign({ built: true, undo }, StationBuilder.receipt(r, e.plan));
+      result.design = designOfFloor(st, env);
       // publication and the station-file proof run side by side, so together they stay inside the bridge deadline
       const [routing, durability] = await Promise.all([builderPublication(), builderDurability(st)]);
       result.routing = routing;
@@ -1063,9 +1081,14 @@ const StationCommands = (() => {
        Exists because of a live failure: asked "what did the researcher do?", a lead with no way to read the
        other session guessed "nothing" while the finished answer sat right there. Visible dialogue only
        (same filter the session power tools use — sys markers ride along labeled, hidden/internal never). */
-    'station.read_session': (a) => {
+    'station.read_session': function readSession(a, hydrated) {
       const hit = resolveSession(a && a.session);
       const ws = hit.w;
+      const packed = () => !!(Workstreams.needsHydration && Workstreams.needsHydration(ws));
+      /* A SESSION WHOSE SAVED HISTORY IS STILL PACKED (save v7) is read back before it is read out: handing the lead the few rows the
+         page keeps itself, or "no visible conversation yet", is the very guess this verb exists to end. One the station cannot return
+         all of is read out as it stands and SAYS so (incomplete + the note), never as the whole conversation. */
+      if (!hydrated && packed() && typeof Chat !== 'undefined' && Chat.hydrateHistory) return Chat.hydrateHistory(ws).then(() => readSession(a, true));
       const limit = Math.max(1, Math.min(30, Number(a && a.limit) || 12));
       const turns = (ws.history || [])
         .filter(m => m && !m.hidden && !m.internal && typeof m.content === 'string'
@@ -1083,10 +1106,13 @@ const StationCommands = (() => {
           };
         });
       const busy = (typeof Channels !== 'undefined' && Channels.isBusy) ? !!Channels.isBusy(ws.id) : false;
+      const incomplete = packed();
       return {
         id: ws.id, title: hit.title || sessionName(ws), agentId: ws.agentId || 'agent',
         busy, runCount: (ws.runIds || []).length, turns,
-        note: turns.length ? undefined : 'this session has no visible conversation yet'
+        ...(incomplete ? { incomplete: true } : null),
+        note: incomplete ? 'part of this session\'s conversation could not be read back yet, so the turns listed may be incomplete'
+          : turns.length ? undefined : 'this session has no visible conversation yet'
       };
     },
 
@@ -1169,7 +1195,7 @@ const StationCommands = (() => {
       const res = got.key ? await h.validateAndSetKey(String(got.key), provider) : null;
       try { if (typeof ModelDock !== 'undefined' && ModelDock.reflect) ModelDock.reflect(); } catch (_) {}
       try { if (typeof KeyCTA !== 'undefined' && KeyCTA.refresh) KeyCTA.refresh(); } catch (_) {}
-      try { if (typeof StationUI !== 'undefined' && StationUI.rerender) StationUI.rerender('settings'); } catch (_) {}
+      try { if (typeof StationUI !== 'undefined' && StationUI.invalidate) StationUI.invalidate('settings'); } catch (_) {}
       return { provider, store: h.isDesktop && h.isDesktop() ? 'keychain' : 'browser', verified: !!(res && res.credentialVerified), endpointOnly: !got.key };
     },
     'station.control': async (a) => {
@@ -1254,7 +1280,9 @@ const StationCommands = (() => {
         if (!row || !String(row.sessionTitle || '').trim()) continue;
         const delivery = row.dispatchDelivery;
         if (delivery && delivery.state !== 'final') continue;
-        const reason = delivery ? delivery.reason : row.reason;
+        // (typed-outcomes) a 'done' that did not SUCCEED (an unrepaired, provider-cut run) reads as its outcome, never a clean 'done'
+        const said = delivery ? delivery.reason : row.reason;
+        const reason = said === 'done' && !(delivery && delivery.repairRunId) && typeof RunOutcome !== 'undefined' ? RunOutcome.reasonOf(row) : said;
         let text = delivery ? delivery.text : row.deliveryText;
         const args = {
           streamId: row.streamId, sessionTitle: row.sessionTitle, agentId: row.agentId,
@@ -1265,7 +1293,7 @@ const StationCommands = (() => {
         if (target && hit.w.id !== target) continue;
         // Ordinary conversations retain their existing recovery policy. A worker's record also retains failed
         // or interrupted attempts: even an empty result needs its truthful outcome and inspection link.
-        if (!hit.w.worker && ['done', 'max_iters', 'budget'].indexOf(String(reason || 'done')) < 0) continue;
+        if (!hit.w.worker && ['done', 'max_iters', 'budget', 'cut_short'].indexOf(String(reason || 'done')) < 0) continue;   // a partial answer is recovered too
         // An earlier missed attempt can be recovered after a newer answer was already filed locally.
         // Use the server's run order to insert it before that known successor, preserving current truth.
         const liveRunId = typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(hit.w.id) && Channels.runIdOf && Channels.runIdOf(hit.w.id);
@@ -1297,7 +1325,7 @@ const StationCommands = (() => {
           continue;
         }
         try {
-          const out = foldDelivery(args, { quiet: true, beforeRunId, recover: true });
+          const out = await foldDelivery(args, { quiet: true, beforeRunId, recover: true });
           if (out && out.folded) folded++;
         } catch (_) {}
       }

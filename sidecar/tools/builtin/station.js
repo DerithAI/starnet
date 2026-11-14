@@ -18,12 +18,18 @@
 (function (root, factory) {
   // under node, session.peek scrubs the other session's turns through prompt-scrub (see peekTool)
   const node = typeof module !== 'undefined' && module.exports && typeof require === 'function';
-  const api = factory(node ? require('../../prompt-scrub.js').scrubStored : null);
+  // TYPED OUTCOMES: a test job's steps and a bay's last run are reported by their run's outcome (frontend/app/runoutcome.js)
+  const api = factory(node ? require('../../prompt-scrub.js').scrubStored : null, node ? require('../../../frontend/app/runoutcome.js') : (root.RunOutcome || null));
   if (node) module.exports = api;
   else { root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {}; (root.SK.tools.builtin = root.SK.tools.builtin || {}).station = api; }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (scrubStored) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (scrubStored, RunOutcome) {
   'use strict';
   const scrub = typeof scrubStored === 'function' ? scrubStored : (s => s);
+  /* how a run ENDED, as the lead is told it (review 4.3): a run row's reason is the loop's "it ended" word — a reply the provider
+     cut and a 'done' end the run's own error outranked both end 'done', and the job's verdict then said a step ended badly while
+     every step read 'done'. endedOf is RunOutcome.reasonOf ('done' only for a run that SUCCEEDED: 'cut_short', 'error', …); a
+     row that names no ending at all reads 'unknown', never 'done'. */
+  const endedOf = x => (!x || (!x.reason && !x.outcome)) ? 'unknown' : (RunOutcome ? RunOutcome.reasonOf(x) : String(x.reason || 'unknown'));
   /* SECRETS (context-key-redact, 2026-10-28): another session's turns are stored text (the page's raw desk history, or
      the overseer's transcript rows) arriving in THIS run's tool result. Each turn's text is scrubbed as its own field —
      the page cuts it at 600 chars, so a key cut there ends the field, where the cut-key rules can see it. Unchanged
@@ -133,7 +139,7 @@
     }
 
     const listTool = {
-      name: 'session.list', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'session.list', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'List the sessions (workstreams) open on this station: id, title, bound agent, and which one the Commander has focused. Use the TITLES when talking to the Commander and when passing `session` to team.dispatch or session.focus. Read this before creating a session so you never mint a duplicate title.',
       schema: { type: 'object', properties: {} },
       run: async (args, ctx) => {
@@ -149,7 +155,7 @@
     };
 
     const createTool = {
-      name: 'session.create', capability: 'orchestrator', scope: 'write', requiresConsent: false,
+      name: 'session.create', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: false,
       description: 'Create a NEW named session (workstream) on the station, e.g. when the Commander says "make a session called research". Optionally bind it to a crew agentId; pass focus:true only when the Commander asked to open/switch to it. Refuses a title that already exists (delegate into the existing one instead). To run work in it, pass its title as `session` on a team.dispatch worker.',
       schema: {
         type: 'object', required: ['title'], properties: {
@@ -168,7 +174,7 @@
     };
 
     const peekTool = {
-      name: 'session.peek', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'session.peek', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'Read another session\'s recent conversation: who said what, including delegated work that landed there. ⛔ ALWAYS call this before answering any question about what another session or agent did ("what did the researcher do?", "did anything finish in research?"): your own thread does NOT contain other sessions\' turns, so answering from memory is guessing. Pass the session\'s title as the Commander says it (or an exact id); an unknown or ambiguous name is refused with the list of real ones.',
       schema: {
         type: 'object', required: ['session'], properties: {
@@ -176,19 +182,29 @@
           limit: { type: 'integer' }     // optional: how many recent turns (default 12, max 30)
         }
       },
-      run: async (args) => {
+      run: async (args, ctx) => {
         const ref = String((args && args.session) || '').trim().slice(0, 80);
         if (!ref) return refuse('name which session to read');
         const limit = Math.max(1, Math.min(30, Number(args && args.limit) || 12));
         const out = await ask('station.read_session', { session: ref, limit });
         if (!out.ok) return refuse(out.error);
         const r = scrubPeek(out.result || {});
-        return { content: JSON.stringify(r), summary: '"' + (r.title || ref) + '": ' + ((r.turns || []).length) + ' recent turn(s)' + (r.busy ? ' — still working' : '') };
+        /* A READ OF ANOTHER SESSION IS A QUOTE (turn identity commit 11): the session read (its resolved id, the page's or the overseer's
+           answer alike) is named in quotedStreams so the host latches it, and a session the run has no room left to read is refused
+           HERE, before its turns are composed into the result. The run's own session is never a quote. */
+        const mine = ctx && ctx.streamId ? String(ctx.streamId) : '';
+        const read = typeof r.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(r.id) && r.id !== mine && (r.turns || []).length ? r.id : '';
+        if (read && typeof deps.quoteRoom === 'function') {
+          let room = [];
+          try { room = deps.quoteRoom([read]); } catch (_) { room = []; }
+          if (!Array.isArray(room) || !room.includes(read)) return refuse('one run may read at most 32 sessions, and this run has read that many; continue in a new run', 'session withheld');
+        }
+        return Object.assign({ content: JSON.stringify(r), summary: '"' + (r.title || ref) + '": ' + ((r.turns || []).length) + ' recent turn(s)' + (r.busy ? ' — still working' : '') }, read ? { quotedStreams: [read] } : null);
       }
     };
 
     const focusTool = {
-      name: 'session.focus', capability: 'orchestrator', scope: 'write', requiresConsent: false,
+      name: 'session.focus', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: false,
       description: 'Switch the Commander\'s focused session to an existing one, by the title they say (or an exact id), e.g. "open the research session". An unknown or ambiguous name is refused with the list of real ones, so never guess; use session.list. This changes what the Commander is LOOKING at; use it only when they asked to switch.',
       schema: { type: 'object', required: ['session'], properties: { session: { type: 'string' } } },
       run: async (args, ctx) => {
@@ -206,7 +222,7 @@
        unchanged, so a lead asked "is anything waiting on me?" reads which sessions are busy or held at an approval
        instead of guessing from its own thread. No page → REFUSED, never an implied state. */
     const statusTool = {
-      name: 'station.status', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'station.status', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'Read the live station snapshot: the Commander\'s active session and, per open session, whether it is busy and whether it waits on an approval. Call it before answering what the station or crew is doing or what waits on the Commander; never infer other sessions\' state from your own thread.',
       schema: { type: 'object', properties: {} },
       run: async () => {
@@ -219,7 +235,7 @@
     };
 
     const taskListTool = {
-      name: 'task.list', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'task.list', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'List the durable cards on the Commander\'s task board. Use this for requests about board cards or tasks; sessions are separate and come from session.list.',
       schema: { type: 'object', properties: {} },
       run: async () => {
@@ -231,7 +247,7 @@
     };
 
     const taskCreateTool = {
-      name: 'task.create', capability: 'orchestrator', scope: 'write', requiresConsent: false,
+      name: 'task.create', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: false,
       description: 'Add one durable card to the Commander\'s task board when they say “add this to my board”, “make a task”, or equivalent. This does not start work and does not create a chat session. Repeating the same title returns the existing card instead of creating a duplicate.',
       schema: { type: 'object', required: ['title'], properties: { title: { type: 'string' }, agentId: { type: 'string' } } },
       run: async (args) => {
@@ -245,7 +261,7 @@
     };
 
     const taskManageTool = {
-      name: 'task.manage', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'task.manage', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       description: 'Change an EXISTING durable task-board card: move it between todo/active/shipped, rename it, assign it to a crew agent, archive/restore it, or remove it. Never call this to start work; use team.dispatch for delegation. `shipped` is allowed only when the Commander explicitly asks to mark/ship/complete that card. Destructive actions are consent-gated.',
       schema: {
         type: 'object', required: ['task', 'action'], properties: {
@@ -265,7 +281,7 @@
     };
 
     const agentConfigTool = {
-      name: 'team.config', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'team.config', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'List crew IDs and names, or pass an exact agentId to read that agent\'s current Dossier documents: identity, purpose, manual (standing orders), and context. Read the target before changing it with team.configure. Notebook memory does not edit these documents.',
       schema: { type: 'object', properties: { agentId: { type: 'string' } } },
       run: async (args) => {
@@ -280,7 +296,7 @@
     // content, and the new text passes the same strict injection scan a routine prompt does.
     const scanText = typeof deps.scanText === 'function' ? deps.scanText : null;
     const agentConfigureTool = {
-      name: 'team.configure', capability: 'orchestrator', consentKey: 'team.configure', taintLocked: true, scope: 'write', requiresConsent: true,
+      name: 'team.configure', capability: 'orchestrator', impact: 'none', consentKey: 'team.configure', taintLocked: true, scope: 'write', requiresConsent: true,
       description: 'Edit one existing crew member Dossier document, using the exact agentId and previousText from team.config. Preserve unrelated instructions in the replacement text; an empty text clears the document. Applies to the next run, not a currently running turn. Requires an open station page. Does not change the name (station.control agent.rename), skills, permissions, Bay briefs or layout. Never substitute notebook.write for this edit.',
       schema: { type: 'object', additionalProperties: false, required: ['agentId', 'field', 'previousText', 'text'], properties: {
         agentId: { type: 'string' }, field: { type: 'string', enum: ['identity', 'purpose', 'manual', 'context'] },
@@ -342,14 +358,31 @@
     const agoText = ms => { const m = Math.round(ms / 60000); return m < 1 ? 'just now' : m < 60 ? m + 'm ago' : m < 2880 ? Math.round(m / 60) + 'h ago' : Math.round(m / 1440) + 'd ago'; };
     // the clock is INJECTED (sidecar determinism law); without one, "how long ago" is not claimed at all
     const clock = typeof deps.now === 'function' ? deps.now : null;
-    const lastRun = (d, now) => ({ result: d.reason || 'unknown', failed: !!d.failed, at: d.ts ? new Date(d.ts).toISOString() : null,
-      ago: (d.ts && now != null) ? agoText(Math.max(0, now - d.ts)) : null, runId: d.runId || null });
+    // a bay's last run (line-stats docks): its result is how that run ENDED (endedOf) — a bay the provider cut never reads 'done'. Its flags are the
+    // line's own counts: a dead run that FAILED is failed, one a refusal, a spend cap or a step limit ended is unfinished, and a cut bay (dead to
+    // neither count, d.failed false) is neither. d.failed stays the dead-run set: linewatch seeds the lamp from it.
+    const lastRun = (d, now) => {
+      const oc = d.outcome || (RunOutcome ? RunOutcome.ofRow(d).outcome : 'failed');
+      return Object.assign({ result: endedOf(d), failed: !!d.failed && oc === 'failed' }, d.failed && oc !== 'failed' ? { unfinished: true } : {}, {
+        at: d.ts ? new Date(d.ts).toISOString() : null, ago: (d.ts && now != null) ? agoText(Math.max(0, now - d.ts)) : null, runId: d.runId || null });
+    };
     function completeLayout(r, now) {
       const ro = r.routing || (r.routing = { state: 'unknown', note: 'The page could not say whether the router holds this floor.' });
       const held = call(lf.routed);
       if (held !== undefined && (ro.state === 'live' || ro.state === 'unconfirmed') && (r.lines || []).length) {
+        const differs = { state: 'unconfirmed', confirmed: false, note: 'The router is running a different version of the floor than the page shows (another open page, or a floor that was not saved), so what runs may differ from this answer.' };
         if (held === null) Object.assign(ro, { state: 'off', confirmed: false, note: 'Routing is OFF: the router holds no routing plan right now, so no line routes work (the page believed otherwise). Opening or editing the floor sends it again.' });
-        else if (held.hash && ro.planHash && held.hash !== ro.planHash) Object.assign(ro, { state: 'unconfirmed', confirmed: false, note: 'The router is running a different version of the floor than the page shows (another open page, or a floor that was not saved), so what runs may differ from this answer.' });
+        // the saved floor cannot be proved right now (corrupt, unreadable, ...): nothing routes from a guess about it, and the reason is said
+        else if (held.state === 'held') Object.assign(ro, { state: 'off', confirmed: false, note: 'Routing is OFF: ' + String(held.why || 'the saved floor cannot be read right now') + ' — so no line routes work, and nothing runs from a guess about the floor (the page believed otherwise).' });
+        else if (held.hash && ro.planHash && held.hash !== ro.planHash) {
+          /* The router routes by the floor the station SAVED, and the page saves every edit at once while Build mode holds back the compile and
+             the send of it. So while edits are held back, the floor the page last sent is bound to lag the router's: that is not "another open
+             page", and the page's account of its newer edits (the only side that knows them) must survive the merge. */
+          const at = ro.pendingEdits === true ? String(ro.note || '').indexOf(' The floor has newer edits') : -1;
+          if (ro.pendingEdits !== true) Object.assign(ro, differs);
+          else Object.assign(ro, { state: 'unconfirmed', confirmed: false, note: 'The router is running a different version of the floor than the page last sent: it routes by the floor the station has saved, and that is not the one the page sent last.'
+            + (at >= 0 ? String(ro.note).slice(at) : ' The floor also has newer edits the page has not sent yet.') });
+        }
         else if (held.hash && held.hash === ro.planHash) ro.confirmed = true;
       }
       delete ro.planHash;
@@ -361,7 +394,7 @@
         if (b) { L.budget = { maxHops: b.maxHops, maxUsdPerMessage: b.maxUsdPerMessage, maxUsdPerDay: b.maxUsdPerDay == null ? null : b.maxUsdPerDay }; if (b.clamped && b.clamped.length) L.budget.clamped = b.clamped; }
         const t = byLine[L.lineId];
         if (t) {
-          L.today = { runs: t.runs, shipped: t.shipped, failed: t.failed, tests: t.tests, usd: t.usdToday, capUsdPerDay: t.capUsdPerDay, medianMs: t.medianMs, day: t.spendDay === 'utc' ? 'UTC day' : 'local day' };
+          L.today = { runs: t.runs, shipped: t.shipped, failed: t.failed, unfinished: t.unfinished, tests: t.tests, usd: t.usdToday, capUsdPerDay: t.capUsdPerDay, medianMs: t.medianMs, day: t.spendDay === 'utc' ? 'UTC day' : 'local day' };
           // shipped null = UNKNOWN (the shipment history could not be read) — said, so the lead never reports it as nothing shipped
           if (t.shipped == null && t.shippedUnknown) L.today.shippedUnknown = String(t.shippedUnknown);
           // a LOWER BOUND (some of today's jobs have no saved record): said, so the lead never reports it as the exact count
@@ -444,7 +477,7 @@
       return x;
     }
     const layoutTool = {
-      name: 'station.layout', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'station.layout', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'Read the station floor the way the Workflow panel shows it: whether routing is live (confirmed against the router) and whether automation is stopped (E-STOP); every assembly line with its status pill, its plain-English "how it runs" sentence, what starts it (schedules, channels, folder and webhook triggers, and any paused ones with the reason), what blocks it, its budget and its numbers today; each step in run order with its Bay, room, agent and last run; Bays on no belt line; routing issues; rooms; who holds which workstation. With `line` (a line name or lineId): that one line in full, with each Bay\'s exact brief (added to the agent\'s Dossier), its tools there, its hand-offs, loops, escalation lanes and filter rules. ⛔ Call this before explaining, troubleshooting, or suggesting changes to Bays and assembly lines; never answer those from memory. Quote its status and sentence as given, and say so when routing is not live or starts are paused. Read-only: it cannot assign agents, edit briefs or change the layout (the Commander does that in Build mode). Requires an open station page.',
       schema: { type: 'object', properties: { line: { type: 'string' } } },
       run: async (args, ctx) => {
@@ -492,11 +525,11 @@
     const roomText = () => { try { return (roomMenu() || []).map(s => s.id + ' (' + s.name + (s.about ? ': ' + s.about : '') + ')').join('; '); } catch (_) { return ''; } };
     const BUILDER = ['station.map', 'station.plan', 'station.build', 'station.make_prop', 'station.test_line', 'station.start_line'];
     const mapTool = {
-      name: 'station.map', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'station.map', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       description: 'STATION BUILDER, step 1: see the station floor before you build on it. Every room with its position and size in tiles, its type, what it is joined to (through hallways, or open to it), its machines, furniture and lines, how much floor is clear, which sizes of new room fit on each side, the floor drawn in characters (a letter per room, + for a hallway; north is the top), and every hallway by name with what it joins (halls; one marked leadsNowhere leads to fewer than two rooms). '
         + 'The room marked main is the one the station started from; the Commander may call it the bridge, the hub or the main room. '
-        + 'For your own design: { room: a name } details that room tile by tile (every piece with its id, type, place and size, and each machine\'s settings: agent, role, instructions, hand-off, budget, routes, loop and joiner rules, folder, bound service; its belts; its doorways; the room drawn); { catalog: true } lists every piece that can be placed (type, size, rules), room types, floors, walls, bay roles, lines and line edits; { look: a room name, or true for the whole station } shows you the station as it really renders (a picture, when you can see images): look after you build, judge it as a designer, and refit what is not right. Then plan with station.plan. Read-only; needs an open station page.',
-      schema: { type: 'object', properties: { room: { type: 'string' }, catalog: { type: 'boolean' }, look: {} } },
+        + 'For your own design: { room: a name } details that room tile by tile (every piece with its id, type, place and size, and each machine\'s settings: agent, role, instructions, hand-off, budget, routes, loop and joiner rules, folder, bound service; its belts; its doorways; the room drawn); { catalog: true } lists every piece that can be placed (type, size, rules), room types, floors, walls, bay roles, lines and line edits; { guide: true } gives the design principles, the palettes (themes) and the prebuilds, so read it before designing a station; { look: a room name, or true for the whole station } shows you the station as it really renders (a picture, when you can see images): look after you build, judge it as a designer, and refit what is not right. Then plan with station.plan. Read-only; needs an open station page.',
+      schema: { type: 'object', properties: { room: { type: 'string' }, catalog: { type: 'boolean' }, guide: { type: 'boolean' }, look: {} } },
       run: async (args) => {
         const a = args && typeof args === 'object' ? args : {}, q = {};
         if (a.look != null && a.look !== false && a.look !== '') {
@@ -512,20 +545,21 @@
         }
         if (a.room != null) q.room = String(a.room).slice(0, 60);
         if (a.catalog) q.catalog = true;
+        if (a.guide) q.guide = true;
         const out = await ask('station.map', q);
         if (!out.ok) return refuse(out.error);
         const m = out.result || {};
-        const summary = q.catalog ? ((m.pieces || []).length) + ' pieces in the catalog' : q.room ? m.room + ': ' + ((m.pieces || []).length) + ' pieces' : ((m.rooms || []).length) + ' room(s), ' + (m.hallways || 0) + ' hallway(s)';
+        const summary = q.guide ? 'the design guide' : q.catalog ? ((m.pieces || []).length) + ' pieces in the catalog' : q.room ? m.room + ': ' + ((m.pieces || []).length) + ' pieces' : ((m.rooms || []).length) + ' room(s), ' + (m.hallways || 0) + ' hallway(s)';
         return { content: JSON.stringify(m), summary, control: { revealTools: BUILDER } };
       }
     };
     /* ONE PLANNER: the form of the request says what kind of change it is, and the page's own planner for that kind answers */
-    const PLAN_HOW = 'Send one form: { refit: [ edits ] } (your own design, on exact tiles), { layout: { pattern, rooms } } (a whole station), { rooms, hallways } (rooms where the Commander says), { line | shape | purpose } (one workflow line), { kit | preset } (a furnished room or a preset), { zones } (one room part by part), { restyle: { room, … } }, or an edit of what stands ({ remove }, { refurnish }, { clear }).';
+    const PLAN_HOW = 'Send one form: { refit: [ edits ] } (your own design, on exact tiles), { layout: { pattern, theme, from, rooms } } (a whole station), { rooms, hallways } (rooms where the Commander says), { line | shape | purpose } (one workflow line), { kit | preset } (a furnished room or a preset), { zones } (one room part by part), { restyle: { room, … } }, or an edit of what stands ({ remove }, { refurnish }, { clear }, { retheme }).';
     function planVerb(a) {
       const has = k => a[k] !== undefined && a[k] !== null;
       if (has('restyle')) return Object.keys(a).length === 1 ? { verb: 'station.plan_restyle', request: a.restyle } : { error: 'restyle goes on its own: { restyle: { room, type, floorStyle, floorMat, name } }.' };
       if (has('undo')) return Object.keys(a).filter(has).length === 1 ? { verb: 'station.plan_undo', request: {} } : { error: 'undo goes on its own: { undo: true } takes back the lead\'s own last build.' };
-      if (['remove', 'refurnish', 'clear', 'add', 'seat', 'move', 'staff', 'refit', 'rearrange'].some(has)) return Object.keys(a).filter(has).length === 1 ? { verb: 'station.plan_edit', request: a } : { error: 'remove, refurnish, clear, add, seat, move, staff, refit and rearrange each go on their own, one edit a plan (a refit holds as many edits as you need).' };
+      if (['remove', 'refurnish', 'clear', 'add', 'seat', 'move', 'staff', 'refit', 'rearrange', 'retheme'].some(has)) return Object.keys(a).filter(has).length === 1 ? { verb: 'station.plan_edit', request: a } : { error: 'remove, refurnish, clear, add, seat, move, staff, refit, rearrange and retheme each go on their own, one edit a plan (a refit holds as many edits as you need).' };
       if (has('layout') || has('rooms') || has('hallways')) return { verb: 'station.plan_build', request: a };
       if (has('kit') || has('preset') || has('zones')) return { verb: 'station.plan_room', request: a };
       if (has('line') || has('shape') || has('purpose')) return { verb: 'station.plan_line', request: a };
@@ -543,7 +577,7 @@
       return null;
     }
     const planTool = {
-      name: 'station.plan', capability: 'orchestrator', scope: 'read', requiresConsent: false,
+      name: 'station.plan', capability: 'orchestrator', impact: 'none', scope: 'read', requiresConsent: false,
       get description() {
         return 'STATION BUILDER, step 2: plan a change to the station floor (rooms, furniture, conveyor and assembly lines). You are the station\'s designer: the Commander\'s words are the brief, and the design is yours to decide (where each room goes, its shape and size, how rooms join, where every piece stands and which way it faces), as freely as the Commander can in Refit mode. A plan is built on a copy and checked against the station\'s own rules (walls, doorways, what stands on what); nothing changes until station.build. Two ways to work, mixed freely: design it yourself, tile by tile, or use a shortcut and let StarNet place things. '
           + 'RESHAPE THE WHOLE STATION (spread it out, a wider or better shape, rooms re-oriented, more hallways joining things up): { rearrange: "diamond" } re-lays every room where it stands, with everything in it (furniture, lines, desks, agents), on the diamond grid round the main room (wide by default; { rearrange: { shape: "tall" | "even", links: false } }), takes up every old hallway and lays clean ones, planted and lit, joining neighbouring rooms. Never reshape a station by moving rooms one by one and drawing corridors by hand: a moved room leaves its hallways behind, and a refit that leaves a hallway leading nowhere is refused. '
@@ -552,11 +586,12 @@
           + '{ op: "place", t, x, y, toward | r, m, as } (any piece or machine: intake, bay, filter, merger, splitter, joiner, loop, outbox; toward: the piece or tile it faces, and the builder turns it, so give every chair, sofa and seat toward its table, desk or screen (a seat set right beside a table or desk with no toward is turned to face it; a left/right pair such as recliner, which faces west, and recliner_r, east, takes toward too and the builder picks the one that faces that way); r 0 faces south, 1 west, 2 north, 3 east; m: 1 flips; as names it for later edits; a desk or any workstation draws its OWN chair when an agent works it, so never place a chair at a desk) · { op: "move", prop, x, y } · { op: "rotate", prop, toward | r } · { op: "mirror", prop } · { op: "delete", prop } · { op: "agent", prop, agent } · { op: "door", prop, state } · '
           + '{ op: "belt", from: [x, y], to: [x, y] } (a straight run) · { op: "unbelt", tiles } · { op: "connect", from: prop, to: prop } (belts one machine into the next) · SET A LINE UP (everything the Workflow panel sets): { op: "role" | "brief" | "label", prop, role | text } (a step\'s role, its instructions, the line\'s name) · { op: "hands", prop: a bay, text } (what that step hands on) · { op: "budget", prop: any machine on the line, stages, perJob, perDay } (null = the default) · { op: "loop", prop: a loop, passes, until: approved | revise | code | research | general, done, escalate } (done, escalate: the side work leaves by) · { op: "wait", prop: a joiner, minutes } · { op: "swap", prop: a joiner or a merger } (a joiner waits for every branch, so the splitter copies to each; a merger takes them as they come, so the branches take turns) · { op: "routes", prop: a filter, routes: { code | research | general: side }, def } · { op: "folder", prop, project: one of the Commander\'s trusted projects, or null } · { op: "bind", prop: a connector portal or a plugin terminal, connector | plugin: its name } (its room\'s agents get that service\'s tools) · sides are north, east, south, west · { op: "stamp", line, x, y } (a shelf line at an exact spot) · { op: "edit", prop, edit, args } (the Workflow panel\'s own line edits on the line that prop is on: insertStep { from, to, role }, appendStep { after, role }, addBranch, addLoop, addSorter, addRoute, removeStep { id }, moveStep, tidy, addOutbox …). '
           + 'prop is an id from station.map { room }, a name given with as, or a tile [x, y]; room is a name or an as. The first edit that fails refuses the plan and names it with Refit mode\'s reason: fix that edit and plan again. '
+          + 'DESIGNING A STATION: read station.map { guide: true } first. { layout: { pattern, theme, from, rooms }, replace: true } lays a whole station: choose its plan (pattern: diamond, concourse, axis, enfilade, colony, campus, pinwheel, court, terrace) for the brief, in one palette (theme: a palette id or the Commander\'s own words), starting from a prebuild (from: its id) with any rooms you add; give the room the station is for a bigger size ("large" or { w, h }) so it reads as the heart. { retheme: a palette } re-dresses what stands without moving a piece. Every plan and build answers with a design review (design: score, grade, what to fix): read it, and refit what is wrong. It is advice: your eye decides. '
           + 'A piece the catalog does not have: station.make_prop makes it with the Commander\'s StarNet credits; then place it by its id. '
           + 'LINE OPERATIONS: { op: "send", from: an OUTBOX, to: another line\'s INBOX | null } sets or clears SEND TO; connect OUTBOX to INBOX does the same, never a belt. Lay both lines before sending. It hands every finished job onward using the target line\'s own crew and budget. { op: "copy", line: a line name (or prop: any machine on it), x, y, turn: 0..3, as } copies the line near those tiles, with crew, settings and instructions; it does not copy its project folder, triggers or outward SEND TO. { op: "delete", line } removes the whole line; the plan names incoming SEND TOs that will stop. '
           + 'LOOK at your work: after station.build, station.map { look: the room } shows it as it really renders, and station.map { room } lists the issues a designer would fix (a piece on a desk\'s seat, a seat turned away from its table): read them and fix every one. If it is not right yet (crowded, bare, lopsided, a doorway or walkway blocked, pieces that clash; for the whole station: hallways that overlap, run side by side, end in nothing or wander, rooms piled together or stranded), fix it; a design is finished when it looks finished. TEST a line you built or set up: station.test_line sends one real job down it and reads each step back; fix what went wrong and test again. station.start_line sets what starts it (a schedule, a folder, a webhook). A good station: every room reached by a hallway or open to a neighbour, doorways and walkways clear, each room furnished for what it is for, lines with room to run, nothing piled up. '
           + 'SHORTCUTS, when StarNet should place things for you (quick, and right when the Commander just wants it done; refit the result by hand afterwards if you want it your way): ' + PLAN_HOW + ' '
-          + '1 LAYOUT, the way to a beautiful station: { "layout": { "pattern": "diamond" | "concourse", "rooms": [ { "name", "style", "size", "lines" } ] }, "replace": true? }. diamond (the usual one) = every room on an even grid all round the main room, each the bridge\'s size and a hallway apart, filled in diamond order (the four sides, then the corners and far sides, then the next ring out) so the station keeps its shape at any size, with a corridor loop round the bridge at its centre; big rooms (a conveyor hall, size giant) take the east and west wings; up to 40 rooms. To ADD rooms later, send a layout again with only the new rooms: they take the next free places of the same diamond, or go down the same concourse. concourse = a wide corridor from one side of the main room, rooms down both sides, a big room at the far end (up to 24; "side" picks the direction). '
+          + '1 LAYOUT, the way to a beautiful station: { "layout": { "pattern": a plan, "rooms": [ { "name", "style", "size", "lines" } ] }, "replace": true? }. diamond = every room on an even grid all round the main room, each the bridge\'s size and a hallway apart, filled in diamond order (the four sides, then the corners and far sides, then the next ring out) so the station keeps its shape at any size, with a corridor loop round the bridge at its centre; big rooms (a conveyor hall, size giant) take the east and west wings; up to 40 rooms. To ADD rooms later, send a layout again with only the new rooms: they take the next free places of the same diamond, or go down the same concourse; every other plan grows on in its own way, in its palette. concourse = a wide corridor from one side of the main room, rooms down both sides, a big room at the far end (up to 24; "side" picks the direction). '
           + 'Each room is furnished wall to wall in its style (floor, walls, feature wall, centrepiece, plants) and the corridors are planted and lit. Room styles: ' + roomText() + '. A room given lines is a conveyor hall (works); a works room without lines is kept clear for lines to come. '
           + 'replace: true lays the whole station out again around the main room: every other room is replaced, the main room, agents and conversations stay, and the old layout is backed up for RESTORE PREVIOUS. Use it when the Commander wants the station redone, or when there is no clear space round the main room. '
           + '2 ROOMS where the Commander says: { "rooms": [ { name, style | zones | lines, size, beside, side, hallway, align, type } or { into: an existing room, style | zones | lines } ], "hallways": [ { from, to } ] } (straight, or round one corner when the rooms stand diagonally apart). size: small 12×8, medium 18×11, large 24×14, giant 36×20, or { w, h }. beside: a room name ("bridge" or "main" = the main room); side: north, south, east, west; hallway: true (default), false (open plan) or 2-8 long. With no beside or side, a new room takes the station\'s next free place (on the diamond grid, or down its concourse), at its size; a conveyor hall is giant unless sized.'
@@ -574,7 +609,7 @@
         layout: { type: 'object', properties: { pattern: { type: 'string' }, around: { type: 'string' }, side: { type: 'string' }, rooms: { type: 'array', items: { type: 'object' } } } },
         replace: { type: 'boolean' }, rooms: { type: 'array', items: { type: 'object' } }, hallways: { type: 'array', items: { type: 'object' } },
         line: { type: 'string' }, shape: { type: 'array', items: {} }, purpose: { type: 'string' }, steps: { type: 'array', items: { type: 'object', properties: { step: { type: 'integer' }, role: { type: ['string', 'null'] }, agent: { type: ['string', 'null'] }, instructions: { type: ['string', 'null'] } } } }, dailyCap: {}, tries: { type: 'integer' },
-        kit: { type: 'string' }, preset: { type: 'string' }, zones: { type: 'array', items: { type: 'object' } }, restyle: { type: 'object' }, remove: {}, refurnish: { type: 'object' }, clear: {}, add: { type: 'object' }, seat: { type: 'object' }, move: { type: 'object' }, staff: { type: 'object' }, undo: { type: 'boolean' }, refit: { type: 'array', items: { type: 'object' } },
+        kit: { type: 'string' }, preset: { type: 'string' }, zones: { type: 'array', items: { type: 'object' } }, restyle: { type: 'object' }, retheme: { type: 'string' }, remove: {}, refurnish: { type: 'object' }, clear: {}, add: { type: 'object' }, seat: { type: 'object' }, move: { type: 'object' }, staff: { type: 'object' }, undo: { type: 'boolean' }, refit: { type: 'array', items: { type: 'object' } },
         where: { type: 'string' }, name: { type: 'string' }, size: {}, beside: { type: 'string' }, side: { type: 'string' }, hallway: {}, type: { type: 'string' }, floorStyle: { type: 'string' }, floorMat: { type: 'string' } } },
       run: async (args) => {
         const a = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
@@ -593,7 +628,7 @@
       }
     };
     const buildTool = {
-      name: 'station.build', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'station.build', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       // briefs persist and every later run of those Bays obeys them: a run that read untrusted content may not write them
       taintLocked: true,
       description: 'STATION BUILDER, step 3: build exactly what station.plan planned, by its planId, after the Commander approves. It lands as one step the Commander can take back with one UNDO in Build mode; '
@@ -625,7 +660,9 @@
         const fix = r.kind === 'refit' ? ' Fix that with one more refit plan and build it; if you cannot, tell the Commander exactly what is left, and stop.' : ' Tell the Commander exactly that, and stop: build nothing else for this unless they ask.';
         const look = r.handLaid ? 'You laid pieces by hand: look at the room once (station.map { look: the room }) and fix only what is wrong; then tell the Commander what was built in a sentence or two, and stop.'
           : 'Tell the Commander what was built in a sentence or two, and stop: there is nothing left to build or check for this.';
-        if (r.built) r.next = 'DONE: it is built' + (left.length ? '. Still to do before it runs: ' + left.join('; ').replace(/\.$/, '') + '.' + (staff || fix) : (lines.length ? ' and ready to run' : '') + '. ' + look);
+        // a rough design review keeps the finished word honest: one more look and one refit, not a report that it is gorgeous
+        const rough = r.design && r.design.grade === 'rough' && !left.length ? ' The design review calls this rough (' + r.design.score + '/100): look at it (station.map { look: true }), refit what is wrong once, then report honestly.' : '';
+        if (r.built) r.next = 'DONE: it is built' + (left.length ? '. Still to do before it runs: ' + left.join('; ').replace(/\.$/, '') + '.' + (staff || fix) : (lines.length ? ' and ready to run' : '') + '. ' + look + rough);
         const ready = lines.length && !left.length;
         return { content: JSON.stringify(r), summary: 'built ' + what + (lines.length || left.length ? (ready ? ' · ready to run' : ' · ' + left.length + ' to do') : '') };
       }
@@ -652,7 +689,7 @@
       }
     }
     const makePropTool = {
-      name: 'station.make_prop', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'station.make_prop', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       // it spends the Commander's StarNet credits: a run that read untrusted content may not
       taintLocked: true, timeoutMs: PROP_WAIT_MS + 60000,
       description: 'STATION BUILDER: make a NEW piece of furniture when no catalog piece is what the Commander wants (a hot-dog stand, a robot butler, a neon arcade sign), with the Commander\'s StarNet credits. StarNet\'s prop maker draws it in the station\'s own style; it joins the Commander\'s MADE BY YOU library and then places like any piece: station.plan { add: { room, pieces: ["its name"] } } or a refit { op: "place", t: "its id" }. '
@@ -690,21 +727,21 @@
 
     /* TEST A LINE (2026-10-01, Andrew: "and then also setting up the conveyor systems"): one real job down a line the lead
        built or set up, and what came of it, step by step. It is the very job the Workflow panel's SEND A JOB sends
-       (deps.runLineJob = the route's own core: the one-per-station lock, its refusals, the job record the OUTBOX opens),
+       (deps.sampleLineJob = the route's own core: the one-per-station lock, its refusals, the job record the OUTBOX opens),
        so it runs the line's agents and spends what they spend: it asks first. What the line delivered is the station's
        agents' output, which can carry what they read, so it comes back fenced as data. */
     const TEST_WAIT_MS = 20 * 60 * 1000;
-    const runLineJob = typeof deps.runLineJob === 'function' ? deps.runLineJob : null;
+    const sampleLineJob = typeof deps.sampleLineJob === 'function' ? deps.sampleLineJob : null;
     let fenceExternal = null; try { fenceExternal = require('../fence.js').fenceExternal; } catch (_) { fenceExternal = null; }
     const testLineTool = {
-      name: 'station.test_line', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'station.test_line', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       // it runs the line's agents on a job the lead wrote: a run that read untrusted content may not start one
       taintLocked: true, timeoutMs: TEST_WAIT_MS + 60000,
       description: 'STATION BUILDER: send one real test job down a workflow line and read what came of it: which steps ran and how each ended, what the line delivered, what it cost. It is the very job the Workflow panel\'s SEND A JOB sends (one at a time on the station), so it runs the line\'s agents, spends what they spend, and asks the Commander first. If its OUTBOX has SEND TO, the downstream line also runs the result at its own cost; the reported cost covers only the tested line. '
         + 'line is the line\'s name (or the id of any machine on it, from station.map { room }); room helps when two lines share a name; job is the work to send, written the way a real job would arrive. Use it after you build or set a line up: if a step failed, went the wrong way or handed on the wrong thing, fix the line with a refit (brief, hands, routes, loop, budget …) and test again. It waits for the job (up to 20 minutes). A step refused a permission (a page fetch, a file write) needs the Commander\'s grant: say which agent needs what and how they grant it, never change an agent\'s approval or permissions yourself, and never reach around the station\'s controls (a shell, a browser debug port, the page itself) to get a job through.',
       schema: { type: 'object', properties: { line: { type: 'string' }, job: { type: 'string' }, room: { type: 'string' } }, required: ['line', 'job'] },
       run: async (args, ctx) => {
-        if (!runLineJob) return refuse('Testing lines is not available on this station.');
+        if (!sampleLineJob) return refuse('Testing lines is not available on this station.');
         const a = args && typeof args === 'object' ? args : {};
         const job = String(a.job == null ? '' : a.job).replace(/\r/g, '').trim();
         if (!job) return refuse('job is the work to send down the line, in a sentence or two, the way a real job would arrive.');
@@ -714,17 +751,21 @@
         const L = ref.result || {};
         if (!L.crewed) return refuse('Nobody works the line ' + L.name + ' yet: give its steps agents (a refit { op: "agent" }, or { staff }) and test again.');
         let r;
-        try { r = await runLineJob({ line: L.lineId, text: job, name: L.name }, ctx && ctx.signal); }
+        try { r = await sampleLineJob({ line: L.lineId, text: job, name: L.name }, ctx && ctx.signal); }
         catch (e) { return refuse('The test job could not be sent: ' + String((e && e.message) || e).slice(0, 200)); }
         const o = (r && r.obj) || {};
         if (r && r.code === 409) return refuse(String(o.error || 'the line could not take a job right now'));
         const runs = Array.isArray(o.runs) ? o.runs.slice().reverse() : [];   // oldest first: the order the steps ran
         const stepOf = run => { const s = (L.steps || []).find(x => x.id === run.dockId); return s ? (s.role || 'a step') + (s.agent ? ' (' + s.agent + ')' : '') : (run.agentId || 'a step'); };
-        const status = o.ok ? 'delivered' : o.stopped ? 'stopped' : runs.length ? 'problem' : 'failed';
+        const outcome = o.outcome || (o.ok ? 'delivered' : o.stopped ? 'stopped' : runs.length ? 'stopped_short' : 'failed');
+        const status = RunOutcome && RunOutcome.lineStatus ? RunOutcome.lineStatus(outcome) : outcome;
         const said = Array.isArray(o.replies) ? o.replies.join('').trim() : '';
         const out = {
-          line: L.name, status, cost: '$' + (Number(o.totalUsd) || 0).toFixed(2),
-          steps: runs.map((x, i) => ({ step: i + 1, at: stepOf(x), ended: x.reason || 'unknown', usd: typeof x.usd === 'number' ? Math.round(x.usd * 1000) / 1000 : null })),
+          line: L.name, status, outcome, stop: o.stop || null, cost: '$' + (Number(o.totalUsd) || 0).toFixed(2),
+          // each step ENDED as its run's outcome says (endedOf): a cut or error-outranked step never reads 'done'; a failed step names its code
+          steps: runs.map((x, i) => Object.assign({ step: i + 1, at: stepOf(x), ended: endedOf(x) },
+            (x && x.failureCode && RunOutcome && !RunOutcome.ofRow(x).ok) ? { failureCode: RunOutcome.ofRow(x).failureCode } : {},
+            { usd: typeof x.usd === 'number' ? Math.round(x.usd * 1000) / 1000 : null })),
           // (GitHub #122) the route's own unapproved mark — a publisher after the loop leaves no LOOP note in what was said
           verdict: o.ok ? ((o.unapproved || /LOOP — exhausted/.test(said)) ? 'The job reached the OUTBOX, but its review loop ran out of passes without an approval: the reviewer never said VERDICT: approved. Read what it delivered below; tighten the step it reviews or the reviewer\'s brief, or allow more passes.' : 'The job reached the OUTBOX: read what it delivered below and judge whether the line did the job well.')
             : o.stopped ? (o.stoppedBy === 'fault' ? 'The station hit an internal fault and stopped the job.' : 'The Commander stopped the job.') : String(o.error || 'The job did not finish').replace(/[.\s]*$/, '.') + ' Look at which step ended badly, fix the line, and test again.',
@@ -768,7 +809,7 @@
     const startLine = typeof deps.startLine === 'function' ? deps.startLine : null;
     const START_KINDS = ['schedule', 'folder', 'webhook', 'off'];
     const startLineTool = {
-      name: 'station.start_line', capability: 'orchestrator', scope: 'write', requiresConsent: true,
+      name: 'station.start_line', capability: 'orchestrator', impact: 'none', scope: 'write', requiresConsent: true,
       // standing automation in the lead's words: a run that read untrusted content may not set one
       taintLocked: true, timeoutMs: 30000,
       description: 'STATION BUILDER: set what starts a workflow line, the way its Workflow panel does. { line, schedule: "every weekday at 9am" (or a cron expression), tz, job } runs the whole line on that schedule, from its first step; '

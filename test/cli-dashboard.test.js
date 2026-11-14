@@ -56,6 +56,63 @@ function crew() {
   m.setRoster({ agents: [{ agentId: 'astra', name: 'Astra', model: 'm/a', provider: 'openrouter' }, { agentId: 'agent', name: 'Nova', model: 'm/n' }, { agentId: 'cypher', name: 'Cypher', model: 'm/c' }] });
   return m;
 }
+// THE PAIR ITS RUNS REALLY USE (run-wire-resolver lane): GET /api/runtime/agent's rows carry each agent's resolved `wire`.
+// An unpinned agent's raw row has no model (it follows the station default) and may carry an older page's stale provider
+// stamp: the dashboard refused it ("has no model set"), sent the raw half, and `starnet ls` / `status` said "no model".
+{
+  const rt = { agents: [
+    { agentId: 'agent', name: 'Nova', model: 'gpt-5.5', provider: 'codex', reasoningEffort: 'high', wire: { provider: 'codex', model: 'gpt-5.5', source: 'agent', followsStation: false, reasoningEffort: 'high' } },
+    { agentId: 'scout', name: 'Scout', model: null, provider: 'openrouter', reasoningEffort: null, wire: { provider: 'codex', model: 'gpt-5.5', source: 'station', followsStation: true, reasoningEffort: 'high' } },
+    { agentId: 'old', name: 'Old', model: 'm/o', provider: 'openrouter' },   // an older station: no wire, the raw row is all there is
+    // an unpinned agent on a station whose Overseer has no model either: it runs the ENVIRONMENT default (not a follower)
+    { agentId: 'envy', name: 'Envy', model: null, provider: '', reasoningEffort: 'low', wire: { provider: 'openrouter', model: 'env/model', source: 'env', followsStation: false, reasoningEffort: 'low' } }
+  ] };
+  const m = makeStation();
+  m.setRoster(rt);
+  const scout = m.state.agents.get('scout');
+  A.eq([scout.model, scout.provider, scout.followsStation, scout.reasoningEffort], ['gpt-5.5', 'codex', true, 'high'],
+    'an unpinned agent holds the pair and effort its runs use (the station default), never the raw empty model + stale stamp');
+  A.eq([m.state.agents.get('old').model, m.state.agents.get('old').provider], ['m/o', 'openrouter'], 'an older station without `wire` keeps the raw row');
+  const ls = sc.lsRows(m, T0).find(r => r.agentId === 'scout');
+  A.eq([ls.model, ls.provider], ['gpt-5.5', 'codex'], '`starnet ls` lists the pair the agent runs');
+  const { runPairOf } = require('../bin/lib/station-model.js');
+  A.eq(runPairOf(rt.agents[1]), { model: 'gpt-5.5', provider: 'codex', followsStation: true, source: 'station', wire: rt.agents[1].wire }, 'runPairOf reads the resolved wire');
+  A.eq(runPairOf({ model: 'x', provider: 'p', wire: { model: '', provider: '' } }).model, 'x', '...and the raw row when the wire names no model');
+  const starnetJs = require('fs').readFileSync(require('path').join(__dirname, '..', 'bin', 'starnet.js'), 'utf8');
+  A.ok(/agents: Array\.isArray\(r\.agents\) \? r\.agents\.map\(a => \{ const p = runPairOf\(a\);/.test(starnetJs), '`starnet status` lists each agent by runPairOf too');
+  // /reasoning and /fast on a FOLLOWER: its model is the station default it runs, so saving an effort through
+  // /api/agent/model (which takes a model) would PIN that model on it — refused, with the two ways out. A pinned agent saves.
+  // (setEffort's refusal and its POST both happen before its first await, so they are read synchronously.)
+  const dash = require('fs').readFileSync(require('path').join(__dirname, '..', 'bin', 'lib', 'dashboard.js'), 'utf8');
+  const at = dash.indexOf('  async function setEffort(');
+  A.ok(at > 0, 'fixture: the dashboard declares setEffort');
+  const effortSrc = dash.slice(at, dash.indexOf('\n  }\n', at) + 4);
+  const dial = (agentId, cmd, want) => {
+    const posted = [], said = [];
+    const client = { request: (method, url, body) => { posted.push({ method, url, body }); return new Promise(() => {}); } };
+    const setEffort = new Function('model', 'ui', 'client', 'sayHere', 'unconfirmed', 'REASONING_LEVELS', effortSrc + '\nreturn setEffort;')(
+      m, { focus: agentId }, client, (c, lines) => said.push(lines.join(' ')), () => null, ['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+    setEffort(cmd, want);
+    return { posted, said: said.join(' | ') };
+  };
+  for (const [cmd, want] of [['/reasoning', 'low'], ['/fast', 'minimal']]) {
+    const f = dial('scout', cmd, want);
+    A.eq(f.posted.filter(p => p.url === '/api/agent/model').length, 0, cmd + ' on a follower sends no /api/agent/model (it would pin the station model on it)');
+    A.ok(/^SCOUT follows the station default \(codex · gpt-5\.5\), so its effort is its own class effort, else the station's\. Pin a model with \/model first, or set its effort in the app\.$/.test(f.said), '...and says why and both ways out: ' + f.said);
+  }
+  // (review round 4) the guard reads WHERE the pair comes from (runPairOf's source), not only "follows the station": an
+  // agent on the environment default has no pin of its own either, and saving an effort would pin env/model on it
+  A.eq(m.state.agents.get('envy').wireSource, 'env', 'the dashboard keeps where each pair comes from');
+  for (const [cmd, want] of [['/reasoning', 'high'], ['/fast', 'minimal']]) {
+    const f = dial('envy', cmd, want);
+    A.eq(f.posted.filter(p => p.url === '/api/agent/model').length, 0, cmd + ' on an agent running the environment default sends no /api/agent/model');
+    A.ok(/^ENVY runs the environment default \(openrouter · env\/model\), so its effort is its own class effort, else the station's\. Pin a model with \/model first, or set its effort in the app\.$/.test(f.said), '...and says why: ' + f.said);
+  }
+  const pinned = dial('agent', '/reasoning', 'low');
+  A.eq(pinned.posted.map(x => [x.url, x.body.model, x.body.effort]), [['/api/agent/model', 'gpt-5.5', 'low']], 'a pinned agent saves its effort with its own pin');
+  const older = dial('old', '/reasoning', 'low');
+  A.eq(older.posted.map(x => [x.url, x.body.model, x.body.effort]), [['/api/agent/model', 'm/o', 'low']], 'an older station (no wire, no source) saves on the raw row, its pin');
+}
 {
   const m = crew();
   A.eq(m.state.order, ['agent', 'astra', 'cypher'], 'the hero leads the crew, then the roster order');
@@ -99,7 +156,9 @@ function crew() {
 
   m.apply('agent.run.start', { runId: 'r2', agentId: 'cypher', trigger: 'directive' }, T0);
   m.apply('agent.run.end', { runId: 'r2', agentId: 'cypher', reason: 'budget', usd: 0 }, T0 + 10);
-  A.eq(m.rows(T0 + 20).find(r => r.id === 'cypher').status, { key: 'stopped', text: 'budget' }, 'a run that ended early says why, never "done"');
+  // review r8: by its OUTCOME — a spending limit is no stop (key 'stopped' is a stop's alone) and no failure: its own word in the warn tone
+  const capped = m.rows(T0 + 20).find(r => r.id === 'cypher').status;
+  A.ok(capped.key === 'unfinished' && capped.outcome === 'out_of_budget' && capped.text === 'spend cap' && capped.style === 'am', 'a run that ended early says why, never "done", and a spending limit is no stop (got ' + JSON.stringify(capped) + ')');
 }
 {
   // the snapshot: adopt a run the feed never started; end one it no longer lists as UNSEEN, never as done

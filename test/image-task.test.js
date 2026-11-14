@@ -77,6 +77,26 @@ A.eq(borrowedOpenAI.protocol, 'openai-images', 'the station OpenAI route selects
 const planRoute = { ok: true, provider: 'codex', protocol: 'codex-responses', key: '', baseUrl: '', keySource: 'plan' };
 A.eq(ImageTask.resolveRoute({ providerId: 'codex', codexSignedIn: true }), planRoute, 'a Codex run renders on its own ChatGPT plan');
 A.eq(ImageTask.resolveRoute({ ...managedInput, providerId: 'codex', codexSignedIn: true }).provider, 'codex', 'a Codex run uses the plan before spending linked credits');
+// decision 1: the station's OpenRouter credential is placed by its RANK (credential-store.js credentialFor). 'primary' (the desktop
+// keychain's key, the branded STARNET_/SKYNET_OPENROUTER_KEY) comes before the station's OpenAI key, as the alias always did; 'gap'
+// (a key a page saved, a bare OPENROUTER_API_KEY) comes after every other route, so a route that already rendered keeps billing
+// where it did (#146). Either way it goes to the endpoint saved with it.
+{
+  const station = { providerId: 'custom', runKey: 'c', stationOpenRouterKey: 'or', stationOpenRouterBaseUrl: 'http://proxy.test/v1/', stationOpenAIKey: 'oa', stationOpenAIBaseUrl: 'https://oa.test/v1' };
+  const primary = ImageTask.resolveRoute({ ...station, stationOpenRouterRank: 'primary' });
+  A.eq([primary.provider, primary.key, primary.baseUrl, primary.keySource], ['openrouter', 'or', 'http://proxy.test/v1', 'station'], 'a primary OpenRouter credential comes before the station OpenAI key, at the endpoint saved with it');
+  A.eq(ImageTask.resolveRoute(station).provider, 'openrouter', 'an unranked key is primary (the rank says when it is not)');
+  const gap = { ...station, stationOpenRouterRank: 'gap' };
+  A.eq(ImageTask.resolveRoute(gap).provider, 'openai', 'a gap credential never displaces the station OpenAI key');
+  const noOpenAI = { ...gap, stationOpenAIKey: '' };
+  A.eq(ImageTask.resolveRoute({ ...noOpenAI, codexSignedIn: true }).provider, 'codex', 'a gap credential never displaces the ChatGPT sign-in either');
+  const filled = ImageTask.resolveRoute(noOpenAI);
+  A.eq([filled.ok, filled.provider, filled.key, filled.baseUrl], [true, 'openrouter', 'or', 'http://proxy.test/v1'], 'a gap credential fills the gap, at the endpoint saved with it');
+  A.eq(ImageTask.resolveRoute({ ...noOpenAI, providerId: 'starnet' }).ok, false, 'a gap credential never reaches a StarNet-credits run');
+  A.eq(ImageTask.resolveRoute({ ...noOpenAI, stationOpenRouterRank: 'primary', providerId: 'starnet' }).ok, false, '...and neither does a primary one');
+  A.eq(ImageTask.resolveRoute({ ...noOpenAI, managedKey: 'dev', managedBaseUrl: 'https://cloud.test/v1' }).provider, 'starnet', 'the linked account outranks a gap credential');
+  A.eq(ImageTask.resolveRoute({ ...noOpenAI, providerId: 'openrouter', runKey: 'run', providerBaseUrl: 'http://run.test/v1' }).key, 'run', 'a run on OpenRouter uses its own key, never the station credential');
+}
 A.eq(ImageTask.resolveRoute({ providerId: 'anthropic', runKey: 'k', stationOpenRouterKey: 'or', codexSignedIn: true }).provider, 'openrouter', 'a connected OpenRouter key still wins for a non-Codex run');
 A.eq(ImageTask.resolveRoute({ providerId: 'anthropic', runKey: 'k', codexSignedIn: true }), planRoute, 'a keyless non-Codex run falls back to the ChatGPT sign-in');
 A.eq(ImageTask.resolveRoute({ providerId: 'starnet', codexSignedIn: true }).ok, false, 'a StarNet-credits run never moves onto the ChatGPT account');
@@ -122,7 +142,8 @@ A.ok(hostListAt > 0 && hostListAt < runHost.indexOf('const imageTools = makeImag
 A.ok(/const codexHostModels = codexMemoLiveModelIds\(async \(\) => selectProvider\(\{ provider: 'codex', fetch: globalThis\.fetch, token: await ensureCodexAccessToken\(\), renewToken: forceRefreshCodexAccessToken, baseUrl: studioRoute\.baseUrl \|\| '' \}\)\.listModels\(\)\);/.test(runHost), 'the image-host list is the image sign-in\'s LIVE catalog through the per-run memo (offline fallback excluded there, unit-proven in provider.codex.test.js)');
 A.ok(/codexHostModels: studioRoute\.protocol === 'codex-responses' \? codexHostModels : undefined, codexRunModel: \(\) => \(usingCodex \? model : ''\)/.test(runHost), 'image.js gets the host list on the plan route and the run model only for a Codex run');
 A.ok(/const agentModelBlocker = ImageTask\.agentModelBlocker[\s\S]*const imageRoomId/.test(runHost), 'image-only models are rejected before STUDIO admission or a provider request');
-A.ok(/provider: activeProviderId/.test(runHost) && /provider = provider \|\| \(recent && recent\.provider\)/.test(indexSource), 'run history and diagnostics keep the actual provider beside the actual model');
+// (run-wire-resolver lane) diagnostics take the pair from ONE source: the newest run's provider AND model, else the Overseer's resolved pair
+A.ok(/provider: activeProviderId/.test(runHost) && /\(recent && \(recent\.provider \|\| recent\.model\)\) \? \{ provider: recent\.provider, model: recent\.model \} : runWireFor\('agent'\)/.test(indexSource), 'run history and diagnostics keep the actual provider beside the actual model');
 A.ok(/\(taskBrief \|\| imageTask\).*agent\.run\.end/.test(runHost), 'a provisional image-task done event is buffered until artifact settlement');
 A.ok(/ImageTask\.enforceCompletion\(result, execution\.artifactList\(\)/.test(runHost), 'the real artifact ledger settles image completion');
 A.ok(/reason: taskQuestionAsked \? 'clarifying' : \(\(result && result\.reason\)/.test(runHost), 'the emitted terminal uses the artifact-corrected result reason');

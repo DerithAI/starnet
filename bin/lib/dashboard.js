@@ -22,6 +22,7 @@ const os = require('node:os');
 const http = require('node:http');
 const readline = require('node:readline');
 const core = require('./cli-core.js');
+const RunOutcome = require('../../frontend/app/runoutcome.js');   // TYPED OUTCOMES: a goal step is judged only when it SUCCEEDED
 const { makeStation, costText, ONCE_ONLY_TOOLS } = require('./station-model.js');
 const tui = require('./tui.js');
 const sixel = require('./sixel.js');
@@ -31,6 +32,18 @@ const folderLib = require('./folder.js');
 const mouse = require('./mouse.js');
 const theme = require('./theme.js');
 const connect = require('./connect.js');
+
+/* why a /goal step pauses the loop, in the outcome's own words (review r8; the page's goalStall in chat.js says the same): a question is no
+   stop, a stop is no failure, a failure names its code */
+function goalStallOf(oc) {
+  if (oc.outcome === 'asked') return 'it asked you a question — answer it first';
+  if (oc.outcome === 'stopped') return 'the step was stopped';
+  if (oc.outcome === 'cut_short') return 'the reply was cut short by the output limit';
+  if (oc.outcome === 'failed') return 'the step ' + RunOutcome.line(oc);
+  return 'the step did not finish: ' + RunOutcome.line(oc);
+}
+// a line job the Commander STOPPED (/api/routing/sample's stopped:true) is no failed job: said as the stop (review r8; `starnet flow run` too)
+function flowStopped(r) { return !!(r && r.json && r.json.stopped === true); }
 
 function runDashboard(station, opts) {
   const o = opts || {};
@@ -614,6 +627,7 @@ function runDashboard(station, opts) {
     const r = await client.request('POST', '/api/routing/sample', { text, line: line.lineId }, { timeoutMs: 60 * 60 * 1000 });
     mine.delete(id);
     if (r.ok && r.status === 200 && r.json && r.json.ok) flash(name + ' delivered' + (r.json.totalUsd ? ' · $' + Number(r.json.totalUsd).toFixed(3) : ''), 'ok', 8000);
+    else if (flowStopped(r)) flash('■ ' + name + ' was stopped: ' + String(r.json.error || 'you stopped this job before it reached the OUTBOX').replace(/^stopped\s*[—-]\s*/i, ''), 'dim', 8000);
     else flash(name + ': ' + ((r.json && (r.json.error || r.json.reason)) || r.error || 'HTTP ' + r.status), 'bad', 8000);
     loadLines().then(paint, () => {});
   }
@@ -1170,6 +1184,14 @@ function runDashboard(station, opts) {
     const a = model.state.agents.get(ui.focus);
     if (!a) return sayHere(cmd, ['No agent shown.'], false);
     if (!a.model) return sayHere(cmd, [a.name + ' has no model set — /model picks one first.'], false);
+    // a model that is not the agent's OWN pin (station-model.js wireSource: the station default it follows, the environment
+    // default, …) is not one to save an effort with: /api/agent/model would pin that model on it. An older station sends no
+    // source: its raw row's model is the pin.
+    const ownPin = a.wireSource ? a.wireSource === 'agent' : !a.followsStation;
+    if (!ownPin) {
+      const from = a.followsStation || a.wireSource === 'station' ? 'follows the station default' : a.wireSource === 'env' ? 'runs the environment default' : 'runs a model that is not its own pin';
+      return sayHere(cmd, [a.name + ' ' + from + ' (' + (a.provider || 'the station\'s provider') + ' · ' + a.model + '), so its effort is its own class effort, else the station\'s. Pin a model with /model first, or set its effort in the app.'], false);
+    }
     const cur = a.reasoningEffort || 'the provider\'s default';
     if (want === a.reasoningEffort) return sayHere(cmd, ['Reasoning effort is already ' + want + '.']);
     const r = await client.request('POST', '/api/agent/model', { agentId: a.id, model: a.model, provider: a.provider, effort: want }, { timeoutMs: 15000 });
@@ -1401,10 +1423,14 @@ function runDashboard(station, opts) {
       if (wasStep) {
         // only a step that ended cleanly is judged (the app's rule): a stopped, failed, budget-cut or step-limited one
         // pauses and says why — never judged on its partial text, never followed by another paid step
-        const reason = String(p.reason || '');
-        if (reason && reason !== 'done') {
-          GoalLoop.pause(g.s, 'the step stopped (' + reason + ')');
-          return sayGoal(g.agentId, '⏸ session goal paused: the step stopped (' + reason + ') — /goal resume to continue.', false);
+        // (typed-outcomes) a provider-cut 'done' is a stopped step too: only a SUCCEEDED step is judged
+        // review r8: the pause says how the step ENDED, each outcome in its own words (the page's goalStall twin, chat.js): a question is no
+        // stop, a failure names its code — every unsuccessful step read "the step stopped (<raw reason>)" ("the step stopped (clarifying)")
+        const oc = RunOutcome.ofEnd(p, null);
+        if (!oc.ok) {
+          const stall = goalStallOf(oc);
+          GoalLoop.pause(g.s, stall);
+          return sayGoal(g.agentId, '⏸ session goal paused: ' + stall + ' — /goal resume to continue.', false);
         }
         const reply = model.logOf(g.agentId).filter(e => e.k === 'agent' && e.runId === String(p.runId)).map(e => e.text).join('\n');
         setTimeout(() => { judgeGoalTurn(sid, reply).catch(() => {}); }, 0);
@@ -1851,7 +1877,8 @@ function runDashboard(station, opts) {
     // the FLOOR's handoffs come from the runs the station reports (each delegated run names the lead run that sent it): read on
     // every paint, whatever page is shown, so its LOG is whole when you open it
     const nameOf = id => { const a = model.state.agents.get(id); return a ? a.name : String(id).toUpperCase(); };
-    floor.observe(model.state.runs, nameOf, id => { const a = model.state.agents.get(id); return a && a.last ? a.last.reason : 'done'; }, t);
+    // review r8: each ended run flies back by its OWN end (model.endOf), never its agent's latest; no end seen: not "done"
+    floor.observe(model.state.runs, nameOf, runId => model.endOf(runId), t);
     const floorLead = floor.leadOf(model.state.runs, ui.focus || 'agent');
     ui.floorView = { images: !!ui.images, ready: floorReady, lead: floorLead, kids: [...new Set([...floor._known.values()].filter(k => k.lead === floorLead).map(k => k.agentId))], log: floor.log() };
     const screen = tui.render(model, ui, size, t);
@@ -1884,38 +1911,57 @@ function runDashboard(station, opts) {
       const key = pic ? pic.key + '@' + av.x + ',' + av.y : '';
       if (pic && key !== avatarShown) { s += '\x1b[0m\x1b[' + (av.y + 1) + ';' + (av.x + 1) + 'H' + pic.sixel; avatarShown = key; }
     } else avatarShown = '';
-    // the FLOOR: its picture (drawn again when what it shows changes, at most four times a second: a frame is a whole room),
-    // then the name plates over it — text cells, so a plate is never part of the picture
+    // the FLOOR: its picture, every paint — the whole room the first time, after that only the patches of cells that changed
+    // (bin/lib/floor.js keeps what it drew) — then the name plates over it: text cells, so a plate is never part of the picture
     if (screen.floor) {
       const box = screen.floor;
-      const agents = model.rows(t).map(r => ({ id: r.id, name: r.name, set: feed.skinOf(r.id) || '', key: r.status.key, now: r.now }));
-      if (!floorPic || t - floorAt >= 250 || ui.still) {
-        floorAt = t;
+      const at = box.x + ',' + box.y + ',' + box.cols + 'x' + box.rows;
+      if (at !== floorShown) { floor.repaint(); floorShown = at; floorPlates = []; floorPlatesKey = ''; floorNext = 0; }   // moved or resized: whole again
+      // the terminal takes its time over pictures (Windows makes the write wait for it): after a slow one the floor rests as
+      // long again, so the dashboard spends no more than half its time on it and keys never queue behind it
+      if (floorPic && Date.now() < floorNext) { for (const p of floorPlates) if (p.id) lastHits.push({ x0: p.x, x1: p.x + p.w, y: p.y, act: { t: 'agent', id: p.id } }); }
+      else {
+        const agents = model.rows(t).map(r => ({ id: r.id, name: r.name, set: feed.skinOf(r.id) || '', key: r.status.key, text: r.status.text, now: r.now }));
         floorPic = floor.frame({ lead: floorLead, agents }, t, ui.still, { cellW: term.cellW, cellH: term.cellH, cols: box.cols, rows: box.rows });
         if (!floorPic) loadFloorAssets(agents.map(a => a.set).filter(Boolean));
-      }
-      const was = floorReady;
-      floorReady = !!floorPic;
-      if (floorReady !== was) { prevRows = []; schedulePaint(); }   // the region changes hands (text ↔ picture): repaint it whole
-      if (floorPic && fv) {
-        const plates = floorPic.plates.map(p => {
-          const segs = [[' ', 'fg plate']].concat(p.segs.map(([tx, st]) => [tx, st + ' plate'])).concat([[' ', 'fg plate']]);
-          const w = segs.reduce((n, q) => n + tui.width(q[0]), 0);
-          const col = Math.max(0, Math.min(box.cols - w, p.center ? p.col - Math.floor(w / 2) : p.col));
-          return { x: box.x + col, y: box.y + p.row, w, segs, id: p.id };
-        });
-        const key = floorPic.key + '|' + plates.map(p => p.x + ',' + p.y + tui.toPlain(p.segs)).join('|') + '@' + box.x + ',' + box.y;
-        if (key !== floorShown) {
-          s += '\x1b[0m\x1b[' + (box.y + 1) + ';' + (box.x + 1) + 'H' + floorPic.sixel;
-          for (const p of plates) s += '\x1b[' + (p.y + 1) + ';' + (p.x + 1) + 'H' + tui.toAnsi(p.segs, level) + '\x1b[0m';
-          floorShown = key;
+        const was = floorReady;
+        floorReady = !!floorPic;
+        if (floorReady !== was) { prevRows = []; schedulePaint(); }   // the region changes hands (text ↔ picture): repaint it whole
+        if (floorPic && !fv) floor.repaint();   // drawn, but not put up this paint (the region was still text): whole, next paint
+        if (floorPic && fv) {
+          const plates = floorPic.plates.map(p => {
+            const segs = [[' ', 'fg plate']].concat(p.segs.map(([tx, st]) => [tx, st + ' plate'])).concat([[' ', 'fg plate']]);
+            const w = segs.reduce((n, q) => n + tui.width(q[0]), 0);
+            const col = Math.max(0, Math.min(box.cols - w, p.center ? p.col - Math.floor(w / 2) : p.col));
+            return { x: box.x + col, y: box.y + p.row, w, segs, id: p.id };
+          });
+          const pos = (row, col) => '\x1b[0m\x1b[' + (box.y + row + 1) + ';' + (box.x + col + 1) + 'H';
+          let draw = '';
+          if (floorPic.full) { if (floorPic.key !== floorFullKey) draw = pos(0, 0) + floorPic.sixel; floorFullKey = floorPic.key; }   // a still screen asks for whole frames: the same one goes once
+          else {
+            floorFullKey = '';
+            for (const p of floorPic.patches) draw += pos(p.row, p.col) + p.sixel;
+            // where a plate stood and stands no more, the picture comes back
+            const standing = new Set(plates.map(p => p.x + ',' + p.y + ',' + p.w));
+            const gone = floorPlates.filter(q => !standing.has(q.x + ',' + q.y + ',' + q.w)).map(q => ({ col: q.x - box.x, row: q.y - box.y, cols: q.w, rows: 1 }));
+            for (const p of floor.cells(gone)) draw += pos(p.row, p.col) + p.sixel;
+          }
+          const pk = plates.map(p => p.x + ',' + p.y + tui.toPlain(p.segs)).join('|');
+          if (draw || pk !== floorPlatesKey) {   // a patch may lie under a plate: the plates go back over the picture
+            s += draw;
+            floorDrew = !!draw;
+            for (const p of plates) s += '\x1b[' + (p.y + 1) + ';' + (p.x + 1) + 'H' + tui.toAnsi(p.segs, level) + '\x1b[0m';
+            floorPlatesKey = pk; floorPlates = plates;
+          }
+          for (const p of plates) if (p.id) lastHits.push({ x0: p.x, x1: p.x + p.w, y: p.y, act: { t: 'agent', id: p.id } });   // a plate opens its agent's chat
         }
-        for (const p of plates) if (p.id) lastHits.push({ x0: p.x, x1: p.x + p.w, y: p.y, act: { t: 'agent', id: p.id } });   // a plate opens its agent's chat
       }
-    } else { floorShown = ''; floorPic = null; floorReady = false; }
+    } else { floorShown = ''; floorPic = null; floorReady = false; floor.repaint(); }
     if (rows.length < prevRows.length) s += '\x1b[' + (rows.length + 1) + ';1H\x1b[J';
     prevRows = rows;
+    const w0 = Date.now();
     if (s) try { out.write(s); } catch (_) {}
+    if (floorDrew) { const took = Date.now() - w0; floorNext = took > 15 ? Date.now() + Math.min(1000, took) : 0; floorDrew = false; }
   }
   // the mouse, wherever the terminal reports it (STARNET_MOUSE=0 keeps the terminal's own selection; shift+drag selects
   // text while it is on, in most terminals)
@@ -1928,12 +1974,14 @@ function runDashboard(station, opts) {
     inp.resume();
     out.on('resize', onResize);
   }
-  function redrawAll() { prevRows = []; imageShown = false; avatarShown = ''; floorShown = ''; floorPic = null; buildImage(); try { out.write('\x1b[2J'); } catch (_) {} paint(); }
+  function redrawAll() { prevRows = []; imageShown = false; avatarShown = ''; floorShown = ''; floorPic = null; floorFullKey = ''; floor.repaint(); buildImage(); try { out.write('\x1b[2J'); } catch (_) {} paint(); }
   function onResize() { redrawAll(); }
 
   // ---- the real logo, as an image -----------------------------------------------------------------------------------
   let term = {}, image = null, imageShown = false, avatarShown = '';
-  let floorPic = null, floorAt = 0, floorShown = '', floorReady = false;
+  // the FLOOR on screen: where its picture is (floorShown), the last whole frame put up, and the plates over it
+  let floorPic = null, floorShown = '', floorReady = false, floorFullKey = '', floorPlates = [], floorPlatesKey = '';
+  let floorDrew = false, floorNext = 0;   // this paint put picture up; when the floor may draw again (after a slow write)
   // ask the terminal (before the screen opens) whether it draws Sixel and how big a cell is. Replies arrive in order, so
   // DA1, which every terminal answers, goes last and closes the probe.
   function probeTerminal(ms) {

@@ -97,7 +97,7 @@ const mkRow = () => { const cls = new Set(); return { d: { classList: { add: c =
   A.ok(send.length > 1000, 'send() sliced');
   A.ok(/if \(goalContinuation\) goalStepLine\(goalStepOf\(text\) \|\| \(\(goalOf\(ws\) \|\| \{\}\)\.goal\) \|\| ''\); else addUser\(text, attsIn, uts\);/.test(send),
     'a live continuation renders the goal step line instead of a Commander row');
-  A.ok(/ws\.history\.push\(attsIn\.length \? \{ role: 'user', content: text, attachments: attsIn, ts: uts \} : \{ role: 'user', content: text, ts: uts \}\)/.test(send),
+  A.ok(/ws\.history\.push\(TurnMerge\.pendingRow\(attsIn\.length \? \{ role: 'user', content: text, attachments: attsIn, ts: uts \} : \{ role: 'user', content: text, ts: uts \}, turnRng\)\)/.test(send),
     'the continuation still enters history as the same user-role turn (nothing new on the wire)');
   A.ok(/send\(prompt, \{ goalContinuation: true \}\)/.test(A.fnBody(chat, 'function kickGoal(')), 'kickGoal still sends GoalLoop.continuationPrompt as the turn');
   // the session's name: a goal step titles it from its GOAL (the rail row + the P26 COMMS title), never the marker prompt
@@ -129,9 +129,9 @@ const mkRow = () => { const cls = new Set(); return { d: { classList: { add: c =
   const cards = [];
   const goalStepOf = new Function('GoalLoop', stepOfSrc + '\nreturn goalStepOf;')(GoalLoop);
   const s = GoalLoop.create('ship the landing page', { now: 1 });
-  const history = new Function('activeWs', 'localLine', 'systemCard', 'goalStepOf', src + '\nreturn historyCommand;')(
+  const history = new Function('activeWs', 'localLine', 'systemCard', 'goalStepOf', 'afterHydration', src + '\nreturn historyCommand;')(
     { history: [{ role: 'user', content: 'hi' }, { role: 'user', content: GoalLoop.continuationPrompt(s) }, { role: 'assistant', content: 'on it' }] },
-    () => {}, (title, lines) => cards.push(lines), goalStepOf);
+    () => {}, (title, lines) => cards.push(lines), goalStepOf, () => false);
   history('');
   A.eq(cards[0], ['You: hi', 'Goal step: ship the landing page', 'Agent: on it'], '/history lists a goal step as the station\'s line');
 }
@@ -145,7 +145,7 @@ const has = (src, needle) => src.indexOf(needle) >= 0;
 const card = rule(SYS + ' {');
 A.ok(has(card, 'border: 1px solid var(--sys-edge); border-width: 0 1px;') && has(card, 'background: var(--sys-face)') && has(card, 'padding: 0 16px 10px;'), 'a run of station lines is ONE card: soft side edges, one face, 16px text edge');
 A.ok(has(rule(SYS + ':not(.cmsg.system + .cmsg.system) {'), 'border-top-width: 1px; border-top-left-radius: 10px; border-top-right-radius: 10px;'), "the run's first line carries the card's top edge (top radii only, so a one-line run keeps its bottom corners)");
-A.ok(has(rule(SYS + ':not(:has(+ .cmsg.system)):not(:has(+ .choice-row)) {'), 'border-bottom-width: 1px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;'), "the run's last line carries the bottom edge");
+A.ok(has(rule(SYS + ':not(.sys-more) {'), 'border-bottom-width: 1px; border-bottom-left-radius: 10px; border-bottom-right-radius: 10px;'), "the run's last line carries the bottom edge");
 A.ok(has(rule(SYS + ' + .cmsg.system {'), 'margin-top: -6px'), "the lines of a run sit flush (the log's 6px flex gap taken back), so the card is one surface");
 A.ok(has(rule(SYS + ' + .cmsg.system > .who {'), 'display: none'), 'the SYSTEM tag heads the card once');
 const parts = rule(SYS + ' > :is(.body, .syscard-head, .syscard-body, .sys-doors) {');

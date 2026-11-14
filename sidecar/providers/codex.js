@@ -58,6 +58,37 @@
 
   const RETRY_DELAYS = [400, 1200];   // up to 2 pre-stream retries (no jitter -> determinism)
 
+  /* THE PROVIDER'S OWN FACTS STAY ON THE FAILURE (#158). "Your ChatGPT plan allowance is used up" was reported while the
+     account's page showed 96% and 81% left, and nothing kept could say why: the sentence keeps only error.message, the
+     code rides in a body the page never sees, and the usage headers of the refusing answer were read for the meter and
+     dropped. A refusal now carries, in the message the diagnostics ring stores: its code, type, plan, stated reset, and
+     every x-codex usage figure on that same answer (a per-model meter included, whatever it is named). Allowlisted names
+     and slug/number values only: never free text, never the credit balance. friendlyerror.js reads this block.
+     THE BLOCK IS CAPPED, AND THE WORST METER SURVIVES IT: the page says "the meters show room" from what is here, so
+     when there are too many headers the used-percent figures go in first, fullest first, and the rest fill what is left.
+     They are written in the order they arrived. */
+  const FACT_SLUG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/;
+  const USAGE_HEADER = /^x-codex-([a-z0-9-]{1,60}-(?:used-percent|window-minutes|reset-after-seconds)|active-limit|limit-name)$/;
+  const PROVIDER_FACTS_MAX = 16;
+  function providerFacts(error, headers) {
+    const e = error && typeof error === 'object' ? error : {};
+    const facts = [];
+    for (const [name, value] of [['code', e.code], ['type', e.type], ['plan', e.plan_type], ['resets_in_seconds', e.resets_in_seconds]]) {
+      if ((typeof value === 'string' || typeof value === 'number') && FACT_SLUG.test(String(value)) && String(value) !== 'error') facts.push(name + '=' + value);
+    }
+    if (headers && typeof headers.forEach === 'function') {
+      const usage = [];
+      headers.forEach((value, key) => {
+        const m = USAGE_HEADER.exec(String(key).toLowerCase());
+        if (m && FACT_SLUG.test(String(value))) usage.push({ at: usage.length, fact: m[1] + '=' + value, used: /-used-percent$/.test(m[1]) ? Number(value) : null });
+      });
+      const rank = u => (u.used == null ? -1 : (isFinite(u.used) ? u.used : Infinity));   // a meter that cannot be read cannot show room
+      const kept = usage.slice().sort((a, b) => rank(b) - rank(a) || a.at - b.at).slice(0, Math.max(0, PROVIDER_FACTS_MAX - facts.length));
+      for (const u of kept.sort((a, b) => a.at - b.at)) facts.push(u.fact);
+    }
+    return facts.length ? ' [provider: ' + facts.join('; ') + ']' : '';
+  }
+
   // ---- request building: chat messages -> Responses input items --------------------------------------
 
   // Multimodal-safe text part. Responses rejects input_text inside an assistant message and output_text
@@ -186,8 +217,10 @@
   }
   function promptCacheKey(req, body, account) {
     const explicit = req && typeof req.promptCacheKey === 'string' ? req.promptCacheKey.trim() : '';
-    const prefix = (req && typeof req.cacheSystemPrefix === 'string' && req.cacheSystemPrefix && body.instructions.indexOf(req.cacheSystemPrefix) === 0)
-      ? req.cacheSystemPrefix : body.instructions;
+    // trimmed like body.instructions (extractInstructions): a prefix opening on whitespace never matched, and the route fell back to the
+    // whole prompt, learned tail included
+    const stable = req && typeof req.cacheSystemPrefix === 'string' ? req.cacheSystemPrefix.trim() : '';
+    const prefix = (stable && body.instructions.indexOf(stable) === 0) ? stable : body.instructions;
     const seed = explicit ? 'key\n' + (account || '') + '\n' + explicit
       : 'prefix\n' + (account || '') + '\n' + body.model + '\n' + prefix;
     const h = hash128(seed);
@@ -265,6 +298,16 @@
       let nextToolIndex = 0;
       let sawToolCall = false;
       let doneEmitted = false;         // exactly one terminal event per stream (see STREAM-END TRUTH below)
+      /* WHAT THE SILENT STREAM IS DOING (wait note). Reasoning and tool arguments show the Commander nothing, so the
+         wait line read "waiting … (stream open)" whether the model was reasoning or the stream had gone quiet. Each
+         change of activity is reported once as a { type:'waiting' } note (the loop's adapter-facts channel) — the
+         activity only, never the reasoning summary's text. */
+      let activity = '';
+      function* noteActivity(next) {
+        if (next === activity) return;
+        activity = next;
+        yield { type: 'waiting', phase: 'streaming', note: next };
+      }
 
       // parse ONE raw SSE line -> a control signal or a JSON event payload. Responses SSE puts the event
       // name on both an `event:` line AND inside `data.type`; we switch on `data.type`.
@@ -277,12 +320,15 @@
         try { return { json: JSON.parse(data) }; } catch (e) { return null; }
       }
 
+      let generationId = '';
+      function withGeneration(usage) { return generationId ? Object.assign({}, usage, { generation_id: generationId }) : usage; }
       function* emitFrom(ev) {
+        if (!generationId) { generationId = provider.generationId(ev && ev.response && ev.response.id); if (generationId) yield { type: 'generation', id: generationId }; }
         const type = ev && ev.type;
         if (!type) return;
         switch (type) {
           case 'response.output_text.delta':
-            if (typeof ev.delta === 'string' && ev.delta) yield { type: 'text', delta: ev.delta };
+            if (typeof ev.delta === 'string' && ev.delta) { yield* noteActivity(''); yield { type: 'text', delta: ev.delta }; }
             return;
           case 'response.output_item.added': {
             const item = ev.item || {};
@@ -294,8 +340,10 @@
               toolIndexOf.set(oi, idx);
               argsLen.set(oi, 0);
               yield { type: 'tool_start', index: idx, id: item.call_id || item.id || ('call_' + idx), name: item.name || '' };
+              yield* noteActivity('writing ' + (item.name || 'tool') + ' arguments');
               if (typeof item.arguments === 'string' && item.arguments) { yield { type: 'tool_args', index: idx, chunk: item.arguments }; argsLen.set(oi, item.arguments.length); }
             }
+            else if (item.type === 'reasoning') yield* noteActivity('reasoning');
             return;
           }
           case 'response.function_call_arguments.delta': {
@@ -324,14 +372,14 @@
           }
           case 'response.completed': {
             const r = ev.response || {};
-            if (r.usage) yield { type: 'usage', usage: normalizeUsage(r.usage) };
+            if (r.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(r.usage)) };
             doneEmitted = true;
             yield { type: 'done', finishReason: finishFor(r), truncated: false };
             return;
           }
           case 'response.incomplete': {
             const r = ev.response || {};
-            if (r.usage) yield { type: 'usage', usage: normalizeUsage(r.usage) };
+            if (r.usage) yield { type: 'usage', usage: withGeneration(normalizeUsage(r.usage)) };
             const reason = (r.incomplete_details && r.incomplete_details.reason) || '';
             doneEmitted = true;
             // an explicit `response.incomplete` is the SERVER stating it stopped early — a known, reported stop
@@ -341,15 +389,17 @@
           }
           case 'response.failed': {
             const err = (ev.response && ev.response.error) || ev.error || {};
-            const failed = new Error('codex stream failed: ' + (err.message || err.code || 'unknown'));
+            const failed = new Error('codex stream failed: ' + (err.message || err.code || 'unknown') + providerFacts(err));
             failed.body = { error: err };   // its code (e.g. usage_limit_reached) is what errorClass decides on
             failed.ownMessage = true;
             throw failed;
           }
           case 'error':
-            throw new Error('codex stream error: ' + ((ev.error && ev.error.message) || ev.message || 'unknown'));
+            throw new Error('codex stream error: ' + ((ev.error && ev.error.message) || ev.message || 'unknown') + providerFacts(ev.error || ev));
           default:
-            return;   // reasoning summaries, content_part.*, created/in_progress — ignored for the harness stream
+            // reasoning summary / reasoning text events: the activity is reported, the text is not
+            if (/^response\.reasoning/.test(type)) yield* noteActivity('reasoning');
+            return;   // content_part.*, created/in_progress — ignored for the harness stream
         }
       }
 
@@ -448,7 +498,7 @@
         const errBody = eb.parsed ? eb.data : null;
         let detail = eb.parsed ? ((errBody && errBody.error && (errBody.error.message || errBody.error.code)) || JSON.stringify(errBody)) : (res.statusText || '');
         if (eb.stalled) detail += ' (error body did not finish)';
-        const err = new Error('codex http ' + res.status + ' — ' + detail);
+        const err = new Error('codex http ' + res.status + ' — ' + detail + providerFacts(errBody && (errBody.error && typeof errBody.error === 'object' ? errBody.error : errBody), res.headers));
         err.status = res.status;
         err.headers = res.headers;
         /* KEEP THE PROVIDER'S ERROR BODY. The message above keeps only error.message, but the classifier's decisive
@@ -551,7 +601,12 @@
     // Which reasoning levels a codex model exposes — the static entry's list, or the four-level default.
     function reasoningEfforts(id) { const m = findModel(id); return (m && Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length) ? m.reasoningEfforts.slice() : CODEX_EFFORT_LIST.slice(); }
 
-    return { stream, listModels, contextLimit, priceOf, supportsTools, reasoningEfforts };
+    function verifyCredential(o) {
+      return provider.verifyResponse(doFetch, baseUrl + '/models?client_version=' + CLIENT_VERSION,
+        { headers: { Authorization: 'Bearer ' + (token || ''), Accept: 'application/json' }, signal: o && o.signal },
+        j => (Array.isArray(j.models) ? j.models : []).filter(m => m && typeof m.slug === 'string' && m.slug.trim()).map(m => ({ id: m.slug })), !!token, classifyApiError);
+    }
+    return { stream, listModels, verifyCredential, contextLimit, priceOf, supportsTools, reasoningEfforts };
   }
 
   /* #118 (2026-10-15): the ids a listModels() answer proves the ACCOUNT offers, in the backend's priority order. The

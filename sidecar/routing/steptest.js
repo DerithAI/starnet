@@ -9,8 +9,8 @@
      • the handoff turn          -> hopTurn            (Pipeline.handoffPrompt + the receiver's standing brief +
                                                          the VERDICT-line instruction when a verdict gate is ahead)
      • the loop gate             -> loopDecision       (THE ONE LOOP RULE: passes, max, verdict/tag, escalation)
-     • the pre-hop guards        -> preHopRefusal      (re-visit, hop ceiling, $ ceiling, daily cap, empty crate)
-     • the line gate's refusal   -> lineRefusalNote
+     • the pre-hop guards        -> preHopStop         (re-visit, hop ceiling, $ ceiling, daily cap, empty crate)
+     • the line gate's refusal   -> lineRefusalStop    (and a reviewer's hold before the walk -> heldStop)
      • the ceilings              -> effectiveLimits    (the line's LINE BUDGET clamped to the station's pool)
    and the routing reads are the router's (chainStep to advance, chainPeek to PREVIEW without moving a splitter's
    round-robin). The only thing this module adds is the PAUSE between hops, and the bookkeeping that makes a
@@ -32,6 +32,13 @@
    • ONE ACTIVE SESSION (running or paused) PER STATION. A second start answers a refusal.
    • FAN-OUT / JOINER lines are refused honestly mid-walk: the step test carries ONE crate at a time, and a
      parallel branch set cannot pause hop by hop without inventing an order the floor does not have.
+   • EVERY END IS A TYPED STOP (line-job-runner, 2026-11-03): a session that ended anywhere but its OUTBOX carries
+     `stop` = { code (RunOutcome.LINE_STOPS), why } — routing/line-fire.js lineStop's one sentence, the chain's own code
+     for the same stop: a pre-hop refusal (preHopStop's), FANOUT / JOINER (not_steppable), a hold (blocked), a dead end
+     (no_outbox), the line gate (wrong_line), a step's error (its stopCode: stage_incomplete / stage_failed / stage_empty),
+     your STOP or E-STOP (stopped), the fault containment (station_fault), a restart mid-step (restart). The words the
+     session shows (error / ended) keep their framing around that sentence. A session that reached its OUTBOX, a paused
+     one and TRY THIS STEP's one finished dock carry stop null.
 
    • DOCK-KEYED (multi-bay agents, 2026-09-22). One agent may crew several bays, so a stage is a DOCK: startAt
      may name a dockId OR an agentId (an agentId reads its entry dock on this line), the walk and the visited set
@@ -40,22 +47,27 @@
      runs the agent-keyed walk exactly as before.
 
    PURE + INJECTED (sidecar determinism law): no require of index.js, no ambient clock, no ids of its own.
-     runDock({ agentId, dockId?, entry, text, streamId, sessionId, signal, edited, lineId, ceilingUsd, from?, fromDock?, preview }) -> { text, usd, tools, runId, error }
+     runDock({ agentId, dockId?, entry, text, streamId, sessionId, signal, edited, lineId, ceilingUsd, from?, fromDock?, preview }) -> { text, usd, tools, runId, error, stopped?, stopCode? }
+       (index.js: the ONE hop executor's steptest profile, sidecar/routing/line-runner.js — stopCode is the step's own stop)
      plan  { get, step, peek, stepDock?, peekDock?, dockRef?, entryDock, lineOf, stageBrief, loopGateAfter, lineLimits, shipsToOutbox }
      store { load() -> array|null, save(array) }   poolCap() -> $|null   daySpend { spentToday, note }
      getTag(text)   now()   newId()   label(agentId) -> display name|null */
 'use strict';
+const { mergeFiles, productOf } = require('./work-product.js');
 const Verdict = require('./verdict.js');
 const Pipeline = require('../../frontend/app/pipeline.js');
-const { effectiveLimits, loopDecision, preHopRefusal, hopTurn, lineRefusalNote, asNode, nodeKey } = require('./chain.js');
+const { effectiveLimits, loopDecision, heldStop, preHopStop, hopTurn, lineRefusalStop, asNode, nodeKey } = require('./chain.js');
+const LineFire = require('./line-fire.js');   // a stop's one sentence (lineStop) and a step's own stop code (hopStopCode)
+const { holdOf } = require('./saved-hold.js');   // a saved floor that cannot be proved right now: a refusal to say, never "no next step"
 const { note: failNote } = require('../failopen.js');
+const { endOf } = require('../halt.js');
 
 const KEEP = 10;                // sessions kept on disk (active + most recent finished)
 const TEXT_MAX = 4000;          // the job a session starts with (same bound as the sample hub's messages)
 const EDIT_MAX = 200000;        // an owner-edited handoff (a dock's output can be long; this is a sanity bound)
 const PAUSE_EDGES_MAX = 64;
-const FANOUT = 'this line fans out into parallel branches here — the step-through test carries one crate at a time, so it stops before the split (use SEND A REAL JOB to prove a fan-out line)';
-const JOINER = 'this line meets a joiner here — the step-through test carries one crate at a time, so it stops before the join (use SEND A REAL JOB to prove a joined line)';
+const FANOUT = LineFire.lineStop('not_steppable', { barrier: 'fanout' });
+const JOINER = LineFire.lineStop('not_steppable', { barrier: 'join' });
 const ACTIVE = { running: true, paused: true };
 
 const clone = v => JSON.parse(JSON.stringify(v));
@@ -90,7 +102,10 @@ function makeStepTest(o) {
   if (typeof o.runDock !== 'function') throw new Error('makeStepTest: runDock is required');
   const runDock = o.runDock;
   const plan = o.plan || {};
-  const call = (fn, ...a) => { if (typeof fn !== 'function') return null; try { return fn(...a); } catch (e) { failNote('steptest.plan', e); return null; } };
+  /* a plan read that fails degrades to null (the walk reads "no answer" as no next step) — EXCEPT a saved floor that cannot be proved right now.
+     That is not "no answer", it is a refusal to say: read as one, a held floor ended a test 'done' after its first stage, or ran a stage in the
+     whole default office. It goes up typed to the verb that asked, and the verb ends in the hold's words (heldVerb below, drive's walk). */
+  const call = (fn, ...a) => { if (typeof fn !== 'function') return null; try { return fn(...a); } catch (e) { if (holdOf(e)) throw e; failNote('steptest.plan', e); return null; } };
   const now = typeof o.now === 'function' ? o.now : function () { return 0; };
   let seq = 0;
   const newId = typeof o.newId === 'function' ? o.newId : function () { return 'st' + (++seq); };
@@ -103,12 +118,14 @@ function makeStepTest(o) {
   const preflight = typeof o.preflight === 'function' ? o.preflight : function () { return null; };
   const newRunId = typeof o.newRunId === 'function' ? o.newRunId : null;   // the host's run id (persisted before the run starts)
   const runRow = typeof o.runRow === 'function' ? o.runRow : null;         // runId -> its run row { usd, spendUnknown } | null
+  const lineRunner = o.lineRunner || null;
+  const lineJobs = new Map();   // live session id -> the shared job handle (never serialized with the session)
   // every sentence the OWNER reads names an agent by its display name, never its raw id (sweep 2026-09-25: "the belt
   // from agent does not reach the OUTBOX") — the id stays in the machine fields (hops[].agentId, running.agentId)
   const who = id => { let n = null; try { n = label(id); } catch (e) { failNote('steptest.label', e); } return n ? String(n) : String(id); };
 
   let sessions = [];                 // oldest first
-  const inflight = new Map();        // sessionId -> { abort, superseded, halted, agentId } — halt.js-compatible (E-STOP)
+  const inflight = new Map();        // sessionId -> { abort, endReason, agentId } — halt.js-compatible (E-STOP)
   const drives = new Map();          // sessionId -> the drive promise (tests await it; routes never do)
 
   /* ---- persistence ---- */
@@ -116,6 +133,17 @@ function makeStepTest(o) {
     if (!store) return;
     try { store.save(sessions.map(s => { const c = clone(s); delete c._stop; return c; })); }
     catch (e) { failNote('steptest.persist', e); }
+  }
+
+  function openJob(s) {
+    if (!lineRunner) return null;
+    const held = lineJobs.get(s.id);
+    if (held && !held.result) return held;
+    const job = lineRunner.open({ id: s.state === 'paused' ? s.jobId : undefined, line: s.lineId, entry: 'steptest',
+      text: s.input, streamId: s.streamId, retryOf: s.jobId || undefined, stopHandle: () => stop(s.id) });
+    s.jobId = job.id;
+    lineJobs.set(s.id, job);
+    return job;
   }
   // boot: a session that was RUNNING died with the process — say so; a paused one comes back exactly as it was
   if (store) {
@@ -146,12 +174,30 @@ function makeStepTest(o) {
             costNote = ' What it spent before the restart is not known to this test.';
           }
           s.state = 'failed'; s.running = null; s.paused = null; s.updatedAt = now();
-          s.error = 'the sidecar restarted while ' + whoDied + ' was working on this step — that run died with it and its result was lost. RE-RUN STEP runs ' + whoDied + ' again.' + costNote;
+          s.stop = LineFire.lineStop('restart', { agent: whoDied });
+          s.error = s.stop.why + '. RE-RUN STEP runs ' + whoDied + ' again.' + costNote;
           changed = true;
         }
       }
       if (changed) persist();
     }
+  }
+
+  if (lineRunner) {
+    for (const s of sessions) if (s.state === 'paused') {
+      try {
+        const job = openJob(s);
+        for (const h of s.hops) lineRunner.track(job, h.runId, h);
+        lineRunner.mark(job, 'paused');
+      } catch (e) {
+        // Session and job files can land separately. A stale paused session must never reopen a finished job or prevent boot.
+        failNote('steptest.job.recover', e);
+        s.state = 'failed'; s.outcome = 'interrupted'; s.paused = null; s.stop = LineFire.lineStop('restart', {});
+        s.error = 'This test could not recover its saved job. Start another test.';
+      }
+    }
+    lineRunner.reap(sessions.filter(s => s.state === 'paused').map(s => s.jobId));
+    if (sessions.length) persist();
   }
 
   /* ---- helpers ---- */
@@ -171,9 +217,20 @@ function makeStepTest(o) {
     return lim;
   }
   function touch(s) { s.updatedAt = now(); s.totalUsd = round6(s._spent || 0); if (s.limits) s.limits.spent = s.totalUsd; }
-  function finish(s, state, error) {
+  // stop: the end's typed stop (header) — null for a session that reached its OUTBOX; undefined keeps the one already set
+  function finish(s, state, error, stop) {
     s.state = state; s.running = null; s.paused = null;
     if (error !== undefined) s.error = error;
+    if (stop !== undefined) s.stop = stop ? { code: stop.code, why: stop.why } : null;
+    const job = lineJobs.get(s.id);
+    if (lineRunner && job) {
+      const last = s.hops[s.hops.length - 1] || {};
+      const result = lineRunner.settle(job, { stop: s.stop, line: { agentId: last.agentId, dockId: last.dockId, outboxId: s.outboxId },
+        output: s.final || last.output || '', error: s.stop ? null : error });
+      s.outcome = result.outcome;
+      lineRunner.deliverCrate(result, { workitemId: last.workitemId, agentId: last.agentId, sample: true, ts: now(), ms: 0 });
+      lineJobs.delete(s.id);
+    }
     touch(s); persist();
   }
   function trim() {
@@ -194,11 +251,14 @@ function makeStepTest(o) {
   function resolveNext(s, editedText, advance) {
     const W = s._w, cur = W.cur, curDock = W.curDock || null, raw = W.out || '';
     const basis = editedText != null ? editedText : raw;
-    const ctx = { tag: getTag(basis), verdict: getVerdict(basis), lineId: s.lineId, fromTile: null, via: null };
+    const reach = {};
+    const ctx = { tag: getTag(basis), verdict: editedText != null ? getVerdict(basis) : Object.prototype.hasOwnProperty.call(W, 'verdict') ? W.verdict : getVerdict(basis), lineId: s.lineId, fromTile: null, via: null, reach };
+    const briefHeld = heldStop(plan.loopGateAfter, cur, s.lineId, curDock, ctx.verdict);   // the line runner's hold, before the walk
+    if (briefHeld) return { next: { kind: 'end', reason: briefHeld.why }, text: raw, end: briefHeld.why, held: true, stop: briefHeld };
     const dockFn = advance ? plan.stepDock : plan.peekDock;
     const step = (curDock && typeof dockFn === 'function') ? call(dockFn, curDock, ctx) : call(advance ? plan.step : plan.peek, cur, ctx);
-    if (step && step.branches) return { next: { kind: 'end', reason: FANOUT }, text: raw, halt: FANOUT };
-    if (step && step.join) return { next: { kind: 'end', reason: JOINER }, text: raw, halt: JOINER };
+    if (step && step.branches) return { next: { kind: 'end', reason: FANOUT.why }, text: raw, halt: FANOUT.why, stop: FANOUT };
+    if (step && step.join) return { next: { kind: 'end', reason: JOINER.why }, text: raw, halt: JOINER.why, stop: JOINER };
     /* THE OPEN GATES (wave 2 review, conveyor-backend-02 — chain.js openLoops, 2026-10-10): two review loops in a row stopped the
        test on the outer gate's second pass, because the inner gate letting work out lowered the ONE looping flag while the outer
        gate's re-run was still under way. A gate closes only its own pass. Kept as a plain object: _w is JSON-cloned and persisted
@@ -215,25 +275,31 @@ function makeStepTest(o) {
       // a gate whose back lane re-enters the dock that just ran: W.handed is that dock's previous loop turn, not a draft (chain.js)
       const selfLoop = !!step.backTo && nodeKey(asNode(step.backTo)) === nodeKey({ agentId: cur, dockId: curDock });
       const d = loopDecision(step, ctx, n, W.visited, raw, selfLoop ? '' : W.handed);
+      // a held verdict (BLOCKED, none, or a spent gate set to hold) holds the job at this gate, exactly as the line runner does
+      // (chain.js loopDecision): the step ends here. This test has no durable hold of its own — its paused session is its mechanism.
+      if (d.held) { const held = LineFire.lineStop('blocked', { loop: step.loop, reason: d.reason }); return { next: { kind: 'end', reason: held.why }, text: d.text, end: held.why, held: true, stop: held }; }
+      // an escalation lane that only reaches an OUTBOX ends the crate there, the same OUTBOX the line runner would name
+      if (d.outboxId) return { next: { kind: 'outbox' }, outboxId: d.outboxId, text: d.text };
       target = asNode(d.target); text = d.text; again = d.again; exhausted = d.exhausted;
       if (d.again) open[step.loop] = true; else delete open[step.loop];
       looping = Object.keys(open).length > 0;
     } else if (step && (step.dockId || step.agentId)) target = asNode(step);
     if (!target) {
-      if (curDock ? call(plan.shipsToOutbox, cur, curDock) : call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, text };
-      const why = lineRefusalNote(plan.lineOf, cur, s.lineId, curDock)
-        || (call(plan.get) ? 'the belt from ' + who(cur) + ' does not reach the OUTBOX — the line ends at this bay' : 'no work line is armed any more — the line ends at this bay');
-      return { next: { kind: 'end', reason: why }, text, end: why };
+      if (curDock ? call(plan.shipsToOutbox, cur, curDock) : call(plan.shipsToOutbox, cur)) return { next: { kind: 'outbox' }, outboxId: reach.outboxId || null, text };
+      // the line gate's refusal (wrong_line), else a dead end: a belt that reaches no OUTBOX, or no line armed at all (no_outbox)
+      const ends = lineRefusalStop(plan.lineOf, cur, s.lineId, curDock) || LineFire.lineStop('no_outbox', { agent: who(cur), unarmed: !call(plan.get) });
+      return { next: { kind: 'end', reason: ends.why }, text, end: ends.why, stop: ends };
     }
     const loopHop = !!looping;
     const lim = limitsNow(s);
     const targetKey = nodeKey(target);
-    const refusal = preHopRefusal({ visited: W.visited, target: target.agentId, targetKey, loopHop, hop: W.hop + 1, loopHops: W.loopHops + (loopHop ? 1 : 0),
+    const refused = preHopStop({ visited: W.visited, target: target.agentId, targetKey, loopHop, hop: W.hop + 1, loopHops: W.loopHops + (loopHop ? 1 : 0),
       lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: editedText != null ? editedText : text, cur });
+    const refusal = refused ? refused.why : null;
     const next = { kind: 'agent', agentId: target.agentId, back: !!again };
     if (target.dockId) next.dockId = target.dockId;   // additive: WHICH bay the crate goes to (multi-bay)
     if (refusal) next.blocked = refusal;   // additive: continuing here will stop, and this is why
-    return { next, text, target: target.agentId, targetDock: target.dockId || null, targetKey, again, loopKey, n, exhausted, looping, openLoops: (legacy && !gateDecided) ? undefined : open, loopHop, refusal };
+    return { next, text, target: target.agentId, targetDock: target.dockId || null, targetKey, again, loopKey, n, exhausted, looping, openLoops: (legacy && !gateDecided) ? undefined : open, loopHop, refusal, stop: refused };
   }
 
   /* advanceFrom(s, editedText) — CONTINUE: resolve the real next step, stamp the last hop's handoff, commit the
@@ -243,14 +309,15 @@ function makeStepTest(o) {
     const last = s.hops[s.hops.length - 1];
     const nx = resolveNext(s, editedText, true);
     const edited = editedText != null;
-    if (nx.halt) { finish(s, 'stopped', 'the test stopped: ' + nx.halt); return null; }
+    if (nx.halt) { finish(s, 'stopped', 'the test stopped: ' + nx.halt, nx.stop); return null; }
     if (nx.next.kind === 'outbox') {
+      s.outboxId = nx.outboxId;
       last.sent = edited ? editedText : nx.text; last.edited = edited;
       s.final = last.sent; s.ended = null;
-      finish(s, 'done', null); return null;
+      finish(s, 'done', null, null); return null;
     }
-    if (nx.next.kind === 'end') { s.ended = nx.end; finish(s, 'done', null); return null; }
-    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + who(nx.target) + ': ' + nx.refusal); return null; }
+    if (nx.next.kind === 'end') { s.ended = nx.end; finish(s, 'done', null, nx.stop); return null; }
+    if (nx.refusal) { finish(s, 'stopped', 'the test stopped before ' + who(nx.target) + ': ' + nx.refusal, nx.stop); return null; }
     const W = s._w;
     last.sent = edited ? editedText : nx.text; last.edited = edited;
     W.hop += 1;
@@ -266,37 +333,57 @@ function makeStepTest(o) {
 
   /* kick(s, job) — start running one dock in the background; the route answers at once and the panel polls. */
   function kick(s, job) {
-    s.state = 'running'; s.paused = null; s.error = null; s.final = null; s.ended = null;
+    const lineJob = openJob(s);
+    if (lineJob) lineRunner.mark(lineJob, 'running');
+    s.outboxId = null; s.outcome = 'running';
+    s.state = 'running'; s.paused = null; s.error = null; s.final = null; s.ended = null; s.stop = null;
     s.running = job.dockId ? { agentId: job.agentId, dockId: job.dockId, since: now() } : { agentId: job.agentId, since: now() };
     s._pending = { job: clone(job), before: clone(s._w) };
     touch(s); persist();
     const p = drive(s).catch(e => {
       failNote('steptest.drive', e);
-      if (s.state === 'running') finish(s, 'failed', 'the step-through test crashed: ' + ((e && e.message) || String(e)));
+      if (s.state === 'running') {
+        const crash = LineFire.lineStop('station_fault', { error: 'the step-through test crashed: ' + ((e && e.message) || String(e)) });
+        try { finish(s, 'failed', crash.why, crash); } catch (writeError) { failNote('steptest.job.finish', writeError); }
+      }
     }).then(() => { if (drives.get(s.id) === p) drives.delete(s.id); });
     drives.set(s.id, p);
   }
 
+  /* drive(s) — the walk, with one rule above it: a saved floor that cannot be proved right now (a next-step read that threw the typed hold) ENDS the
+     test, 'stopped' with the chain's own refused stop and the hold's words. It is never "no next step" (a test that finished 'done' after its first
+     stage) and never a crash. What ran stays on the session; RE-RUN STEP runs the last stage again once the floor is readable. */
   async function drive(s) {
+    try { await walk(s); }
+    catch (e) {
+      const held = holdOf(e);
+      if (!held) throw e;   // anything else is kick's crash handler's
+      if (s.state === 'running') finish(s, 'stopped', 'the test stopped: ' + held.why, LineFire.lineStop('refused', { why: held.why }));
+    }
+  }
+
+  async function walk(s) {
     for (let guard = 0; guard < 200; guard++) {
       const pend = s._pending, job = pend.job;   // captured: a later verb may install a new pending job
       // THE LINE BUDGET, PRE-run, over the WHOLE session (re-runs + dropped hops included) — preHopRefusal's
       // $ and daily guards, the executor's own words.
       const lim = limitsNow(s);
-      const refused = preHopRefusal({ visited: {}, target: job.agentId, loopHop: true, hop: 0, loopHops: 0, lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: job.input, cur: s._w.cur || job.agentId });
-      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + who(job.agentId) + ' ran: ' + refused + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)'); return; }
+      const refused = preHopStop({ visited: {}, target: job.agentId, loopHop: true, hop: 0, loopHops: 0, lim, spent: s._spent || 0, dayLedger: daySpend, lineId: s.lineId, text: job.input, cur: s._w.cur || job.agentId });
+      if (refused) { s._pending = null; finish(s, 'stopped', 'the test stopped before ' + who(job.agentId) + ' ran: ' + refused.why + ' (this test has spent $' + (s._spent || 0).toFixed(2) + ', re-runs included)', refused); return; }
 
       const W = s._w;
       const turn = job.entry ? String(job.input) : hopTurn({ handoffText: o.handoffPrompt, stageBrief: plan.stageBrief, loopGateAfter: plan.loopGateAfter, lastStage: plan.lastStage,
-        originalText: W.original, from: job.from, upstream: job.input, hop: job.hop, target: job.agentId, targetDock: job.dockId || null, lineId: s.lineId });
+        originalText: W.original, from: job.from, upstream: job.input, hop: job.hop, target: job.agentId, targetDock: job.dockId || null, lineId: s.lineId, files: W.files });
       const pass = job.rerun && job.pass ? job.pass : passFor(s, job.agentId, job.dockId || null);
       const ac = new AbortController();
-      const rec = { abort: ac, superseded: false, halted: false, agentId: job.agentId, startedAt: now() };
+      const rec = { abort: ac, endReason: null, agentId: job.agentId, startedAt: now() };
       inflight.set(s.id, rec);
       const t0 = now();
       let r = null;
       try {
         const dr = { agentId: job.agentId, entry: !!job.entry, text: turn, streamId: s.streamId, sessionId: s.id, signal: ac.signal, edited: !!job.edited, lineId: s.lineId };
+        dr.handoffReads = mergeFiles(W.files);
+        dr.draft = String(job.input == null ? '' : job.input);
         // what is LEFT of the line budget rides the step as its own lower-only $ cap — the executor's hop rule (chain.js
         // call.ceilingUsd): the pre-run check alone let one own-key step spend far past the LINE BUDGET (quick win 28)
         dr.ceilingUsd = Math.max(0, lim.maxUsd - (s._spent || 0));
@@ -313,31 +400,45 @@ function makeStepTest(o) {
       } catch (e) { r = { error: (e && e.message) || String(e || 'run failed') }; }
       if (inflight.get(s.id) === rec) inflight.delete(s.id);
       r = r || {};
+      if (lineRunner) lineRunner.track(lineJobs.get(s.id), r.runId, Object.assign({ agentId: job.agentId, dockId: job.dockId }, r));
       const usd = num(r.usd);
       s._spent = (s._spent || 0) + usd;
       if (daySpend && usd) { try { daySpend.note(s.lineId, usd); } catch (e) { failNote('steptest.dayLedger', e); } }
       const output = typeof r.text === 'string' ? r.text : '';
+      const product = productOf(r, { draft: job.input, getVerdict });
       // (wave 2 repair) the station's own process-fault containment marks the run faulted before killing it: said as that fault
-      const stoppedBy = rec.halted ? (rec.faulted ? 'the station hit an internal fault — the test stopped mid-run' : 'E-STOP was pressed — the test stopped mid-run')
-        : (s._stop ? 'stopped by you mid-run' : null);
-      const err = stoppedBy || (r.error ? who(job.agentId) + ' failed: ' + r.error : (!output.trim() ? who(job.agentId) + ' returned nothing' : null));
+      // review r7: a STOP that reached this step's run another way (the HUD's or a desk screen's STOP: its runner says r.stopped) stopped the
+      // test too — "Test stopped", never "Test failed" with "✕ writer failed: stopped by you"
+      const end = endOf(rec);
+      const killed = end === 'halted' || end === 'faulted';
+      const hopStopped = !!r.stopped && !killed && !s._stop;
+      const stoppedBy = killed ? (end === 'faulted' ? 'the station hit an internal fault — the test stopped mid-run' : 'E-STOP was pressed — the test stopped mid-run')
+        : ((s._stop || hopStopped) ? 'stopped by you mid-run' : null);
+      /* THE STEP'S OWN STOP (header): a stop someone made, the fault containment, else what the step's run ended with — the hop
+         executor's stopCode (a step that did not finish did not finish, never "failed"), said in the chain's one sentence */
+      const stepCode = end === 'faulted' ? 'station_fault' : stoppedBy ? 'stopped' : LineFire.hopStopCode(r);
+      const stepFacts = { agent: who(job.agentId), error: stoppedBy ? '' : (r.error || '') };
+      const stepStop = stepCode ? ((killed || stoppedBy) ? LineFire.lineStop(stepCode, stepFacts) : LineFire.hopStop(r, stepFacts)) : null;
+      const err = stoppedBy || (stepStop ? stepStop.why : null);
       s.hops.push({
         i: s.hops.length, agentId: job.agentId, dockId: job.dockId || null, agentLabel: call(label, job.agentId) || null, pass,
         input: String(job.input), output, usd: round6(usd), ms: Math.max(0, (typeof r.ms === 'number' && isFinite(r.ms)) ? r.ms : now() - t0),
-        tools: (typeof r.tools === 'number' && r.tools > 0) ? r.tools : 0, runId: r.runId || null, streamId: s.streamId,
+        tools: (typeof r.tools === 'number' && r.tools > 0) ? r.tools : 0, runId: r.runId || null, workitemId: r.workitemId || null, streamId: s.streamId,
         denied: Array.isArray(r.denied) ? r.denied.filter(x => typeof x === 'string').slice(0, 6) : [],   // tools the consent gate refused in this step (additive)
-        verdict: getVerdict(output), rerun: !!job.rerun, edited: false, sent: null, error: err,
+        verdict: product.verdict, files: product.files, rerun: !!job.rerun, edited: false, sent: null, error: err,
         turn, _job: pend.job, _before: pend.before
       });
       if (s._pending === pend) s._pending = null;
-      if (s._stop || rec.halted || s.state !== 'running') {
+      if (s._stop || killed || hopStopped || s.state !== 'running') {
         delete s._stop;
-        if (s.state === 'running' || s.state === 'stopped') finish(s, 'stopped', rec.halted ? stoppedBy : (s.error || null));
+        if (s.state === 'running' || s.state === 'stopped') finish(s, 'stopped', killed ? stoppedBy : (s.error || null), stepStop || LineFire.lineStop('stopped', { agent: who(job.agentId) }));
         return;
       }
-      if (err) { finish(s, 'failed', err); return; }
+      if (err) { finish(s, 'failed', err, stepStop); return; }
       W.cur = job.agentId; W.curDock = job.dockId || null; W.out = output;
-      W.handed = String(job.input == null ? '' : job.input);   // what this step was handed: a loop-back shows it (chain.js loopDecision)
+      W.handed = product.draft;
+      W.verdict = product.verdict;
+      W.files = mergeFiles(W.files, product.files);
 
       const nx = resolveNext(s, null, false);
       const afterHop = s.hops.length - 1;
@@ -345,10 +446,12 @@ function makeStepTest(o) {
         // TRY THIS STEP: one dock, then done. The next dock is only PREVIEWED (additive `preview`, since `paused`
         // is null outside state 'paused'); its output is what the panel offers the next bay as a test input.
         s.preview = { afterHop, text: nx.text, next: nx.next };
-        finish(s, 'done', null); return;
+        finish(s, 'done', null, null); return;
       }
       if (nx.halt || pausesOn(s.pause, edgeKey(job.agentId, nx.next), dockEdgeKey(job.dockId, nx.next))) {
+        if (lineRunner) lineRunner.mark(lineJobs.get(s.id), 'paused');
         s.state = 'paused'; s.running = null;
+        s.outcome = 'paused';
         s.paused = { afterHop, text: nx.text, next: nx.next };
         touch(s); persist(); return;
       }
@@ -358,7 +461,8 @@ function makeStepTest(o) {
       s._pending = { job: clone(job2), before: clone(s._w) };
       touch(s); persist();
     }
-    finish(s, 'stopped', 'the test ran past its step ceiling');
+    const guard = LineFire.lineStop('hop_limit', {});   // the walk's own guard, as the chain's says it
+    finish(s, 'stopped', 'the test stopped: ' + guard.why, guard);
   }
 
   /* ---- the verbs (each returns { ok:true, session } or { ok:false, error } — the route maps a refusal to 409) ---- */
@@ -387,7 +491,8 @@ function makeStepTest(o) {
       return refuse('no armed work line is named "' + line + '" — the floor changed since this panel was drawn; re-open the line and try again.');
     }
     const topologyRefusal = !single && Pipeline.stepTestRefusal(p, line);
-    if (topologyRefusal) return refuse(topologyRefusal);
+    // (typed: the step test cannot carry this line — not_steppable, in the compiled topology's own words; no session starts)
+    if (topologyRefusal) return Object.assign(refuse(topologyRefusal), { stop: LineFire.lineStop('not_steppable', { why: topologyRefusal }) });
     let agentId = null, dockId = null, entry = true;
     if (b.startAt != null && String(b.startAt).trim()) {
       /* startAt names a DOCK or an AGENT (multi-bay). dockRef resolves either: a dockId is that bay; an agentId
@@ -435,7 +540,9 @@ function makeStepTest(o) {
      old next dock> WILL GET" after the floor changed. The paused text itself is untouched. */
   function freshPreview(s) {
     if (!s || s.state !== 'paused' || !s.paused || !s._w) return;
-    const nx = resolveNext(s, null, false);
+    let nx = null;
+    // a floor that cannot be proved right now cannot say what comes next: the paused view keeps what it had (a read never throws), and CONTINUE refuses in the hold's words
+    try { nx = resolveNext(s, null, false); } catch (e) { if (!holdOf(e)) throw e; return; }
     if (nx && nx.next) s.paused.next = nx.next;
   }
   function get(id) {
@@ -500,12 +607,13 @@ function makeStepTest(o) {
   function stop(id) {
     const s = byId(id); if (!s) return get(id);
     if (!ACTIVE[s.state]) return refuse('this test already ended (' + s.state + ').');
+    const at = s.state === 'running' && s.running ? s.running.agentId : null;   // (the step's own end, when it lands, names it again)
     if (s.state === 'running') {
       s._stop = true;
       const rec = inflight.get(s.id);
       if (rec && rec.abort) { try { rec.abort.abort(); } catch (e) { failNote('steptest.stop.abort', e); } }
     }
-    finish(s, 'stopped', null);
+    finish(s, 'stopped', null, LineFire.lineStop('stopped', at ? { agent: who(at) } : {}));
     return answer(s);
   }
 
@@ -521,7 +629,15 @@ function makeStepTest(o) {
   // test seam: resolves when the session's background drive settles (routes never await it)
   function settled(id) { return drives.get(String(id)) || Promise.resolve(); }
 
-  return { start, get, continue: cont, rerun, rewind, stop, pause: setPause, settled, inflight, _sessions: () => sessions };
+  /* a verb that reads the plan answers a saved floor that cannot be proved right now in the hold's own words — a refusal, typed 'refused' like the chain's:
+     nothing started, nothing moved. The reads come before the verb changes anything, so a paused session stays paused and CONTINUE works once the floor
+     is readable. (Never "no work line is armed": that is a floor with no line, not a floor nobody can read.) */
+  const heldVerb = fn => function (...a) {
+    try { return fn(...a); }
+    catch (e) { const held = holdOf(e); if (!held) throw e; return Object.assign(refuse(held.why), { stop: LineFire.lineStop('refused', { why: held.why }) }); }
+  };
+
+  return { start: heldVerb(start), get, continue: heldVerb(cont), rerun, rewind, stop, pause: setPause, settled, inflight, _sessions: () => sessions };
 }
 
 module.exports = { makeStepTest, normPause, KEEP };

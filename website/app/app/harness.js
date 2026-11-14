@@ -172,8 +172,6 @@ const Harness = (() => {
       localStorage.setItem('starnet.byok.prov', String(DEV.prov || 'openrouter'));
     } catch (_) {}
   }
-  let _configured = false;   // desktop back-compat alias for "is the OpenRouter key stored?"
-  let _configuredByProvider = Object.create(null);
   let _alternateCountByProvider = Object.create(null);
   let apiToken = (typeof window !== 'undefined' && window.__STARNET_API_TOKEN__) ? String(window.__STARNET_API_TOKEN__) : '';
   let apiTokenPromise = null;
@@ -246,8 +244,10 @@ const Harness = (() => {
      would drop it) and makes the refused save actually land. Exactly-once is safe: rejectBadApiToken answers BEFORE
      any route runs, so the refused request had no effect.
      NARROW BY CONSTRUCTION — it never swallows a real 403:
-       · only a 403 whose body is exactly 'forbidden token' (rejectBadApiToken's own reply) counts; a route's own
-         refusal ('forbidden', 'forbidden host/origin', JSON errors) passes through untouched;
+       · only the gate's KEY refusal counts: a 403 named token_stale (a key rode and was wrong) or token_missing (none
+         rode) in X-StarNet-Code (sidecar/respond.js). A station that names no refusal (an older one) is read by its body,
+         exactly 'forbidden token' (refuseAtGate's own reply). A route's own refusal ('forbidden', 'forbidden host/origin',
+         JSON errors, any other code) passes through untouched;
        · a replay needs PROOF of a rotation — the served page carries a token different from the one just refused;
          the same token back (or none) is a real fault, reported by onStale, never retried;
        · at most ONE replay per request and ONE in-flight page read shared by every concurrent 403, so no loop.
@@ -259,8 +259,17 @@ const Harness = (() => {
     const MARK = 'forbidden token';
     const TOKEN_RE = /window\.__STARNET_API_TOKEN__=("(?:[^"\\]|\\.)*")/;
     let inflight = null;
+    // the gate's own name for its refusal (a lower-case code); '' from a station that sends none
+    function gateCode(res) {
+      let c = '';
+      try { c = String((res && res.headers && typeof res.headers.get === 'function' && res.headers.get('X-StarNet-Code')) || '').trim(); } catch (_) { c = ''; }
+      return /^[a-z][a-z0-9_]{0,63}$/.test(c) ? c : '';
+    }
     function isStaleReply(res) {
-      if (!res || res.status !== 403 || typeof res.clone !== 'function') return Promise.resolve(false);
+      if (!res || res.status !== 403) return Promise.resolve(false);
+      const code = gateCode(res);
+      if (code) return Promise.resolve(code === 'token_stale' || code === 'token_missing');
+      if (typeof res.clone !== 'function') return Promise.resolve(false);
       let copy; try { copy = res.clone(); } catch (_) { return Promise.resolve(false); }   // the caller keeps an unread body
       return Promise.resolve(copy.text()).then(t => String(t || '').trim() === MARK, () => false);
     }
@@ -290,7 +299,7 @@ const Harness = (() => {
       return isStaleReply(res).then(stale => {
         if (!stale) return res;
         return refresh(sent).then(fresh => {
-          if (!fresh || fresh === sent) { if (o.onStale) o.onStale(); return res; }
+          if (!fresh || fresh === sent) { if (o.onStale) o.onStale(gateCode(res)); return res; }   // which refusal it was: its reader words it
           return replay ? replay(fresh) : res;   // an unreplayable (stream) body: the NEXT call carries the fresh token
         });
       });
@@ -303,29 +312,39 @@ const Harness = (() => {
      rotated its key and this page could not adopt it). A page the station kept its key from (state.tokenWithheld) is
      never "restarted" — a reload only re-runs the same ownership check — and any other 403 is the route's own
      refusal. state.sessionStale undefined = a caller with no recovery state, read as before (a stale session).
+     THE GATE'S CODE DECIDES (truthful acks): a station that names its refusals (X-StarNet-Code, sidecar/respond.js) says which
+     one it was — token_stale is a stale session, token_missing a page that carries no key (the withheld notice), anything else
+     the route's own refusal, worded as an answer, never "unreachable". The status reading above is the legacy one, kept for a
+     station that sends no code. `response` is a fetch Response, or a Harness.api result (its code; one this page made up
+     itself, http_<n> or bad_body, is no station's).
      Pure over its two arguments: Harness.classifyApiFailure binds the live state, and tests lift it by source.
-     → null for a reply that is not a failure, else { code, status, terminal, staleSession, tokenWithheld, message }. */
+     → null for a reply that is not a failure, else { code, status, terminal, staleSession, tokenWithheld, message, stationCode }. */
   function classifyApiFailure(response, state) {
     if (!response || response.ok !== false) return null;
     const s = state || {};
     const status = Number(response.status) || 0;
-    if (status === 403 && s.tokenWithheld) {
-      return { code: 'token_withheld', status, terminal: true, staleSession: false,
+    let station = '';
+    try { station = String((response.headers && typeof response.headers.get === 'function' ? response.headers.get('X-StarNet-Code') : response.code) || '').trim(); } catch (_) { station = ''; }
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(station) || /^(?:http_\d+|bad_body)$/.test(station)) station = '';   // a station code is a lower-case name
+    if (station ? station === 'token_missing' : (status === 403 && s.tokenWithheld)) {
+      return { code: 'token_withheld', status, terminal: true, staleSession: false, stationCode: station,
         tokenWithheld: s.withheldNotice || 'StarNet could not confirm this browser is yours — see the station notice.',
         message: 'this browser was not verified as your own account — see the station notice' };
     }
-    if (status === 403 && s.sessionStale !== false) {
-      return { code: 'stale_session', status, terminal: true, staleSession: true, tokenWithheld: '',
+    if (station ? station === 'token_stale' : (status === 403 && s.sessionStale !== false)) {
+      return { code: 'stale_session', status, terminal: true, staleSession: true, tokenWithheld: '', stationCode: station,
         message: 'the station restarted — reload the page to reconnect' };
     }
     if (status === 403) {
-      return { code: 'forbidden', status, terminal: true, staleSession: false, tokenWithheld: '',
-        message: 'the station refused this request (HTTP 403)' };
+      return { code: 'forbidden', status, terminal: true, staleSession: false, tokenWithheld: '', stationCode: station,
+        message: station === 'forbidden_origin' ? 'this page’s address doesn’t match the station; open StarNet at the exact address you forward to it'
+          : station === 'forbidden_host' ? 'StarNet answers only on localhost / 127.0.0.1; reach it through a port forward, not a hostname'
+          : 'the station refused this request (HTTP 403)' };
     }
     // no answer, a timeout, a rate limit or a server fault may clear on its own; any other status will not
     const transient = status === 0 || status === 408 || status === 429 || status >= 500;
-    return { code: transient ? 'station_unavailable' : 'http_error', status, terminal: !transient, staleSession: false, tokenWithheld: '',
-      message: 'unreachable (HTTP ' + status + ')' };
+    return { code: transient ? 'station_unavailable' : 'http_error', status, terminal: !transient, staleSession: false, tokenWithheld: '', stationCode: station,
+      message: !station ? 'unreachable (HTTP ' + status + ')' : (status >= 500 ? 'the station hit an error' : 'the station refused this request') + ' (HTTP ' + status + ')' };
   }
   // Set when a stale-token 403 could NOT be recovered in place — the one state where the honest answer is
   // "reload this page". Surfaces read it (Harness.sessionStale) so they stop blaming the network or the catalog.
@@ -424,8 +443,9 @@ const Harness = (() => {
       stationUI('settleNotifs', [STALE_KEY]);   // the "has not picked up its new key" alert is handled now
       stationNotify('The station service restarted — this page reconnected on its own.', 'good', { key: STALE_KEY });
     },
-    onStale: () => {
-      if (tokenWithheld) { noteTokenWithheld(); return; }   // not a restart: say why the key was kept, never "restarted"
+    onStale: code => {
+      // not a restart: a page the station kept its key from says why (the gate's token_missing: no key rode), never "restarted"
+      if (tokenWithheld || code === 'token_missing') { noteTokenWithheld(); return; }
       sessionStale = true;
       if (!staleNotified) { staleNotified = true; stationNotify(staleLine(), 'warn', { kind: 'alert', key: STALE_KEY, onClick: reloadThisPage }); }
     }
@@ -451,108 +471,49 @@ const Harness = (() => {
     window.__STARNET_FETCH_HARDENED__ = true;
   }
 
-  /* desktop: load the keychain "configured?" flag once at boot, before the connect screen reads it */
+  const readinessCache = SK.providerReadiness.makeCache();
+  let creditsEpoch = 0;
+  let readinessFlight = null;
+  function readiness(provider) { return readinessCache.read(normalizeProviderId(provider || getProv())); }
+  function refreshProviderReadiness() {
+    if (readinessFlight) return readinessFlight;
+    const ticket = readinessCache.ticket();
+    readinessFlight = (async () => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 5000);
+      try {
+        const r = await fetch('/api/providers', { cache: 'no-store', signal: ctl.signal });
+        if (!r.ok) throw new Error('station status unavailable');
+        const j = await r.json();
+        if (!readinessCache.accept(j.providers, ticket)) readinessCache.offline();
+      } catch (_) { readinessCache.offline(); }
+      finally {
+        clearTimeout(timer);
+        readinessFlight = null;
+        if (ticket !== readinessCache.ticket()) return refreshProviderReadiness();
+      }
+    })();
+    return readinessFlight;
+  }
   async function init() {
-    bootNotices();   // a page the station kept its key from says why before its first refused call; an earlier page's restart alert is handled
+    bootNotices();
     await ensureApiToken();
-    // BEFORE the desktop early-return on purpose: managed credits live in the SIDECAR, not the keychain, so
-    // they are configured identically in a browser build and a packaged one. Probing after the return would
-    // leave configured('starnet') false forever anywhere that isn't Tauri — including every dev session.
-    await refreshCreditsConfigured();
-    if (!DESKTOP) { syncEngineKeysOnBoot(); return; }   // #89: never awaited — boot must not wait on it
-    pushDesktopEndpoints();   // #137: never awaited — the station's copy of each endpoint matches this window's
-    let loaded = false;
+    await refreshProviderReadiness();
+    // Boot hand-over stays asynchronous; refresh when the station actually has the browser/desktop pair.
+    if (!DESKTOP) { syncEngineKeysOnBoot().then(refreshProviderReadiness); return; }
+    pushDesktopEndpoints().then(refreshProviderReadiness);
     try {
       const status = await invoke('harness_provider_key_status');
-      if (Array.isArray(status)) {
-        // #93: the keychain knows nothing about managed credits (KEYCHAIN_PROVIDERS has no starnet), so rebuilding
-        // the map from it erased the /api/credits answer probed just above — every desktop boot then read the
-        // linked station as unlinked (resume, pickers, KeyCTA) until SETTINGS re-probed. The sidecar owns it.
-        const starnet = !!_configuredByProvider.starnet;
-        _configuredByProvider = Object.create(null);
-        status.forEach(s => {
-          const p = normalizeProviderId(s && s.provider);
-          _configuredByProvider[p] = !!(s && s.configured);
-          _alternateCountByProvider[p] = Math.max(0, Number(s && s.alternateCount) || 0);
-        });
-        _configuredByProvider.starnet = starnet;
-        _configured = !!_configuredByProvider.openrouter;
-        loaded = true;
-      }
+      if (Array.isArray(status)) status.forEach(s => { _alternateCountByProvider[normalizeProviderId(s.provider)] = Math.max(0, Number(s.alternateCount) || 0); });
     } catch (_) {}
-    if (!loaded) {
-      try { _configured = await invoke('harness_has_key'); } catch (_) { _configured = false; }
-      _configuredByProvider.openrouter = _configured;
-    }
-    // CODEX IS NOT A KEYCHAIN PROVIDER (its OAuth tokens live sidecar-side in workspaces/codex/), so the
-    // keychain status above can NEVER report it — which left configured('codex') false FOREVER on desktop:
-    // every ChatGPT-sign-in install had brainReady() dead, so the live awakening beats + the V3 interview
-    // silently degraded to the scripted spine on every machine (proven on Andrew's 3-install test,
-    // 2026-07-19). Ask the sidecar directly; fail-open (a dead route just leaves it unconfigured).
-    try {
-      const r = await fetch('/api/auth/codex/status');   // same relative idiom app.js's refreshCodexStatus uses (works in browser + desktop webview)
-      if (r && r.ok) { const j = await r.json(); if (j && j.connected) _configuredByProvider.codex = true; }
-    } catch (_) {}
-    // The OTHER device-code OAuth providers (grok/kimi) hold their tokens sidecar-side too — same probe,
-    // same fail-open contract (a dead route just leaves them unconfigured).
-    await Promise.all(['grok', 'kimi'].map(async pid => {
-      try {
-        const r = await fetch('/api/auth/' + pid + '/status');
-        if (r && r.ok) { const j = await r.json(); if (j && j.connected) _configuredByProvider[pid] = true; }
-      } catch (_) {}
-    }));
   }
-  // Whether this station can run on managed credits. The bearer is the linked device token the SIDECAR
-  // holds — there is nothing on this side to inspect, so we ask, exactly as codex/grok/kimi do. Fail-open:
-  // /api/credits 404s by design when credits are unconfigured, which just leaves the provider unconfigured.
-  //
-  // WITHOUT THIS A CREDITS-ONLY STATION IS STRANDED. Resume gates on `getKey() || configured()`, and a user
-  // who linked an account and never pasted a key has neither — so every boot would bounce them to the
-  // connect screen demanding an API key they deliberately do not have.
-  //
-  // Called again after a link/unlink so selecting STARNET does not wait for a page reload.
-  // creditsEpoch: every call is "the account may have changed" — SETTINGS' shared credits read (stationui.js
-  // creditsRead) never serves an answer from an older epoch, whichever screen did the linking (review 10-14).
-  let creditsEpoch = 0;
   async function refreshCreditsConfigured() {
-    selectionRevision++;
     creditsEpoch++;
-    try {
-      // probe=1: an unconfigured station answers 200 { configured:false } instead of the STORE's 404 (no console error on every load)
-      const r = await fetch('/api/credits?history=0&probe=1', { cache: 'no-store' });
-      const j = (r && r.ok) ? await r.json() : null;
-      _configuredByProvider.starnet = !!(j && j.configured);
-    } catch (_) { _configuredByProvider.starnet = false; }
-    return !!_configuredByProvider.starnet;
+    await refreshProviderReadiness();
+    return configured('starnet');
   }
-  /* whether a key is set — works in both modes; never exposes the value. In dev mode the host holds the
-     key (runtimeKey), so we report configured without one — that's what lets a fresh origin auto-resume. */
   function normalizeProviderId(provider) {
-    const p = String(provider || getProv() || 'openrouter').trim().toLowerCase();
-    if (p === 'codex' || p === 'openai-codex') return 'codex';
-    if (p === 'openai' || p === 'openai-api') return 'openai';
-    if (p === 'anthropic' || p === 'claude') return 'anthropic';
-    if (p === 'gemini' || p === 'google' || p === 'google-ai' || p === 'google-gemini') return 'gemini';
-    // grok/kimi are their OWN keyless OAuth (subscription) providers — NOT aliases for the API-key
-    // providers. Folding 'grok' into 'xai' here silently rewrote every GROK OAUTH selection into the
-    // API-key xAI provider (and 'kimi' fell through to 'openrouter'), so the OAuth brains could never
-    // actually be the active provider anywhere Harness owns the truth.
-    if (p === 'grok' || p === 'grok-oauth' || p === 'supergrok' || p === 'xai-oauth') return 'grok';
-    if (p === 'kimi' || p === 'moonshot' || p === 'kimi-code' || p === 'kimi-for-coding' || p === 'kimi-oauth') return 'kimi';
-    if (p === 'xai' || p === 'x-ai') return 'xai';
-    if (p === 'groq') return 'groq';
-    if (p === 'mistral' || p === 'mistralai') return 'mistral';
-    if (p === 'deepseek') return 'deepseek';
-    if (p === 'together' || p === 'together-ai') return 'together';
-    if (p === 'fireworks' || p === 'fireworks-ai') return 'fireworks';
-    if (p === 'perplexity' || p === 'pplx' || p === 'sonar') return 'perplexity';
-    if (p === 'cerebras') return 'cerebras';
-    // managed credits — bearer is the linked device token (mirrors app.js + registry.js aliases)
-    if (p === 'starnet' || p === 'starnet-cloud' || p === 'managed') return 'starnet';
-    if (p === 'ollama' || p === 'ollama-local') return 'ollama';
-    if (p === 'claude-cli' || p === 'claude-code' || p === 'claude-code-cli') return 'claude-cli';
-    if (p === 'custom' || p === 'openai-compatible' || p === 'local' || p === 'vllm' || p === 'lmstudio') return 'custom';
-    return 'openrouter';
+    return SK.providers.registry.normalizeProviderId(provider || 'openrouter', '');
   }
   function providerSlot(base, provider) {
     return base + '.' + normalizeProviderId(provider || getProv());
@@ -570,57 +531,13 @@ const Harness = (() => {
     if (p === 'openrouter') localStorage.setItem(base, v);
   }
   function setDesktopConfigured(provider, value) {
-    const p = normalizeProviderId(provider || getProv());
-    _configuredByProvider[p] = !!value;
-    if (p === 'openrouter') _configured = !!value;
+    // A keychain/OAuth callback means state changed; its boolean is not a provider readiness verdict.
+    readinessCache.invalidate(normalizeProviderId(provider || getProv()));
+    return refreshProviderReadiness();
   }
-  function providerNeedsKey(provider) {
-    const p = normalizeProviderId(provider);
-    // codex/grok/kimi authenticate by device-code OAuth tokens held sidecar-side; ollama/custom are keyless
-    // endpoints; starnet's bearer is the linked device token, which the user never sees, let alone pastes;
-    // claude-cli authenticates with the local Claude CLI's own sign-in.
-    return p !== 'codex' && p !== 'grok' && p !== 'kimi' && p !== 'ollama' && p !== 'custom' && p !== 'starnet' && p !== 'claude-cli';
-  }
-  function configured(provider) {
-    const p = normalizeProviderId(provider);
-    if (p === 'ollama' || p === 'claude-cli') return true;
-    if (p === 'custom' && getBaseUrl(p)) return true;
-    // STARNET MANAGED is configured IFF the sidecar reports live credits — in BOTH modes. It must not fall
-    // through to the keyless branch below, which would answer "configured" for every station simply because
-    // there is no key to look for, and claim a station can run on credits it has never been linked to.
-    if (p === 'starnet') return !!_configuredByProvider.starnet;
-    return DESKTOP ? !!(_configuredByProvider[p] || (p === 'openrouter' && _configured)) : (DEVMODE || !providerNeedsKey(p) || !!getKey(p));
-  }
-
-  // Truthful-telemetry getter for the SETTINGS credential list/badges: true IFF a real credential
-  // actually exists for this provider — never fabricated by DEVMODE. Unlike configured() (which gates
-  // run-ability and intentionally reports true in DEVMODE for auto-resume), this answers ONLY "does a
-  // stored credential back this row?" so removing a key makes the row/badge disappear on rerender.
-  //   - a real API key is stored (browser localStorage), OR
-  //   - desktop OS keychain reports it (getKey returns '' by design there; _configuredByProvider holds truth), OR
-  //   - a deliberately keyless endpoint is configured (custom with a baseUrl; ollama is a local endpoint), OR
-  //   - codex OAuth is connected, OR
-  //   - DEV seed: the host holds a server-side runtime credential for exactly DEV.prov (the seeded provider).
-  function hasStoredCredential(provider) {
-    const p = normalizeProviderId(provider);
-    if (p === 'codex') return DESKTOP ? !!_configuredByProvider.codex : (getProv() === 'codex');
-    // grok/kimi mirror codex: OAuth tokens live sidecar-side, so the desktop configured map (fed by the boot
-    // probe + app.js's status refresh) is the only local truth; in the browser the active-provider pick stands in.
-    if (p === 'grok' || p === 'kimi') return DESKTOP ? !!_configuredByProvider[p] : (getProv() === p);
-    if (p === 'ollama') return false;                      // an endpoint is configuration, never a credential
-    if (p === 'claude-cli') return false;                  // the local CLI's own sign-in is not a StarNet credential
-    // a keyless custom endpoint must not manufacture a key row. On desktop getKey is '' by design, so the keychain
-    // map below is the custom key's only truth (GitHub #111: a saved desktop CUSTOM key read as keyless).
-    if (p === 'custom' && !DESKTOP && !getKey(p)) return false;
-    if (DESKTOP) return !!(_configuredByProvider[p] || (p === 'openrouter' && _configured));
-    if (!!readScoped(LS.key, p)) return true;              // a real key is stored in this browser
-    // DEV seed: the host may hold a server-side runtime key for the seeded provider. It is not a given —
-    // a seeded station with no key at all still boots in DEV mode, and ASSUMING the key existed made the
-    // settings row render "● KEY SAVED" over nothing (an agent live-verifying a change reads that badge as
-    // proof it can run). `hasKey` is the sidecar's own answer; an older boot payload without it reads false.
-    if (DEVMODE && DEV && DEV.hasKey === true && normalizeProviderId(DEV.prov) === p) return true;
-    return false;
-  }
+  function providerNeedsKey(provider) { return SK.providers.registry.providerRequiresKey(normalizeProviderId(provider)); }
+  function configured(provider) { return readiness(provider).unattendedReady === true; }
+  function hasStoredCredential(provider) { return readiness(provider).credential.present === true; }
 
   // getKey() returns the real key in the browser; in desktop it returns '' (the key isn't here).
   const getKey = provider => DESKTOP ? '' : readScoped(LS.key, provider);
@@ -639,11 +556,12 @@ const Harness = (() => {
           if (p === 'openrouter') return invoke('harness_store_key', { key: k || '' });
           throw e;
         })
-        .then(r => { setDesktopConfigured(p, on); return r; })
+        .then(async r => { await setDesktopConfigured(p, on); return r; })
         .catch(e => { setDesktopConfigured(p, false); throw e; });
     }
     writeScoped(LS.key, p, k || '');
-    return syncEngineKey(p).then(engine => ({ engine }));   // #89: resolves (never rejects) with whether routines have it
+    readinessCache.invalidate(p);
+    return syncEngineKey(p).then(async engine => { readinessCache.invalidate(p); await refreshProviderReadiness(); return { engine }; });   // #89: resolves (never rejects) with whether routines have it
   };
   function keyPoolSize(provider) {
     const p = normalizeProviderId(provider || getProv());
@@ -655,11 +573,17 @@ const Harness = (() => {
     const cleaned = Array.from(new Set((Array.isArray(keys) ? keys : []).map(k => String(k || '').trim()).filter(Boolean))).slice(0, 8);
     if (DESKTOP) {
       return invoke('harness_store_provider_key_pool', { provider: p, keys: cleaned })
-        .then(count => { _alternateCountByProvider[p] = Math.max(0, Number(count) || 0); return { count }; });
+        .then(async count => {
+          _alternateCountByProvider[p] = Math.max(0, Number(count) || 0);
+          readinessCache.invalidate(p);
+          await refreshProviderReadiness();
+          return { count };
+        });
     }
     writeScoped(LS.keyPool, p, JSON.stringify(cleaned));
+    readinessCache.invalidate(p);
     // #89: the station's copy follows the backups too — resolves { count, engine } like setKey's { engine }
-    return syncEngineKey(p).then(engine => ({ count: cleaned.length, engine }));
+    return syncEngineKey(p).then(async engine => { readinessCache.invalidate(p); await refreshProviderReadiness(); return { count: cleaned.length, engine }; });
   }
   /* #89 THE STATION KEEPS A COPY. In the browser build a key lives in this page's localStorage and rides each
      interactive /api/run — so chat works — but a scheduled routine, Run Now, the night shift or a line hop runs with
@@ -752,52 +676,83 @@ const Harness = (() => {
     return Promise.all(jobs);
   }
   /* #137 DESKTOP ENDPOINT HAND-OVER. On the desktop app the OS keychain holds provider KEYS only; a provider's endpoint
-     (a CUSTOM base URL, an Ollama that is not on this machine) lives in this window's storage, and the station keeps
-     the CUSTOM / Ollama copy it was last handed (sidecar/index.js DESKTOP_ENDPOINTS_FILE — before 0.14.0 that copy was
-     memory, so every app restart or respawn left routines, Run Now, line hops, channels and phone runs failing "no
-     CUSTOM base URL is saved on this station" while chat kept working; a cloud provider's override is still held for
-     the session only). The window is the source: once per page boot (init), after ENGINE
+     (a CUSTOM base URL, an Ollama that is not on this machine, a cloud provider's override such as an OpenRouter-compatible
+     proxy) lives in this window's storage, and the station keeps the copy it was last handed, across app restarts and
+     sidecar respawns (sidecar/index.js DESKTOP_ENDPOINTS_FILE — before 0.14.0 that copy was memory, so every app restart
+     or respawn left routines, Run Now, line hops, channels and phone runs failing "no CUSTOM base URL is saved on this
+     station" while chat kept working). The window is the source: once per page boot (init), after ENGINE
      RESTART, and on the first answer after this page saw the station stop answering, the page hands the station every
-     endpoint slot it holds — a cleared slot as a clear — so the station's copy matches this window. With NO key, so the
+     endpoint slot it holds — a cleared slot as a clear — and a clear for every endpoint the station keeps that this window
+     has NO slot for (GET /api/runtime/agent keptEndpoints: its storage was reset, an older build pushed it), so the
+     station's copy matches this window and no keychain key goes on to an endpoint nothing here shows. With NO key, so the
      keychain is never touched (harness_store_provider_key writes the keychain only when a key is given). Never rejects
-     and never awaited by boot; a failed hand-over is logged and tried again at the next come-back. */
+     and never awaited by boot; a failed hand-over is logged and tried again at the next come-back. A run waits for one in
+     flight, never past 8 s (endpointHandOverSettled). */
   function desktopEndpointsHeld() {
     const held = new Map();
     try {
       for (let i = 0; i < localStorage.length; i++) {
         const k = String(localStorage.key(i) || '');
         const p = k === LS.baseUrl ? 'openrouter' : (k.indexOf(LS.baseUrl + '.') === 0 ? normalizeProviderId(k.slice(LS.baseUrl.length + 1)) : '');
-        // starnet's endpoint is the linked account's (the sidecar resolves it); the shell would file it under openrouter
+        // starnet's endpoint is the linked account's (the sidecar resolves it): never handed over
         if (!p || p === 'starnet' || held.has(p)) continue;
         held.set(p, String(readScoped(LS.baseUrl, p) || '').trim());   // '' = this window cleared it: the station forgets its copy
       }
-    } catch (_) { /* storage unavailable: no endpoint saved here to hand over */ }
+    } catch (e) {
+      // storage unavailable: nothing here to hand over, and nothing known to clear (null, never "this window holds none")
+      console.warn('[harness] could not read this window\'s endpoint slots: ' + ((e && e.message) || e));
+      return null;
+    }
     return held;
+  }
+  // the providers whose endpoint the station keeps (GET /api/runtime/agent keptEndpoints); [] when it cannot say
+  function stationKeptEndpoints() {
+    return Promise.resolve().then(() => fetch('/api/runtime/agent', { cache: 'no-store' }))
+      .then(r => (r && r.ok) ? r.json() : null)
+      .then(j => ((j && Array.isArray(j.keptEndpoints)) ? j.keptEndpoints : [])
+        .map(e => String((e && e.provider) || '').trim().toLowerCase()).filter(p => p && p !== 'starnet' && normalizeProviderId(p) === p), e => {
+        console.warn('[harness] could not read which endpoints the station keeps: ' + ((e && e.message) || e));
+        return [];
+      });
   }
   let endpointHandOver = null;
   function pushDesktopEndpoints() {
     if (!DESKTOP) return Promise.resolve([]);
     if (endpointHandOver) return endpointHandOver;   // one hand-over in flight at a time
-    const jobs = [];
-    desktopEndpointsHeld().forEach((baseUrl, provider) => {
-      jobs.push(Promise.resolve().then(() => invoke('harness_store_provider_key', { provider, baseUrl }))
-        .then(() => ({ provider, ok: true }), e => {
-          console.warn('[harness] ' + provider + ': could not hand the station its endpoint: ' + ((e && e.message) || e));
-          return { provider, ok: false };
-        }));
-    });
-    endpointHandOver = Promise.all(jobs).then(out => { endpointHandOver = null; return out; });
-    return endpointHandOver;
+    const handOver = stationKeptEndpoints().then(kept => {
+      const held = desktopEndpointsHeld();
+      if (held) kept.forEach(p => { if (!held.has(p)) held.set(p, ''); });   // kept by the station, shown nowhere here: a clear
+      const jobs = [];
+      (held || new Map()).forEach((baseUrl, provider) => {
+        jobs.push(Promise.resolve().then(() => invoke('harness_store_provider_key', { provider, baseUrl }))
+          .then(() => ({ provider, ok: true }), e => {
+            console.warn('[harness] ' + provider + ': could not hand the station its endpoint: ' + ((e && e.message) || e));
+            return { provider, ok: false };
+          }));
+      });
+      return Promise.all(jobs);
+    }).then(out => { if (endpointHandOver === handOver) endpointHandOver = null; return out; });
+    endpointHandOver = handOver;
+    return handOver;
+  }
+  // a run sent while a hand-over is in flight waits for it — but never past 8 s: a shell command that never answers must not
+  // hold every run. The hung hand-over is then let go (the next one starts) and the run goes on what the station holds.
+  function endpointHandOverSettled() {
+    const inFlight = endpointHandOver;
+    if (!inFlight) return Promise.resolve();
+    let timer = null;
+    const capped = new Promise(r => { timer = setTimeout(() => { if (endpointHandOver === inFlight) endpointHandOver = null; r(); }, 8000); });
+    return Promise.race([inFlight, capped]).then(() => { clearTimeout(timer); });
   }
   // the /api fetch wrapper reports each call: false = the station did not answer at all (a refused connection while it
   // respawns), true = it answered. The first answer after a silence re-syncs the endpoints (a change made in the gap).
   let stationSilent = false;
   function noteStationReply(answered) {
-    if (!DESKTOP) return;
-    if (!answered) { stationSilent = true; return; }
+    if (!answered) { stationSilent = true; readinessCache.offline(); return; }
     if (!stationSilent) return;
     stationSilent = false;
-    pushDesktopEndpoints();
+    if (DESKTOP) pushDesktopEndpoints().then(refreshProviderReadiness);
+    else refreshProviderReadiness();
   }
   // #62: no provider key contains whitespace — a key pasted out of a narrow SSH terminal can carry a line wrap (or a
   // zero-width char from a web page) in its MIDDLE, which .trim() never removed. Strip them all (the sidecar does too).
@@ -805,8 +760,9 @@ const Harness = (() => {
   /* #62: WHY a key check failed, in words. The sidecar's /api/providers/validate answers 200 with { error } for a
      provider verdict, but the route itself can be refused before it runs (403 forbidden origin/host/token, 423 frozen)
      with a non-JSON body — which used to fold into "the provider did not verify this key" while the provider was
-     never even asked. Name the station's refusal and its fix instead. PURE (test-locked). */
-  function keyCheckFailure(status, j, text) {
+     never even asked. Name the station's refusal and its fix instead. `code`: the gate's own name for it
+     (X-StarNet-Code); the body's words are read only from a station that sends none. PURE (test-locked). */
+  function keyCheckFailure(status, j, text, code) {
     j = j || {};
     if (j.error) return String(j.error);
     const t = String(text == null ? '' : text).trim().slice(0, 80);
@@ -814,10 +770,12 @@ const Harness = (() => {
     // a page the station KEPT its key from refuses every key save with 'forbidden token' too — that is not a restart
     // (review threads-backend-05). The typeof guard keeps this pure when a test lifts it on its own.
     const withheld = typeof tokenWithheld === 'string' && tokenWithheld;
-    const hint = /forbidden origin/.test(t) ? ' — this page’s address doesn’t match the station; open StarNet at the exact address you forward to it'
-      : /forbidden host/.test(t) ? ' — StarNet answers only on localhost / 127.0.0.1; reach it through a port forward, not a hostname'
-      : /forbidden token/.test(t) && withheld ? ' — this browser was not verified as running under your own user account, so the station kept its key from this page (see the notice)'
-      : /forbidden token/.test(t) ? ' — the station restarted since this page loaded; reload the page'
+    const gate = code ? String(code) : /forbidden origin/.test(t) ? 'forbidden_origin' : /forbidden host/.test(t) ? 'forbidden_host'
+      : /forbidden token/.test(t) ? (withheld ? 'token_missing' : 'token_stale') : '';
+    const hint = gate === 'forbidden_origin' ? ' — this page’s address doesn’t match the station; open StarNet at the exact address you forward to it'
+      : gate === 'forbidden_host' ? ' — StarNet answers only on localhost / 127.0.0.1; reach it through a port forward, not a hostname'
+      : gate === 'token_missing' ? ' — this browser was not verified as running under your own user account, so the station kept its key from this page (see the notice)'
+      : gate === 'token_stale' ? ' — the station restarted since this page loaded; reload the page'
       : '';
     return 'the station refused the key check (HTTP ' + status + (t && !/^[{<]/.test(t) ? ' ' + t : '') + ')' + hint;
   }
@@ -835,14 +793,14 @@ const Harness = (() => {
     const r = await fetch(route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const text = await r.text().catch(() => '');
     let j = {}; try { j = JSON.parse(text) || {}; } catch (_) { j = {}; }
-    return { r, j, text };
+    return { r, j, text, code: typeof stationCodeOf === 'function' ? stationCodeOf(r) : '' };   // the gate's name for a refusal
   }
   async function validateAndSetKeyPool(keys, provider) {
     const p = normalizeProviderId(provider || getProv());
     const cleaned = Array.from(new Set((Array.isArray(keys) ? keys : []).map(cleanKey).filter(Boolean))).slice(0, 8);
     for (const candidate of cleaned) {
-      const { r, j, text } = await postKeyCheck('/api/providers/validate', { provider: p, key: candidate, baseUrl: getBaseUrl(p) || '', model: p === getProv() ? getModel() : '' });
-      if (!r.ok || !j.credentialVerified) throw new Error((r.ok && !j.error ? 'a spare key was rejected' : keyCheckFailure(r.status, j, text)) + ' — your previous spare keys are unchanged');
+      const { r, j, text, code } = await postKeyCheck('/api/providers/validate', { provider: p, key: candidate, baseUrl: getBaseUrl(p) || '', model: p === getProv() ? getModel() : '' });
+      if (!r.ok || !j.credentialVerified) throw new Error((r.ok && !j.error ? 'a spare key was rejected' : keyCheckFailure(r.status, j, text, code)) + ' — your previous spare keys are unchanged');
     }
     return setKeyPool(cleaned, p);
   }
@@ -884,8 +842,10 @@ const Harness = (() => {
     selectionRevision++;
     const p = normalizeProviderId(provider || getProv());
     writeScoped(LS.baseUrl, p, u || '');
-    if (DESKTOP) return invoke('harness_store_provider_key', { provider: p, baseUrl: u || '' }).catch(e => desktopEndpointFailed(p, e));
-    return syncEngineKey(p).then(engine => ({ engine }));   // #89: an endpoint saved here reaches unattended runs too (resolves { engine } like setKey)
+    readinessCache.invalidate(p);
+    if (DESKTOP) return invoke('harness_store_provider_key', { provider: p, baseUrl: u || '' })
+      .then(async result => { readinessCache.invalidate(p); await refreshProviderReadiness(); return result; }).catch(e => desktopEndpointFailed(p, e));
+    return syncEngineKey(p).then(async engine => { readinessCache.invalidate(p); await refreshProviderReadiness(); return { engine }; });   // #89: an endpoint saved here reaches unattended runs too (resolves { engine } like setKey)
   };
   function defaultReasoningEffortForProvider(provider) {
     const p = normalizeProviderId(provider);
@@ -909,6 +869,9 @@ const Harness = (() => {
   }
   const getReasoningEffort = provider => normalizeReasoningEffort(readScoped(LS.effort, provider) || defaultReasoningEffortForProvider(provider));
   const setReasoningEffort = (e, provider) => writeScoped(LS.effort, provider || getProv(), normalizeReasoningEffort(e));
+  // an EMPTY slot: the run goes out at the provider default (getReasoningEffort's fallback). COMMS's focus calls it for an
+  // agent with no effort of its own, so the slot never keeps the effort of the agent focused before it.
+  const clearReasoningEffort = provider => writeScoped(LS.effort, provider || getProv(), '');
   // 0.12.5 reasoning migration (App calls it once per save, see app.js migrateLegacyReasoning): drop an inherited OFF
   // for providers whose 0.12.4 dock locked every model at OFF while the adapter sent nothing, so the provider default
   // applies again instead of 0.12.5 sending reasoning_effort 'none'.
@@ -944,6 +907,12 @@ const Harness = (() => {
   function runWindowOf(id) {
     const m = catalogModel(id);
     return (m && m.runWindow) || 0;
+  }
+  // the share of that window a run folds at (the sidecar's /api/models compactAt, context.js RUN_CONTEXT_DEFAULTS), so the page
+  // fits a chat to the line the server folds on (historyfit.js fitModel); 0 = the sidecar did not say (an older one)
+  function compactAtOf(id) {
+    const m = catalogModel(id);
+    return (m && m.compactAt) || 0;
   }
 
   /* Context-window occupancy for ONE conversation — the question the bottom-bar gauge actually asks
@@ -1020,7 +989,9 @@ const Harness = (() => {
       reasoningEfforts: Array.isArray(m && m.reasoningEfforts) ? m.reasoningEfforts.slice() : [],
       defaultReasoningLevel: (m && m.defaultReasoningLevel) || null,
       reasoningNote: (m && typeof m.reasoningNote === 'string' && m.reasoningNote) || null,
-      runWindow: (m && +m.runWindow) || 0
+      runWindow: (m && +m.runWindow) || 0,
+      // a share of the window, so only (0, 1] is a fold line; anything else reads 0 = unknown, and the fit keeps its former share
+      compactAt: (m && +m.compactAt > 0 && +m.compactAt <= 1) ? +m.compactAt : 0
     };
   }
 
@@ -1081,9 +1052,9 @@ const Harness = (() => {
     const p = normalizeProviderId(provider || getProv());
     const baseUrl = getBaseUrl(p) || '';
     const credentialSaved = hasStoredCredential(p);
-    const endpointConfigured = p === 'ollama' || p === 'claude-cli' || (p === 'custom' && !!baseUrl);
+    const endpointConfigured = readiness(p).endpoint.configured;
     const selected = p === getProv();
-    const fallback = { provider: p, credentialSaved, endpointConfigured, reachable: false, catalogAvailable: false, credentialVerified: false, selected, error: 'station unreachable' };
+    const fallback = { provider: p, credentialSaved, endpointConfigured, reachable: false, catalogAvailable: false, credentialVerified: false, selected, cached: true, readiness: readiness(p), error: 'station unreachable' };
     if (p === 'custom' && !endpointConfigured) return Object.assign({}, fallback, { error: 'endpoint not configured' });
     try {
       const r = await fetch('/api/providers/probe', {
@@ -1092,12 +1063,14 @@ const Harness = (() => {
       });
       const text = await r.text().catch(() => '');
       let j = {}; try { j = JSON.parse(text) || {}; } catch (_) { j = {}; }
+      await refreshProviderReadiness();
       return {
         provider: p, credentialSaved, endpointConfigured,
+        readiness: readiness(p), cached: readiness(p).cached,
         reachable: !!(r.ok && j.reachable), catalogAvailable: !!(j && j.catalogAvailable),
         credentialVerified: !!(j && j.credentialVerified), selected,
         // a refused probe (403 origin/host/token) names the refusal, never a blank "check failed" (#62)
-        error: r.ok ? String((j && j.error) || '') : keyCheckFailure(r.status, j, text).replace('key check', 'provider check')
+        error: r.ok ? String((j && j.error) || '') : keyCheckFailure(r.status, j, text, stationCodeOf(r)).replace('key check', 'provider check')
       };
     } catch (_) { return fallback; }
   }
@@ -1112,9 +1085,9 @@ const Harness = (() => {
     if (!candidate) return setKey('', p);
     const hadKey = hasStoredCredential(p);   // a first-time WAKE has no previous key to keep — never claim one
     const checkModel = String(model || '').trim() || (p === getProv() ? getModel() : '');
-    const { r, j, text } = await postKeyCheck('/api/providers/validate', { provider: p, key: candidate, baseUrl: getBaseUrl(p) || '', model: checkModel });
+    const { r, j, text, code } = await postKeyCheck('/api/providers/validate', { provider: p, key: candidate, baseUrl: getBaseUrl(p) || '', model: checkModel });
     if (!r.ok || !j.credentialVerified) {
-      throw new Error(keyCheckLine(keyCheckFailure(r.status, j, text)) + (hadKey ? ' — your previous key is unchanged' : ' — nothing was saved'));
+      throw new Error(keyCheckLine(keyCheckFailure(r.status, j, text, code)) + (hadKey ? ' — your previous key is unchanged' : ' — nothing was saved'));
     }
     const stored = await Promise.resolve(setKey(candidate, p));
     return Object.assign({}, j, { stored: true }, (stored && stored.engine) ? { engine: stored.engine } : {});
@@ -1368,7 +1341,7 @@ const Harness = (() => {
      stream of newline-delimited JSON events — the FROZEN agent.* U.bus events the harness emits.
      Each event is re-emitted on U.bus (for telemetry) and mapped to the caller's callbacks.
      onToken(delta) per text delta · onToolCall/onToolResult per tool step · onUsage per turn. */
-  async function chat({ system, messages, onToken, onTerminalReset, onUsage, onToolCall, onToolResult, onRunId, onDeliverable, onPermission, onSummon, agentId, isTask, recurring, signal, streamId, recipeId, workbench, placed, stationPlaced, internal, evidence, keepEffort, projectRoot, taskAction, postconditions, recovery, connectorContinuationOf, retryUserRunId, voiceTurn }) {
+  async function chat({ system, messages, onToken, onTerminalReset, onUsage, onToolCall, onToolResult, onRunId, onDeliverable, onPermission, onSummon, agentId, isTask, recurring, signal, streamId, recipeId, workbench, placed, stationPlaced, internal, evidence, keepEffort, projectRoot, taskAction, postconditions, recovery, connectorContinuationOf, goalContinuation, quotesStream, retryUserRunId, voiceTurn, turnId, retryOf, turnAt, clientNow, turnRowId, windowTokens, windowFrom }) {
     const model = getModel(), provider = getProv(), key = getKey(provider), reasoningEffort = getReasoningEffort(provider);
     // Codex authenticates by an OAuth token (server-side); the desktop build keeps the key in the
     // sidecar's env (keychain). Neither needs a key sent from here.
@@ -1408,10 +1381,20 @@ const Harness = (() => {
           continuationToken: String(recovery.continuationToken)
         };
       }
-      if (getBaseUrl(provider)) reqBody.baseUrl = getBaseUrl(provider);
+      if (provider !== 'starnet' && getBaseUrl(provider)) reqBody.baseUrl = getBaseUrl(provider);   // StarNet's endpoint is the linked account's
       if (streamId) reqBody.streamId = streamId;   // M-mem.2b: scope this run's memory to the active workstream
       if (connectorContinuationOf) reqBody.connectorContinuationOf = connectorContinuationOf;
       if (retryUserRunId) reqBody.retryUserRunId = String(retryUserRunId);
+      // turn identity (TurnMerge.sendIds): the turn this send answers, the retried turn, the row's own time + the page's
+      // clock now (the station converts the pair to its own clock), and the bound directive's rowId
+      if (turnId) reqBody.turnId = String(turnId);
+      if (retryOf) reqBody.retryOf = String(retryOf);
+      if (Number.isSafeInteger(turnAt) && Number.isSafeInteger(clientNow)) { reqBody.turnAt = turnAt; reqBody.clientNow = clientNow; }
+      if (Number.isSafeInteger(turnRowId) && turnRowId > 0) reqBody.turnRowId = turnRowId;
+      if (!recovery && Number.isFinite(windowTokens)) reqBody.windowTokens = windowTokens;
+      if (!recovery && windowFrom === 'station') reqBody.windowFrom = 'station';
+      if (goalContinuation === true) reqBody.goalContinuation = true;   // a goal-loop step (kind goal-step), never the Commander's wording
+      if (quotesStream) reqBody.quotesStream = String(quotesStream).slice(0, 64);   // an internal call composed from this session's words (the retitle, the goal judge): the station stamps what it writes as a quote of it, so a delete of the session takes it too
       // reason-only self-talk (retitle / goal-judge / pitch / autopilot): the sidecar keeps the caller's system
       // prompt VERBATIM (no manual/capability/skill/memory dressing) and never stamps the away clock for it.
       if (internal) reqBody.internal = true;
@@ -1454,6 +1437,10 @@ const Harness = (() => {
         try { reqBody.stream = { id: await shared.ready, key: shared.key }; }
         catch (_) { shared.drop(); shared = null; }
       }
+      // DESKTOP: a run sent while the endpoint hand-over is in flight (a respawn, a boot) waits for it — the station never
+      // sends its keychain key to the endpoint this body names, so until the hand-over lands it would run on the provider's
+      // default. The hand-over never rejects (each push resolves its own failure); the wait is capped at 8 s.
+      if (DESKTOP && endpointHandOver) await endpointHandOverSettled();
       const post = () => fetch('/api/run', {
         method: 'POST', signal,
         headers: { 'Content-Type': 'application/json' },
@@ -1479,12 +1466,15 @@ const Harness = (() => {
     // failure: Not signed in to ChatGPT …"} JSON, handleRun's "missing key/model", the token gate's "forbidden
     // token". The old bare throw discarded it, so the friendly-error ladder never saw the text it classifies on
     // and the RECONNECT CHATGPT / reload doors were lost on this whole path (EL-10/EL-11). Read it (bounded)
-    // and carry it in the thrown message.
+    // and carry it in the thrown message. The station's own name for the refusal rides beside the words (stationCode:
+    // X-StarNet-Code), so COMMS decides a stale page, a wrong address or a route's refusal from it, never from a bare 403.
     if (!res.ok || !res.body) {
       if (shared) { shared.drop(); shared = null; }
       let detail = '';
       try { detail = sidecarErrorDetail(await res.text()); } catch (_) {}
-      throw new Error('sidecar HTTP ' + res.status + (detail ? ' — ' + detail : ''));
+      const error = Object.assign(new Error('sidecar HTTP ' + res.status + (detail ? ' — ' + detail : '')), { status: res.status, stationCode: typeof stationCodeOf === 'function' ? stationCodeOf(res) : '' });
+      if (windowFrom === 'station' && res.status === 503) error.code = 'HISTORY_UNAVAILABLE';
+      throw error;
     }
     // the station took the run onto the page's stream (its answer is a small JSON receipt); a station that answered with
     // the run's own NDJSON stream keeps it on this response
@@ -1504,9 +1494,12 @@ const Harness = (() => {
     // additive: a 'budget' stop at the per-run TOKEN ceiling for a model with no known price (loop.js maxUnpricedTokens).
     // The $ cap never governed it, so COMMS must name the real limit instead of "raise your spend cap".
     let unpricedModel = null, unpricedCapTokens = 0;
-    // additive: a 'budget' stop at the per-run SUBSCRIPTION-token ceiling (loop.js maxSubscriptionTokens) — a Claude Code
-    // sign-in books $0 per turn, so this is the only ceiling it has; COMMS names it instead of a $ cap.
+    // additive: a 'budget' stop at the per-run SIGN-IN token ceiling (loop.js maxSubscriptionTokens) — a sign-in plan books $0
+    // per call, so this is the only ceiling it has; COMMS names it (SIGN-IN TOKEN CEILING) instead of a $ cap.
     let subscriptionModel = null, subscriptionCapTokens = 0;
+    // TYPED OUTCOMES (additive): the station's own code for how the lead's run ended, and why it failed — COMMS maps the
+    // code to words through one table (friendlyerror.js) instead of re-reading the error's text
+    let errorCode = '', outcome = '';
     let sawLeadEnd = false;
 
     try {
@@ -1548,7 +1541,7 @@ const Harness = (() => {
             // harness adds on top of them. run.start always precedes agent.cost on this stream, so the
             // bus fold below always finds the registration.
             if (payload.runId && !internal) registerRun(payload.runId, agentId || 'agent', streamId, messages);
-            if (!runId) { runId = payload.runId; onRunId && onRunId(runId); }
+            if (!runId) { runId = payload.runId; onRunId && onRunId(runId, payload); }
             else if (payload.runId && payload.runId !== runId) { delegatedRuns.add(payload.runId); if (delegatedRuns.size > 400) delegatedRuns.delete(delegatedRuns.values().next().value); }
             break;
           case 'agent.token': full += payload.delta; onToken && onToken(payload.delta); break;
@@ -1591,7 +1584,7 @@ const Harness = (() => {
             lastUsage = { total_tokens: (payload.tokensIn || 0) + (payload.tokensOut || 0), cost: payload.usd, model: payload.model || '' };
             onUsage && onUsage(lastUsage); break;
           case 'capdenied': errMsg = errMsg || ('no ' + (payload.need || 'capability') + ' — ' + (payload.reason || '')); break;
-          case 'agent.run.error': if (!payload.runId || payload.runId === runId) errMsg = payload.message; break;   // the lead's own error (a worker's rides the tool result)
+          case 'agent.run.error': if (!payload.runId || payload.runId === runId) { errMsg = payload.message; if (payload.failureCode) errorCode = String(payload.failureCode); } break;   // the lead's own error (a worker's rides the tool result)
           case 'agent.run.end':
             if (payload.runId) { delete runModels[payload.runId]; internalRuns.delete(payload.runId); }
             // latch the lead's stop reason AND (Lane 5, additive) WHY it stopped when the provider truncated/
@@ -1610,6 +1603,9 @@ const Harness = (() => {
               unpricedCapTokens = Number(payload.unpricedCapTokens) || 0;
               subscriptionModel = payload.subscriptionModel ? String(payload.subscriptionModel) : null;
               subscriptionCapTokens = Number(payload.subscriptionCapTokens) || 0;
+              // the station's stamp, else the same rule over this end's own fields (an older station stamps none)
+              outcome = payload.outcome ? String(payload.outcome) : ((typeof RunOutcome !== 'undefined' && RunOutcome.ofEnd) ? RunOutcome.ofEnd(payload).outcome : '');
+              if (!errorCode && payload.failureCode) errorCode = String(payload.failureCode);
             }
             break;   // the lead's own end, not a forwarded worker's
         }
@@ -1628,8 +1624,8 @@ const Harness = (() => {
     if (!sawLeadEnd && !errMsg) throw transportLoss(new Error('Reply stream disconnected before completion was confirmed.'), 'eof');
     // surface the error to the caller (do NOT swallow it just because some text streamed first) —
     // a network/fetch failure still throws below; this is for in-band run errors / capdenied.
-    if (errMsg) return { text: full, usage: lastUsage, runId, error: errMsg, endReason, finishReason, completionVerdict, effectVerdict, budgetScope, budgetCapUsd, budgetCapIsBalance, unpricedModel, unpricedCapTokens, subscriptionModel, subscriptionCapTokens, budgetProjected };
-    return { text: full, usage: lastUsage, runId, endReason, finishReason, completionVerdict, effectVerdict, budgetScope, budgetCapUsd, budgetCapIsBalance, unpricedModel, unpricedCapTokens, subscriptionModel, subscriptionCapTokens, budgetProjected };
+    if (errMsg) return { text: full, usage: lastUsage, runId, error: errMsg, errorCode, outcome, endReason, finishReason, completionVerdict, effectVerdict, budgetScope, budgetCapUsd, budgetCapIsBalance, unpricedModel, unpricedCapTokens, subscriptionModel, subscriptionCapTokens, budgetProjected };
+    return { text: full, usage: lastUsage, runId, errorCode, outcome, endReason, finishReason, completionVerdict, effectVerdict, budgetScope, budgetCapUsd, budgetCapIsBalance, unpricedModel, unpricedCapTokens, subscriptionModel, subscriptionCapTokens, budgetProjected };
   }
 
   /* Read-only fetch of an agent's notebook (its memory.md) from the sidecar. The agent writes these notes
@@ -1925,13 +1921,19 @@ const Harness = (() => {
     } catch (e) { return []; }
   }
 
-  /* Minimal JSON client for the sidecar's /api surface (the launch-token rides via the hardened
-     window.fetch above). Two shapes, matching the two call-site idioms this codebase already uses:
-       get(path)        -> resolves the parsed JSON; THROWS Error('http <status>') on a non-2xx.
-                           Callers keep their own .catch — silence stays an explicit .catch(() => …).
-       post(path, body) -> resolves { ok, status, j } where j is the parsed body EVEN on a non-2xx
-       del(path)           (the sidecar's {error} envelope), so callers can surface j.error; rejects
-                           only on network failure or a non-JSON body. body defaults to {}.
+  /* THE ONE CLIENT FOR THE STATION'S JSON EXCHANGES (the launch token rides via the hardened window.fetch above). Every
+     answer is read ONCE, by read(response) -> { ok, status, code, j } (truthful acks, 2026-11-03):
+       j     the parsed JSON body, or null — never synthesized
+       ok    2xx AND a JSON object AND j.ok !== false: a 200 {ok:false} is a refusal, not a success
+       code  '' when ok; else the station's own name for it (X-StarNet-Code, sidecar/respond.js CODES), else j.code, else
+             bad_body (a 2xx that is not a JSON object), refused (a 2xx {ok:false}) or http_<status>
+     The shapes:
+       get(path)        -> the parsed body of a 2xx JSON answer; else THROWS an Error('http <status>') carrying
+                           { status, code, j }. Callers keep their own .catch — silence stays an explicit .catch(() => …).
+       post(path, body) -> resolves { ok, status, code, j } for EVERY answer: a refusal is an answer (the gate's plain-text
+       del(path)           403, an HTML 5xx and a static 404 included), never "could not reach the station". Rejects only
+                           when no answer came (network, abort, deadline). body defaults to {}.
+       why(r)           -> the one sentence for a refused result; read(response) for a Response a caller already holds.
      Streaming responses (/api/run, /api/cron/run) and Response-shape consumers must NOT use this. */
   async function requestJson(path, init, options) {
       const controller = new AbortController();
@@ -1942,9 +1944,10 @@ const Harness = (() => {
       try {
         return await Promise.race([
           fetch(path, Object.assign({ cache: 'no-store' }, init, { signal: controller.signal })).then(async r => {
-            if (!init && !r.ok) throw new Error('http ' + r.status);
-            const j = await r.json();
-            return init ? { ok: r.ok, status: r.status, j } : j;
+            const out = await readReply(r);
+            if (init) return out;
+            if (out.status >= 200 && out.status < 300 && out.j !== null) return out.j;
+            throw Object.assign(new Error(out.status >= 200 && out.status < 300 ? 'unreadable reply (http ' + out.status + ')' : 'http ' + out.status), { status: out.status, code: out.code, j: out.j });
           }),
           new Promise((_, reject) => { deadline = setTimeout(() => {
             reject(new Error(init ? 'The station did not confirm this change. Check its state before retrying.' : 'The station took too long to respond. Please retry.'));
@@ -1953,13 +1956,57 @@ const Harness = (() => {
         ]);
       } finally { clearTimeout(deadline); if (signal) signal.removeEventListener('abort', abort); }
   }
+  // the station's own name for a failure (sidecar/respond.js stamps every answer >= 400: a lower-case code); '' from an older station
+  function stationCodeOf(response) {
+    let c = '';
+    try { c = String((response && response.headers && typeof response.headers.get === 'function' && response.headers.get('X-StarNet-Code')) || '').trim(); } catch (_) { c = ''; }
+    return /^[a-z][a-z0-9_]{0,63}$/.test(c) ? c : '';
+  }
+  // ONE reading of an answer, pure over the Response. A body read the caller aborted is no answer: it rejects.
+  async function readReply(response) {
+    const status = Number(response && response.status) || 0;
+    let j = null;
+    try { j = await response.json(); } catch (e) { if (e && e.name === 'AbortError') throw e; j = null; }
+    if (j === undefined) j = null;
+    const object = j !== null && typeof j === 'object';
+    const ok = status >= 200 && status < 300 && object && j.ok !== false;
+    if (ok) return { ok, status, code: '', j };
+    const own = object && typeof j.code === 'string' ? j.code.trim() : '';
+    const code = stationCodeOf(response) || own || (status >= 200 && status < 300 ? (object ? 'refused' : 'bad_body') : 'http_' + status);
+    return { ok, status, code, j };
+  }
+  /* The one sentence for a refused result (lower-case lead, no full stop: callers add their own). The gate's codes name this
+     page's own trouble (a key from before a restart, no key at all, a wrong address); any other refusal is the route's,
+     in its own words. The typeof guards keep this slice self-contained when a test lifts it on its own. */
+  function whyRefused(r) {
+    if (!r || r.ok) return '';
+    const status = Number(r.status) || 0, code = String(r.code || ''), j = r.j && typeof r.j === 'object' ? r.j : null;
+    if (code === 'token_stale') return 'the station restarted — reload the page to reconnect';
+    if (code === 'token_missing') {
+      const notice = typeof tokenWithheld === 'string' && tokenWithheld && typeof tokenWithheldNotice === 'function' ? tokenWithheldNotice(tokenWithheld) : '';
+      return notice ? notice.replace(/\.\s*$/, '') : 'this browser was not verified as your own account — see the station notice';
+    }
+    if (code === 'forbidden_origin') return 'this page’s address doesn’t match the station; open StarNet at the exact address you forward to it';
+    if (code === 'forbidden_host') return 'StarNet answers only on localhost / 127.0.0.1; reach it through a port forward, not a hostname';
+    const said = j && [j.error, j.message, j.reason].find(x => typeof x === 'string' && x.trim());
+    if (said) return said.trim().replace(/\.\s*$/, '');
+    if (code === 'bad_body') return 'the station answered (HTTP ' + status + ') but its reply could not be read';
+    return (status >= 500 ? 'the station hit an error' : 'the station refused this') + ' (HTTP ' + status + ')';
+  }
   // Finite JSON exchanges only: include body parsing in the deadline, never replay writes.
   // Mutations have a longer budget for connection setup and expose ambiguous completion honestly.
   const api = {
     get: (path, options) => requestJson(path, null, options),
     post: (path, body, options) => requestJson(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body == null ? {} : body) }, options),
-    del: (path, options) => requestJson(path, { method: 'DELETE' }, options)
+    del: (path, options) => requestJson(path, { method: 'DELETE' }, options),
+    read: readReply,
+    why: whyRefused,
+    stationCode: stationCodeOf
   };
+  async function turnIdentityCaps() {
+    try { return await requestJson('/api/turn-identity', null, { timeoutMs: 4000 }); }
+    catch (_) { return null; }
+  }
 
   // ONE fold point for context occupancy: every agent.cost on the bus — chat-stream re-emits AND
   // routed/scheduled/channel runs arriving over the world SSE bridge — updates the gauge. util.js
@@ -2126,8 +2173,8 @@ const Harness = (() => {
     pingEngine, engineState, restartEngine,
     canRestartEngine: () => !!tauriCoreNow(),
     isDesktop: () => DESKTOP,   // lets the UI tell a desktop keychain-store failure (token saved locally) from a browser no-op
-    getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff, normalizeReasoningEffort, init, configured, refreshCreditsConfigured, creditsEpoch: () => creditsEpoch, hasStoredCredential, setDesktopConfigured,
-    listModels, probeProvider, validateAndSetKey, priceOf, contextLimitOf, runWindowOf, contextState, contextRevision: () => contextRev, chat, cancel, haltAll, consent, consentAck, consentArgs, consentAnswer, summonAck, notebook,
+    getSelectionRevision, getKey, setKey, setKeyPool, validateAndSetKeyPool, keyPoolSize, storeChannelToken, getModel, setModel, getProv, setProv, getBaseUrl, setBaseUrl, getReasoningEffort, setReasoningEffort, clearLegacyReasoningOff, clearReasoningEffort, normalizeReasoningEffort, init, configured, readiness, refreshProviderReadiness, refreshCreditsConfigured, creditsEpoch: () => creditsEpoch, hasStoredCredential, setDesktopConfigured,
+    listModels, probeProvider, validateAndSetKey, priceOf, turnIdentityCaps, compactAtOf, contextLimitOf, runWindowOf, contextState, contextRevision: () => contextRev, chat, cancel, haltAll, consent, consentAck, consentArgs, consentAnswer, summonAck, notebook,
     runStreamState: () => runStream.state(),   // the page's ONE run stream: { open, id, runs, unsupported, heldBack }
     streamPost,   // a run a button starts (Run now / Retry / an app refresh / a workshop build), on the page's ONE run stream
     runRecoveries, prepareAutomaticRecovery, resolveRunRecovery, prepareReviewedRecovery,
@@ -2143,8 +2190,9 @@ const Harness = (() => {
     tokenWithheld: () => tokenWithheld,   // the station kept its key from this page (peerowner reason) — never "restarted"; '' = it has its key
     tokenWithheldNotice: () => tokenWithheldNotice(tokenWithheld),   // the full withheld sentence ('' = not withheld)
     tokenWithheldRetryable: () => withheldRetryable(tokenWithheld),   // a transient reason: a reload re-runs the check and may pass
-    // the ONE reading of a refused /api/* reply (voice synthesis, push-to-talk, the Live Voice probe): a 403 is a restart only when
-    // the stale-token recovery proved it (sessionStale), never for a withheld page, else the route's own refusal
+    // the ONE reading of a refused /api/* reply (voice synthesis, push-to-talk, the Live Voice probe, the restart polls, group chat,
+    // the rating store): the gate's own code decides (token_stale a restart, token_missing a withheld page); from a station that
+    // names no refusal, a 403 is a restart only when the stale-token recovery proved it (sessionStale), never for a withheld page
     classifyApiFailure: response => classifyApiFailure(response, { sessionStale, tokenWithheld, withheldNotice: tokenWithheldNotice(tokenWithheld) }),
     apiFetch: (u, init) => ensureApiToken().then(t => fetch(u, withApiToken(init, t))),
     totals: () => totals,

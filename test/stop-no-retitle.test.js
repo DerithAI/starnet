@@ -21,6 +21,7 @@ const vm = require('vm');
 const src = fs.readFileSync(path.join(__dirname, '../frontend/app/chat.js'), 'utf8');
 const Channels = require('../frontend/app/channels.js');
 const Workstreams = require('../frontend/app/workstreams.js');
+const RunOutcome = require('../frontend/app/runoutcome.js');
 
 // one function's source, from its declaration to the next named anchor (send() holds regexes with quotes in a character
 // class, which fnBody's brace scan cannot skip, so it is sliced between its own header and the next function's)
@@ -52,7 +53,7 @@ function rig() {
   Channels.reset();
   Workstreams.reset();
   const ws = Workstreams.create(null, { agentId: 'agent' });   // a fresh session, not General: its first turn is a first turn
-  const chats = [], retitled = [], cancels = [], recaps = [], stopReasons = [], stoppedTurns = [], faults = [];
+  const chats = [], retitled = [], cancels = [], recaps = [], stopReasons = [], stoppedTurns = [], faults = [], verdicts = [];
   let lead = null, cancelResolve = null, runSeq = 0;
   const harness = {
     totals: () => ({ tokens: 0, cost: 0, calls: 0 }),
@@ -77,28 +78,31 @@ function rig() {
   const liveRow = { append: noop, done: noop, error: noop, breakSeg: noop, cleanTaskIntent: noop };
   const ctx = vm.createContext({
     console, Promise, setTimeout, clearTimeout, Date, JSON, AbortController, encodeURIComponent,
-    Channels, Harness: harness,
-    Workstreams: Object.assign({}, Workstreams, { retitle: (id, t, strong) => { retitled.push({ id, t, strong }); return Workstreams.retitle(id, t, strong); } }),
+    Channels, Harness: harness, RunOutcome,
+    Workstreams: Object.assign({}, Workstreams, { retitle: (id, t, strong) => { retitled.push({ id, t, strong }); return Workstreams.retitle(id, t, strong); },
+      noteRunEnd: (id, runId, ok, word) => { verdicts.push([ok, word]); return Workstreams.noteRunEnd(id, runId, ok, word); } }),
     App: { refreshRail: noop, refreshUsage: noop },
     World: { setActivityFor: noop, setActivity: noop, say: noop, focusAgent: noop, dropRun: noop, agentRunsLive: () => 0 },
     Classify: { isTaskDirective: () => true, isAffirmation: () => false },
     activeWs: ws, interview: null, focusVersion: 0, pendingTaskQuestion: null, lastShortVerdict: null, CORRECTION_WINDOW_MS: 600000,
     wiSeq: 0, stick: false, log: null, input: null, activeLiveRow: null, system: 'You are NOVA.', onTurn: null,
-    interrupted: new Set(), stopSource: new Map(), aborters: new Map(), liveRunRoots: new Map(), queued: new Map(),
+    interrupted: new Set(), stopSource: new Map(), aborters: new Map(), liveRunRoots: new Map(), queued: new Map(), crewJoining: new Set(),
+    TurnMerge: require('../frontend/app/turnmerge.js'), turnRng: Math.random, liveRunTurns: new Map(),   // send()'s turn ids (turn identity)
     RUN_META: new Map(), clarificationRuns: new Set(), notedRuns: new Set(), runWork: new Map(), runCrew: new Map(), interruptedStreams: new Set(),
     warmChat: noop, clearChoices: noop, stepOfferAside: noop, addUser: noop, capHistory: noop, goalStepLine: noop, goalStepOf: () => null, goalOf: () => null,
     postCorrection: noop, wiBump: () => 0, wiEmit: noop, liveVoiceCall: () => false, liveVoiceOwns: () => false,
     syncStatus: noop, ensureElapsedTimer: noop, startPresence: noop, renderPresence: noop, updateControls: noop, voiceModeRules: () => '',
     streamingAgent: () => liveRow, ensureHistoryReady: async () => ({ repaint: false }), renderHistory: noop,
-    historyWindow: w => w.history.slice(), endOnUserTurn: m => m,
+    HistoryFit: require('../frontend/app/historyfit.js'), stationCaps: null,
+    windowModelOf: () => ({ limit: 0, window: 'legacy' }),
     retirePriorRatings: noop, recClaimRun: () => null, steerEchoesOf: () => [], markSentNowLanded: noop, fileRunSteers: noop,
     presenceToolCall: noop, presenceToolResult: noop, toolChip: noop, resolveChip: noop, skillFlavor: () => false, recentInRunSkill: 0,
-    breakLive: noop, toolLine: noop, budgetStopLine: () => '', stoppedByLine: by => 'stopped by ' + by,
+    breakLive: noop, toolLine: noop, endLogLine: noop, budgetStopLine: () => '', stoppedByLine: by => 'stopped by ' + by,
     markStoppedTurn: (w, t) => stoppedTurns.push(t),
     noteStopReason: (w, line, runId, endReason) => stopReasons.push({ runId, endReason }),
     offerUnpricedDoor: noop, offerBudgetDoor: noop, offerTryAgain: noop, offerRetry: () => faults.push('offerRetry'),
     offerConnectorDoor: noop, holdConnectorDoor: noop, presentTaskQuestion: noop, restoreTaskQuestion: noop, offerFork: noop,
-    settleRunNeeds: noop, retireOpenConsents: noop, runWorkLine: async () => ({ hops: 0 }), claimCrew: () => [],
+    settleRunNeeds: noop, retireOpenConsents: noop, claimCrew: () => [],
     renderRunRecap: (w, runId) => recaps.push(runId), resolvePresence: noop,
     persistPartial: () => faults.push('persistPartial'), errorHistoryLine: () => 'error', armReconnectWatch: noop,
     brief: s => String(s), sessionNote: () => '', whoOf: () => 'NOVA',
@@ -110,13 +114,13 @@ function rig() {
   });
   vm.runInContext(BUSY + ACTIVE + '\n' + SEND + RETITLE + CLEAN + STOP + '\n;this.__send = send; this.__stop = stopActive;', ctx);
   return {
-    ctx, ws, chats, retitled, cancels, recaps, stopReasons, stoppedTurns, faults,
+    ctx, ws, chats, retitled, cancels, recaps, stopReasons, stoppedTurns, faults, verdicts,
     lead: () => lead,
     confirmCancel: v => cancelResolve(v),
     // send one turn and wait until its lead call is streaming (the turn is handed back wrapped: an async function would adopt it)
-    async start(text) {
+    async start(text, opts) {
       lead = null;
-      const done = ctx.__send(text);
+      const done = ctx.__send(text, opts);
       for (let i = 0; i < 20 && !lead; i++) await tick();
       A.ok(!!lead, 'the lead call is streaming');
       return { done };
@@ -220,6 +224,44 @@ const titleCalls = r => r.chats.filter(c => c.internal);
     A.eq(r.stopReasons.map(s => s.endReason), ['cancelled'], 'the run is filed as cancelled');
     A.eq(r.chats.length, 1, 'no title call after a cancelled run (got ' + JSON.stringify(r.chats) + ')');
     A.eq(r.retitled, [], 'and no rename');
+  }
+
+  // ── 4b. the same cancel with the station's stamp on it: the typed end stops the title just as the legacy word does ──
+  {
+    const r = rig();
+    const { done } = await r.start(TEXT);
+    r.lead().resolve(Object.assign(endOf('cancelled', 'working', 'run-1'), { outcome: 'stopped' }));
+    await done; await settle();
+    A.eq(r.chats.length, 1, 'no title call after a typed stop (got ' + JSON.stringify(r.chats) + ')');
+    A.eq(r.retitled, [], 'and no rename');
+  }
+
+  // A legacy caller's lineId cannot reactivate the retired page executor or leave an extra title upgrade pending.
+  {
+    const r = rig(); let called = false;
+    r.ctx.runWorkLine = () => { called = true; throw new Error('retired page executor'); };
+    const { done } = await r.start(TEXT, { lineId: 'L1' });
+    r.lead().resolve(endOf('done', 'Here is the finished landing page.', 'run-1'));
+    await done; await settle();
+    A.eq(called, false, 'a legacy line origin never launches browser line work');
+    A.eq(titleCalls(r).length, 1, 'the successful direct turn has only its ordinary title call');
+  }
+
+  // ── 4c. the run's filed verdict: a stop and every unfinished end are no verdict and keep their own word; a succeeded run is true ──
+  {
+    const ENDS = [['a legacy cancel', endOf('cancelled', 'working', 'run-1'), [null, 'stopped']],
+      ['a typed cancel', Object.assign(endOf('cancelled', 'working', 'run-1'), { outcome: 'stopped' }), [null, 'stopped']],
+      ['a refusal', Object.assign(endOf('refusal', 'I can\'t help with that.', 'run-1'), { outcome: 'refused' }), [null, 'refused']],
+      ['a spend cap', Object.assign(endOf('budget', 'partial', 'run-1'), { outcome: 'out_of_budget' }), [null, 'out_of_budget']],
+      ['a cut reply', Object.assign(endOf('done', 'partial', 'run-1'), { outcome: 'cut_short' }), [null, 'cut_short']],
+      ['a finished run', Object.assign(endOf('done', 'All done.', 'run-1'), { outcome: 'succeeded' }), [true, 'succeeded']]];
+    for (const [what, end, want] of ENDS) {
+      const r = rig();
+      const { done } = await r.start(TEXT);
+      r.lead().resolve(end);
+      await done; await settle();
+      A.eq(r.verdicts, [want], what + ' files ' + JSON.stringify(want));
+    }
   }
 
   // ── 5. the title still comes: a stopped first turn keeps its placeholder, and the next COMPLETED turn upgrades it

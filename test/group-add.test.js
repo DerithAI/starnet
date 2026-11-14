@@ -230,12 +230,19 @@ const { makeStationControlTools, cardFor, ACTIONS } = require('../sidecar/tools/
   const gc = fs.readFileSync(path.join(__dirname, '../frontend/app/group-chat.js'), 'utf8');
   A.ok(/if \(!general && typeof Channels !== 'undefined' && Channels\.isBusy && Channels\.isBusy\(origin\.id\)\) throw/.test(gc), 'startGroup guards the chat it converts');
   const chatSrc = fs.readFileSync(path.join(__dirname, '../frontend/app/chat.js'), 'utf8');
-  A.ok(/const joining = typeof GroupChat !== 'undefined' && GroupChat\.drainAfterRun \? GroupChat\.drainAfterRun\(ws\.id, thisRunId, \{ stopped: stoppedHere \}\) : null;\s*\n\s*\/\/ TYPE-AHEAD[^\n]*\n\s*setTimeout\(\(\) => \{ Promise\.resolve\(joining\)\.catch\(\(\) => null\)\.then\(\(\) => flushQueued\(ws\.id\)\); \}, 0\);/.test(chatSrc),
+  // the chat is marked joining for that wait, so no other path (an upload settling, Enter while idle) sends from its queue meanwhile
+  A.ok(/const joining = typeof GroupChat !== 'undefined' && GroupChat\.drainAfterRun \? GroupChat\.drainAfterRun\(ws\.id, thisRunId, \{ stopped: stoppedHere \}\) : null;\s*\n\s*\/\/ TYPE-AHEAD[^\n]*\n\s*if \(joining\) crewJoining\.add\(ws\.id\);\s*\n\s*setTimeout\(\(\) => \{ Promise\.resolve\(joining\)\.catch\(\(\) => null\)\.then\(\(\) => \{ crewJoining\.delete\(ws\.id\); flushQueued\(ws\.id\); \}\); \}, 0\);/.test(chatSrc),
     'the reply\'s teardown lands the join BEFORE a queued follow-up is sent (it then goes to the new group)');
+  A.ok(/function flushQueued\(id\) \{\s*\n\s*if \(id && typeof Channels !== 'undefined' && Channels\.isBusy\(id\)\) \{ steerQueued\(id\); return; \}\s*\n\s*if \(!id \|\| !activeWs \|\| activeWs\.id !== id\) return;\s*\n\s*if \(crewJoining\.has\(id\)\) return;/.test(chatSrc),
+    'and nothing drains that queue as a new turn while the join is still landing (a busy chat only steers it into the live run; an idle one waits on the join)');
   A.ok(/const stoppedHere = interrupted\.has\(ws\.id\);[^\n]*\n\s*interrupted\.delete\(ws\.id\);/.test(chatSrc), 'the stop flag is read before the teardown consumes it');
   // a group turn keeps the agent's own room gear (its dish = web search), as its one-on-one chat does (gap review G2)
   const idx = readSidecarSource();
-  A.ok(/lead: t\.agentId === g\.leadId, groupTools: tools, askCommander,\s*\n\s*station: router\.stationFor\(t\.agentId\) \|\| undefined,[\s\S]{0,400}extraObjects: require\('\.\/capability\/saved-placement\.js'\)\.savedPlacement\(saveStore\.load\('agent'\), t\.agentId\),/.test(idx),
+  A.ok(/lead: t\.agentId === g\.leadId, groupTools: tools, askCommander,\s*\n\s*station: admit\.stationFor\(t\.agentId\) \|\| undefined,[\s\S]{0,400}extraObjects: require\('\.\/capability\/saved-placement\.js'\)\.savedPlacement\(saveStore\.load\('agent'\), t\.agentId\),/.test(idx),
     'a group participant\'s run carries its saved room gear (a researcher can search in a group)');
+  // ...and a saved floor that cannot be proved right now fails the turn in the hold's words, before the run is admitted: a bay-bound
+  // participant is never handed the WHOLE default office for want of a room (routing/saved-seams.js, saved-floor-callers.census)
+  A.ok(/if \(!ident\) throw new Error\('Participant is no longer available'\);\s*\n(?:\s*\/\*[\s\S]*?\*\/\s*\n)?\s*const heldFloor = routingHold\(\);\s*\n\s*if \(heldFloor\) throw new Error\(heldFloor\.why\);/.test(idx),
+    'a group turn on a held saved floor fails with the hold\'s words before it is admitted');
   A.report('group-add.test');
 })().catch(e => { console.error(e); process.exitCode = 1; });

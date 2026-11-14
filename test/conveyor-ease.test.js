@@ -109,7 +109,7 @@ A.eq(todayTip('SHIPPED', '3'), todayTip('SHIPPED'), 'a known SHIPPED keeps its m
 A.ok(/counted once it can be read again, unless the station restarts first/.test(unknownTip) && !/the number comes back when/.test(unknownTip), 'the ? tip never promises the whole count back: ' + unknownTip);
 const atLeastTip = todayTip('SHIPPED', '5000+');
 A.ok(/^SHIPPED\nat least this many/.test(atLeastTip) && /the real number is higher/.test(atLeastTip) && !/recorded jobs that reached the OUTBOX/.test(atLeastTip), 'a lower-bound SHIPPED says it is at least that many: ' + atLeastTip);
-for (const key of ['RUNS', 'SHIPPED', 'FAILED', 'TESTS', 'MEDIAN', '$ TODAY (UTC)']) {
+for (const key of ['RUNS', 'SHIPPED', 'FAILED', 'UNFINISHED', 'TESTS', 'MEDIAN', '$ TODAY (UTC)']) {
   A.ok(todayTip(key).length > key.length, 'a meaning is available for the ' + key + ' number');
 }
 const shippedTip = todayTip('SHIPPED');
@@ -123,10 +123,12 @@ A.ok(/; it runs when you send it a job\. /.test(read('frontend/app/workflowline.
 /* ---------- a job whose steps ran but did not all finish clean (a real model: a RESEARCHER answered, then its model sent empty
    turns — "empty" — and the card said only "REFUSED — sample job did not complete cleanly", hiding a good delivered answer) ---------- */
 A.ok(/if \(v\.stopped \|\| \(!v\.ok && !runs\.length\)\) return '<div class="wf-sample-res">' \+ H\.sampleHTML\(v\) \+ '<\/div>';/.test(res), 'STOPPED, or REFUSED before any step ran, keeps the server\'s own verdict card');
-A.ok(/⚠ FINISHED WITH A PROBLEM/.test(res) && /const bad = v\.ok \? null : runs\.find\(r => r\.reason && r\.reason !== 'done'\);/.test(res) && /runEnd\(bad\.reason\) \+ ', so this job did not finish cleanly and was not put in the OUTBOX\. Sending it again often works\.'/.test(res),
+A.ok(/⚠ FINISHED WITH A PROBLEM/.test(res) && /const bad = v\.ok \? null : runs\.find\(r => r\.reason && !stepOk\(r\)\);/.test(res) && /stepEnd\(bad\) \+ ', so this job did not finish cleanly and was not put in the OUTBOX\. Sending it again often works\.'/.test(res)
+  // (typed-outcomes) a step finished only when its run row's OUTCOME succeeded: a provider-cut 'done' is a problem step too
+  && /const stepOk = r => \(typeof RunOutcome !== 'undefined' \? RunOutcome\.ofRow\(r\)\.ok : r\.reason === 'done'\);/.test(res),
   'a job whose steps ran but did not finish clean names the step and what happened, in words — never just REFUSED');
 A.ok(/v\.ok \? 'THE RESULT' : 'WHAT CAME OUT'/.test(res) && /\(!v\.ok \? '' : '<div class="wf-row">'/.test(res), '…still shows what came out and every step (no KEEP AS THE EXAMPLE on a problem job)');
-A.ok(/empty: 'gave no final answer', error: 'hit an error', max_iters: 'ran out of turns'/.test(panel) && /esc\(runEnd\(r\.reason\)\)/.test(res), 'each step says how its run ended in words, never the raw reason code');
+A.ok(/empty: 'gave no final answer', error: 'hit an error', max_iters: 'ran out of turns'/.test(panel) && /esc\(stepEnd\(r\)\)/.test(res) && /const stepEnd = r => \(r\.reason !== 'done' \? runEnd\(r\.reason\)/.test(res), 'each step says how its run ended in words, never the raw reason code');
 A.ok(/placeholder="e\.g\. Find this week’s AI news and summarize the three biggest stories\.">' \+ esc\(S\.testJob\[S\.lineKey\] \|\| ''\) \+ '<\/textarea>'/.test(panel), 'a new schedule\'s task starts as the job this line was last sent ("do that every morning" is one click)');
 /* ---------- a READY line says what to do next — and its pill keeps the station's word (station-layout.e2e: panel pill == the status an
    agent reads with station.layout) ---------- */
@@ -150,13 +152,13 @@ A.ok(P.parseHandoff(last) && P.parseHandoff(last).original === '3 AI stories, ke
 A.ok(!/LAST stage/.test(P.handoffPrompt('req', 'writer', 'draft', 1, 'be picky', 'YOUR VERDICT DECIDES…', true)), 'a stage a review loop reads keeps its verdict instruction, never the last-stage one');
 const turnAt = lastStage => Chain.hopTurn({ originalText: 'req', from: 'a', upstream: 'up', hop: 1, target: 'w', targetDock: 'd2', lineId: 'L', lastStage });
 A.ok(/LAST stage/.test(turnAt((a, d) => a === 'w' && d === 'd2')) && !/LAST stage/.test(turnAt(() => false)) && !/LAST stage/.test(turnAt(undefined)), 'the chain asks lastStage(target, dock) — no helper, no change');
-A.ok(/lastStage: \(agentId, dockId\) => router\.chainShipsToOutbox\(agentId, dockId\)/.test(sidecar) && /lastStage: \(a, d\) => router\.chainShipsToOutbox\(a, d\)/.test(sidecar),
+A.ok(/lastStage: \(agentId, dockId\) => admit\.chainShipsToOutbox\(agentId, dockId\)/.test(sidecar) && /lastStage: \(a, d\) => admit\.chainShipsToOutbox\(a, d\)/.test(sidecar),
   '…and the station answers it for real runs and step tests alike: the dock whose lane ships to the OUTBOX');
 // the one billed station call NOT RIGHT? and SET IT UP FOR ME share (2026-09-30: stationOneShot)
 const oneShot = at(sidecar, 'async function stationOneShot(prompt, tag, failLead) {', 'async function handleRoutingFixSuggest(req, res) {');
 const route = at(sidecar, 'async function handleRoutingFixSuggest(req, res) {', 'async function stepTestRunDock(h) {');
 A.ok(/\{ m: 'POST', exact: '\/api\/routing\/fix-suggest', h: handleRoutingFixSuggest \}/.test(sidecar), 'POST /api/routing/fix-suggest is a route');
-A.ok(oneShot.indexOf('budget.check(null, \'agent\', 0, Date.now(), null)') > 0 && oneShot.indexOf('budget.check(') < oneShot.indexOf('provider.stream('), '…the spending cap is read BEFORE the model call');
+A.ok(oneShot.indexOf('governor.admit(\'oneshot\', { providerId, agentId: \'agent\' })') > 0 && oneShot.indexOf('governor.admit(') < oneShot.indexOf('provider.stream(') && oneShot.indexOf('budget.check(') < 0, '…the spending cap is read BEFORE the model call (the one governor, by the station model\'s payer)');
 A.ok(/cfg = sampleRunConfigFor\('agent'\)/.test(oneShot) && /ledger\.record\(\{ runId: tag \+ '-' \+ crypto\.randomUUID\(\), agentId: 'station'/.test(oneShot) && /catch \(e\) \{ failNote\(tag \+ '\.ledger', e\); \}/.test(oneShot)
   && /stationOneShot\(LineFix\.buildPrompt\(input\), 'linefix', /.test(route), '…one call on the station default model, its spend booked on the ledger (a failed booking is noted)');
 // (sweep 10-02) a call that times out or errors after usage arrived still books it — those tokens were billed
@@ -166,7 +168,7 @@ A.ok(/dockId: r\.dockId \|\| null, lineId: r\.lineId \|\| null/.test(sidecar), '
 
 /* ---------- the OUTBOX is told ---------- */
 const settle = at(build, '    const settle = (view, response) => {', '    const bad = reason =>');
-A.ok(/if \(view\.ok && response && response\.delivered && response\.delivered\.reason === 'done'\) \{ try \{ if \(typeof ReturnStore !== 'undefined' && ReturnStore\.foldRow\) folded = !!ReturnStore\.foldRow\(response\.delivered\); \} catch \(_\) \{\} \}/.test(settle),
+A.ok(/if \(view\.ok && response && response\.delivered && \(typeof RunOutcome !== 'undefined' \? RunOutcome\.ofRow\(response\.delivered\)\.ok : response\.delivered\.reason === 'done'\)\) \{ try \{ if \(typeof ReturnStore !== 'undefined' && ReturnStore\.foldRow\) folded = !!ReturnStore\.foldRow\(response\.delivered\); \} catch \(_\) \{\} \}/.test(settle),
   'a clean delivered job is folded into the OUTBOX\'s ledger (only a clean \'done\', as COMMS does)');
 A.ok(/output: Array\.isArray\(response\?\.replies\) \? response\.replies\.join\(''\) : ''/.test(settle) && /runs: Array\.isArray\(response\?\.runs\) \? response\.runs : \[\], streamId: response\?\.streamId \|\| null, folded/.test(settle),
   '…and the server\'s answer is kept whole: every stage\'s run, the stream, and the full delivered text (all its chunks)');

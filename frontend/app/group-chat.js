@@ -179,7 +179,12 @@ const GroupChat = (() => {
       let r;
       try { r = await fetch('/api/groups' + query, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : deadline ? { cache: 'no-store', signal: deadline.signal } : { cache: 'no-store' }); }
       catch (e) { if (deadline && deadline.signal.aborted) throw timedOut(); throw e; }
-      if (r.status === 401 || r.status === 403) throw new Error('Reconnect to this station by refreshing the page. Your conversation is saved.');
+      // the GATE refused this page's key (the ONE reading, Harness.classifyApiFailure: the gate's own code; a bare 401/403 only
+      // from a station that names no refusal, or with no Harness loaded): a page it kept its key from says why, never "refresh"
+      const refused = typeof Harness !== 'undefined' && Harness && typeof Harness.classifyApiFailure === 'function' ? Harness.classifyApiFailure(r) : null;
+      if (refused ? (refused.staleSession || refused.tokenWithheld) : (r.status === 401 || r.status === 403)) {
+        throw new Error(refused && refused.tokenWithheld ? refused.tokenWithheld : 'Reconnect to this station by refreshing the page. Your conversation is saved.');
+      }
       if (r.status === 404 && !body && !query) throw new Error('Group chat is unavailable on this server. Run the current StarNet backend, then try again.');
       let out;
       try { out = await r.json(); } catch (_) { if (deadline && deadline.signal.aborted) throw timedOut(); throw new Error('The server could not load group chat. Try again.'); }
@@ -202,7 +207,8 @@ const GroupChat = (() => {
     if (ws) {
       ws.conversationMode = 'group'; ws.agentId = g.leadId; ws.title = g.title;
       if (g.messages) {
-        ws.history = g.messages.map(m => ({ role: m.author === 'user' ? 'user' : 'assistant', agentId: m.author === 'user' ? undefined : m.author, content: m.content, ts: m.at, ...(m.artifactIds?.length ? { artifactIds: m.artifactIds.slice() } : {}) }));
+        const rows = g.messages.map(m => ({ role: m.author === 'user' ? 'user' : 'assistant', agentId: m.author === 'user' ? undefined : m.author, content: m.content, ts: m.at, ...(m.artifactIds?.length ? { artifactIds: m.artifactIds.slice() } : {}) }));
+        if (Workstreams.setHistory) Workstreams.setHistory(ws, rows); else ws.history = rows;   // the backend's copy IS this chat's history: rows a saved history named are replaced with it, never kept beside it
         ws.runIds = g.turns.filter(t => t.runId).map(t => t.runId);
         ws.lastActiveAt = g.updatedAt;
       }
@@ -598,7 +604,7 @@ const GroupChat = (() => {
       const cp = h('button', { type: 'button', class: 'cmsg-copy', 'aria-label': 'Copy message', 'data-tip': 'copy message', 'data-copy-label': 'Copy message' }, '⧉');
       cp.addEventListener('click', () => {
         const done = ok => { cp.classList.add(ok ? 'copied' : 'copy-failed'); setTimeout(() => cp.classList.remove('copied', 'copy-failed'), 1400); };
-        try { navigator.clipboard.writeText(content).then(() => done(true), () => done(false)); } catch (_) { done(false); }
+        U.copyText(content).then(done);   // the one clipboard: the success mark only when the copy happened
       });
       return cp;
     };
@@ -737,16 +743,17 @@ const GroupChat = (() => {
     });
     setGroupPlaceholder();
     const states = $('gc-states'), stateNodes = [];
-    const VERB = { queued: 'queued', held: 'ready', connecting: 'connecting…', running: 'working', 'waiting for answer': 'waiting for your answer', 'waiting for approval': 'needs approval', stopping: 'stopping', failed: 'failed', interrupted: 'interrupted', stopped: 'stopped' };
+    const VERB = { queued: 'queued', held: 'ready', connecting: 'connecting…', running: 'working', 'waiting for answer': 'waiting for your answer', 'waiting for approval': 'needs approval', stopping: 'stopping', failed: 'failed', unfinished: 'did not finish', interrupted: 'interrupted', stopped: 'stopped' };
     const pendingQ = (group.questions || []).find(q => q.state === 'pending');
     const needsYou = t => t.state === 'waiting for approval' || t.state === 'held' || (t.state === 'queued' && group.paused);
     let continueShown = false;
     for (const t of group.turns.slice(-15).sort((a, b) => needsYou(b) - needsYou(a))) {
       if (t.state === 'waiting for answer' && (group.questions || []).some(q => q.turnId === t.id && q.state === 'pending')) continue;
       const needsAttention = ['queued', 'held', 'queued', 'held', 'connecting', 'running', 'waiting for approval', 'waiting for answer', 'stopping'].includes(t.state) ||
-        (t === group.turns.at(-1) && ['failed', 'interrupted'].includes(t.state));
+        (t === group.turns.at(-1) && ['failed', 'unfinished', 'interrupted'].includes(t.state));
       if (!needsAttention) continue;
-      const tone = ['failed', 'interrupted'].includes(t.state) ? ' bad' : ['held', 'waiting for approval', 'queued', 'stopped'].includes(t.state) ? ' hold' : '';
+      // review r8: a turn that did not finish (cut short, a limit, an empty reply, a refusal) is held in the hold tone, never the failure red
+      const tone = ['failed', 'interrupted'].includes(t.state) ? ' bad' : ['held', 'waiting for approval', 'queued', 'stopped', 'unfinished'].includes(t.state) ? ' hold' : '';
       const showContinue = t.state === 'queued' && group.paused && !continueShown; if (showContinue) continueShown = true;
       const rowSig = JSON.stringify([t.state, t.reason, t.quiet, t.agentId, t.approval, tone, group.paused, showContinue, pendingQ && pendingQ.agentId, name(t.agentId), colorOf(t.agentId)]);
       const kept = stateRows.get(t.id);
@@ -764,7 +771,7 @@ const GroupChat = (() => {
       if (showContinue) row.append(button('CONTINUE', () => action('resume')));
       if (t.state === 'held' && t.reason) row.append(h('span', { class: 'gc-what' }, t.reason));
       if (t.state === 'held') row.append(button('CONTINUE', () => action('continue')));
-      if (['failed', 'interrupted', 'stopped'].includes(t.state)) row.append(button('RETRY', () => action('retry', { turnId: t.id })));
+      if (['failed', 'unfinished', 'interrupted', 'stopped'].includes(t.state)) row.append(button('RETRY', () => action('retry', { turnId: t.id })));
       if (t.approval) {
         // the keys first (line one), the argument text under them: a short window clips text, never the decision
         const keys = [], gid = group.id, pid0 = t.approval.promptId, tool0 = String(t.approval.tool || '');
@@ -791,8 +798,8 @@ const GroupChat = (() => {
           const copy = h('button', { type: 'button', class: 'bb gc-copy' }, idle);
           copy.addEventListener('click', () => {
             const done = ok => { copy.textContent = ok ? '✓ COPIED' : 'COPY FAILED: select the text'; setTimeout(() => { copy.textContent = idle; }, 1400); };
-            const text = ins.copy || ins.text;   // Chat.copyText falls back to a selection copy where the clipboard API is refused
-            try { (typeof Chat !== 'undefined' && Chat.copyText ? Chat.copyText(text) : navigator.clipboard.writeText(text).then(() => true)).then(done, () => done(false)); } catch (_) { done(false); }
+            // the one clipboard (a selection copy where the clipboard API is refused): COPIED only when the copy happened
+            U.copyText(ins.copy || ins.text).then(done);
           });
           detail.append(h('summary', {}, ins.label || 'Inspect the full request (secrets redacted)'), h('pre', {}, ins.text), copy);
           row.append(detail);
@@ -956,6 +963,11 @@ const GroupChat = (() => {
     // THE chat being converted must be idle (not merely the one on screen): a reply still running there would be lost to the
     // group, its approval cards hidden and its STOP retargeted. group.add waits for that reply instead (drainAfterRun).
     if (!general && typeof Channels !== 'undefined' && Channels.isBusy && Channels.isBusy(origin.id)) throw new Error(name(lead) + ' is still working in this chat. Let the run finish (or stop it), then add agents.');
+    // the group is made of this chat's WHOLE dialogue: a history still packed (save v7) is read back first, and one that cannot be read stops the
+    // conversion rather than make a group that is missing its earlier turns
+    if (typeof Workstreams !== 'undefined' && Workstreams.needsHydration && Workstreams.needsHydration(origin) && typeof Chat !== 'undefined' && Chat.hydrateHistory) {
+      if (!(await Chat.hydrateHistory(origin)).complete) throw new Error('Conversation history could not be restored.');
+    }
     if (typeof App !== 'undefined' && App.pushRoster) await App.pushRoster();   // the backend must know every agent it seats
     const id = general ? 'ws_' + uid().replace(/-/g, '').slice(0, 20) : origin.id;
     const title = general ? members.map(name).join(' + ') : (origin.title || 'Group chat');
@@ -1036,11 +1048,11 @@ const GroupChat = (() => {
     return { added: add, members: g.members, group: g.id, title: g.title };
   }
   // a line in the chat itself that says what did NOT happen (saved: it is still there after a reload), plus the bell
-  function notAdded(ws, ids, why) {
+  function notAdded(ws, ids, why, tone) {
     const text = agentNames(ids) + (ids.length > 1 ? ' were' : ' was') + ' not added to this chat: ' + why + '.';
     if (ws && Array.isArray(ws.history)) { ws.history.push({ role: 'system', sys: true, content: text, ts: Date.now() }); save(); }
     if (ws && typeof Workstreams !== 'undefined' && Workstreams.activeId && Workstreams.activeId() === ws.id && typeof Chat !== 'undefined' && Chat.localLine) Chat.localLine(text);
-    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(text, 'bad');
+    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(text, tone == null ? 'bad' : tone);
     return null;
   }
   // chat.js calls this as the asking reply's teardown ends (after the reply is saved in the history, before a queued
@@ -1052,6 +1064,10 @@ const GroupChat = (() => {
     ws.pendingJoin = null; save();
     if (how && how.stopped) return notAdded(ws, job.ids, 'the reply was stopped before it finished');
     if (ws.lastRunOk === false) return notAdded(ws, job.ids, 'the reply failed before it finished');
+    // review r8: a reply that did not FINISH (cut short, a spend or step limit, an empty reply, a refusal) lands no join either — said as
+    // itself in the warn tone, never "the reply failed" in red (lastRunOk is false for a FAILED run alone); a question it asked still lands it
+    const endOc = ws.lastRunOk == null && ws.lastRunReason && typeof RunOutcome !== 'undefined' ? RunOutcome.ofWord(ws.lastRunReason) : null;
+    if (endOc && !endOc.ok && endOc.outcome !== 'asked' && endOc.outcome !== 'stopped') return notAdded(ws, job.ids, 'the reply did not finish (' + RunOutcome.line(endOc) + ')', 'warn');
     const crew = (typeof App !== 'undefined' && App.agents && App.agents()) || [];
     const ids = job.ids.filter(id => crew.some(a => a && a.id === id));
     if (!ids.length) return notAdded(ws, job.ids, 'they are no longer on the crew');

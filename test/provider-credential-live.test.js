@@ -18,7 +18,11 @@ srcs.forEach((s, i) => A.ok(s.length > 40 && s.length < 3000, 'one bounded ' + n
 const { getProviderProfile } = require('../sidecar/providers/registry.js');
 
 function build(state) {
+  const providerVerification = require('../sidecar/provider-readiness.js').makeProviderReadiness({ now: () => 1000,
+    digest: s => require('crypto').createHash('sha256').update(s).digest('hex') });
   const deps = {
+    providerVerification, providerRuntimeBaseUrl: () => '',
+    credStore: require('./helpers/credential-store-sandbox.js').sandboxStore({ providerVerification }),
     getProviderProfile,
     normalizeProvider: p => String(p || 'openrouter'),
     registryProviderUsesCodex: id => id === 'codex',
@@ -98,22 +102,30 @@ A.ok(!build({}).providerHasCredential('custom', 'k', ''), 'a base-URL provider w
   const b = text.indexOf('Restore EVERY saved connector into the manager', a);
   A.ok(a > 0 && b > a, 'found the boot channel auto-start block');
   const boot = text.slice(a, b);
-  for (const [ch, re] of [['telegram', /t\.enabled && tgTok && t\.model && providerHasStoredCredential\(t\.provider/],
-    ['discord', /d\.enabled && dcTok && d\.model && providerHasStoredCredential\(d\.provider/],
-    ['generic', /r\.enabled && authOk && r\.model && providerHasStoredCredential\(r\.provider/]])
-    A.ok(re.test(boot), 'boot auto-start of the ' + ch + ' channel gates on the STORED credential');
+  // every saved channel is judged on the pair its messages run (RCR-001: channelFollowsReady is stationHubRunConfig's own
+  // resolution), still on the STORED credential (channels.boot-admission and run-wire.invariant run it)
+  for (const [ch, re] of [['telegram', /if \(t\.enabled && tgTok && channelFollowsReady\(t\)\) \{ startTelegram\(/],
+    ['discord', /if \(d\.enabled && dcTok && channelFollowsReady\(d\)\) \{ startDiscord\(/],
+    ['generic', /if \(r\.enabled && authOk && channelFollowsReady\(r\)\) \{\n/]])
+    A.ok(re.test(boot), 'boot auto-start of the ' + ch + ' channel gates on channelFollowsReady');
   A.ok(!/providerHasCredential\(/.test(boot), 'no boot channel gate reads the live verdict');
-  for (const fn of ['startTelegram', 'startDiscord', 'startGenericChannel']) {
-    const s = sidecarFunctionSource(fn);
-    A.ok(/secrets: \(\) => \{[\s\S]*?configured: providerHasCredential\([^)]*\), error: expiredSignInNote\(/.test(s), fn + '\'s hub secrets carry the expired-sign-in note');
-  }
+  const follows = sidecarFunctionSource('channelFollowsReady');
+  A.ok(/stationHubRunConfig\([^\n]*\{ storedCredential: true \}\)/.test(follows) && !/providerHasCredential\(/.test(follows), "the boot gate is the live pair's resolution on the STORED credential");
+  A.ok(/o\.storedCredential \? providerHasStoredCredential\(provider, key, baseUrl\) : providerHasCredential\(provider, key, baseUrl\)/.test(sidecarFunctionSource('channelRunConfigFor')),
+    '...which channelRunConfigFor reads as providerHasStoredCredential');
+  // (credential-store S8) the three hubs' per-message read is one function
+  A.ok(/configured: !lost && providerHasCredential\([^)]*\),\s+error: lost \? channelKeyLostError\(provider, r\.keyLost\) : expiredSignInNote\(/.test(sidecarFunctionSource('channelHubSecrets')), 'a hub\'s secrets carry the expired-sign-in note');
+  for (const fn of ['startTelegram', 'startDiscord', 'startGenericChannel']) A.ok(/secrets: \(\) => channelHubSecrets\(/.test(sidecarFunctionSource(fn)), fn + ' reads them');
 }
 
 // ---- the image route reads the SAME verdict, never a private copy (quick win 9) ----
+// (authority-census: the route lives in studioRouteFor, which runOnceCore and the TOOLSETS preview both call)
 const core = sidecarTopLevelFunction('runOnceCore');
-const i = core.indexOf('const studioInput = {');
-A.ok(i > 0, 'runOnceCore builds the studio route input');
-const studio = core.slice(i, core.indexOf('};', i) + 2);
+A.ok(/const studioRoute = studioRouteFor\(providerId, runKey, baseUrl\);/.test(core), 'runOnceCore takes its studio route from studioRouteFor');
+const routeFn = sidecarTopLevelFunction('studioRouteFor');
+const i = routeFn.indexOf('const studioInput = {');
+A.ok(i > 0, 'studioRouteFor builds the studio route input');
+const studio = routeFn.slice(i, routeFn.indexOf('};', i) + 2);
 A.ok(/codexSignedIn: accountLive\('codex', ''\)/.test(studio), 'the image route asks accountLive whether the primary ChatGPT sign-in is live: ' + studio.slice(-200));
 A.ok(!/codexTokens|codexAuthDead/.test(studio), 'and keeps no private token / dead-marker check of its own');
 

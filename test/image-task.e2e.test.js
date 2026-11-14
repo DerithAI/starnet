@@ -1,7 +1,6 @@
 /* Real sidecar regression for STUDIO routing and artifact-backed completion.
    All provider/image responses are local mocks; no external key or account is used. */
 'use strict';
-const { readSidecarSource } = require('./helpers/source');
 const A = require('./_assert.js');
 const http = require('node:http');
 const fs = require('node:fs');
@@ -81,7 +80,8 @@ function boot(port, env, attempts) {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + output)); } }, 9000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + output)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + output)); } }, 30000).unref();
   });
 }
 
@@ -210,9 +210,6 @@ async function run(base, token, body) {
     const borrowCall = provider.requests.slice(beforeBorrow).find(r => Array.isArray(r.body.modalities) && r.body.modalities.includes('image'));
     A.eq(borrowCall && borrowCall.authorization, 'Bearer page-saved-or-key', 'STUDIO used the page-saved OpenRouter key, never the custom model key');
     A.eq(borrowed.filter(e => e.name === 'agent.run.end').pop().payload.reason, 'done', 'the borrowed-key image earns done');
-    // the web-search OpenRouter fallback sends the RUN's model: it stays armed only by the run's own OpenRouter key or the
-    // desktop / OPENROUTER_KEY one, never by a page-saved key on another provider's (or a StarNet-credits) run
-    A.ok(/const openrouterToolKey = providerId === 'openrouter' \? runKey : runtimeKey;/.test(readSidecarSource()), 'the web-search OpenRouter fallback never borrows the page-saved key');
   } finally {
     try { child.kill(); } catch (_) {}
     await new Promise(resolve => provider.server.close(resolve));

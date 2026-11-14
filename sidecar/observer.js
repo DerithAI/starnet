@@ -17,6 +17,7 @@
 'use strict';
 
 const { makeSseHub } = require('./channels/sse.js');
+const UserText = require('../frontend/app/usertext.js');   // the one flattener of a message's text parts (OBSERVER policy)
 
 const CLIP = Object.freeze({ argsSummary: 400, askSummary: 6000, summary: 240, prompt: 400, message: 300, delta: 4000 });
 
@@ -29,15 +30,7 @@ function num(v) { const n = Number(v); return Number.isFinite(n) ? n : 0; }
 
 // The text of the last user turn in a run's messages (string content or an array of {type:'text', text} parts).
 function lastUserText(messages) {
-  const list = Array.isArray(messages) ? messages : [];
-  for (let i = list.length - 1; i >= 0; i--) {
-    const m = list[i];
-    if (!m || m.role !== 'user') continue;
-    if (typeof m.content === 'string') return m.content;
-    if (Array.isArray(m.content)) return m.content.map(p => (p && typeof p.text === 'string') ? p.text : '').filter(Boolean).join(' ');
-    return '';
-  }
-  return '';
+  return UserText.latest(messages, UserText.OBSERVER);   // the newest user turn decides, even one with no readable text
 }
 
 /* The view a watcher receives for one run event, or null for "never sent". `ctx` is what the host knows about the
@@ -71,6 +64,11 @@ function observerView(name, payload, ctx) {
     case 'agent.run.end': {
       const v = Object.assign(base, { reason: str(p.reason), turns: num(p.turns), usd: num(p.usd) });
       if (p.finishReason) v.finishReason = str(p.finishReason);
+      // the outcome the station stamped on the end (typed-outcomes, additive): the terminal reads it (RunOutcome) — a 'done' end its
+      // own error outranked is failed, which neither the reason nor finishReason can say
+      if (p.outcome) v.outcome = str(p.outcome).slice(0, 24);
+      if (p.failureCode) v.failureCode = str(p.failureCode).slice(0, 80);
+      if (p.clarifying === true) v.clarifying = true;
       return v;
     }
     case 'agent.run.error':

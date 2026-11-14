@@ -1,6 +1,6 @@
 /* frontend/app/pipeline.js — the belt-graph -> RoutingPlan compiler. Phase B's single authority.
 
-   Pure, zero-dep, UMD: node tests + the browser sim + the sidecar router all require() the SAME module,
+   Pure UMD (shared verdict reader): node tests + the browser sim + the sidecar router all require() the SAME module,
    so "the box you watch ride to a bay" and "the agent that actually runs" are provably one plan — they
    cannot drift. This is to ROUTING what resolveTools(agentId, station) is to CAPABILITY.
 
@@ -11,9 +11,9 @@
    would be infinite paid runOnce). The plan is plain JSON (no Maps) so the sidecar can hold the same one. */
 'use strict';
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else { root.Pipeline = factory(); }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(require('./line-verdict.js'));
+  else { root.Pipeline = factory(root.LineVerdict); }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Verdict) {
   'use strict';
 
   const DIRV = { E: [1, 0], W: [-1, 0], S: [0, 1], N: [0, -1] };
@@ -407,6 +407,19 @@
     if (!out.clamped.length) delete out.clamped;
     return out;
   }
+  /* THE ONE STAGE COUNT (line-job-runner, 2026-11-03). A LINE BUDGET's "max stages after the first" (maxHops) lets one job run its
+     first stage plus that many more. Every reader counts it here and nowhere else: the executor's pre-hop guard (sidecar/routing/
+     chain.js preHopStop, stages = hop - loopHops + 1; the step-through test runs the same guard), LINE_TOO_LONG and lineStages below,
+     the Workflow panel's TOO LONG words (workflowline.js) and the floor's n/max plate and hover card (build.js).
+       stageCeiling(maxHops)            -> how many stages that budget allows (a missing or junk budget is the default's)
+       overStageCeiling(stages, maxHops) -> would a job of `stages` stages run past it?
+       hopsToFit(stages)                -> the "max stages after the first" a job of `stages` stages needs */
+  function stageCeiling(maxHops) {
+    const after = (typeof maxHops === 'number' && isFinite(maxHops) && maxHops >= 0) ? maxHops : LINE_LIMIT_DEFAULTS.maxHops;
+    return after + 1;
+  }
+  function overStageCeiling(stages, maxHops) { return Number(stages) > stageCeiling(maxHops); }
+  function hopsToFit(stages) { return Math.max(0, (Number(stages) || 0) - stageCeiling(0)); }   // the stages after the first (a budget of 0 allows one)
   /* budgetReadout(raw, lim) -> the LINE BUDGET numbers an INBOX's own Workflow card shows set, in that card's words
      ('6 max stages after the first · $2.00 per message · $5.00 per day') — only the fields set on it (`raw`), at their
      normalized values (`lim`). It is how LINE_BUDGET_SHADOWED points at an UNNAMED INBOX in force (review of quick win 29):
@@ -501,8 +514,8 @@
   const pickLane = (lanes, k, pick) => lanes[pick ? ((pick(k, lanes.length) % lanes.length) + lanes.length) % lanes.length : 0];
 
   /* ---------- HOW MANY STAGES ONE JOB RUNS (LINE_TOO_LONG, 2026-10-09 P0) ----------
-     The chain executor stops a line once a job would run more than maxHops + 1 stages (sidecar/routing/chain.js
-     preHopRefusal) — and nothing said so until a PAID run reached that stage. jobStages(plan, startTiles) counts, from an
+     The chain executor stops a line once a job would run past its stage ceiling (stageCeiling above; sidecar/routing/chain.js
+     preHopStop) — and nothing said so until a PAID run reached that stage. jobStages(plan, startTiles) counts, from an
      INBOX's feed mouths, the most stages one job can run, the way the executor spends that ceiling:
        · a dock runs once and hands on from its ship tile (its own hookups are ridden through, a foreign dock consumes);
        · a FILTER, a turn-taking SPLITTER, a LOOP's done / escalation lanes: the job takes ONE way — the cap must allow the
@@ -669,6 +682,10 @@
           if (cEsc && ll.esc === cEsc) escExplicit[key(t.x, t.y)] = true;   // configured: never re-guessed
           // optional verdict tag: re-enter ONLY when the output's tag matches (else every pass loops until max)
           if (typeof p.when === 'string' && /^[A-Za-z0-9_.:-]{1,40}$/.test(p.when)) cfg.when = p.when;
+          /* onSpent (line-hold lane): what the gate does when its passes run out with the work still unapproved — 'hold' stops the
+             job for a person, 'escalate' sends it down the escalation lane. Absent (the default, 'send') is how a gate always ran:
+             the work goes on marked unapproved, so a floor that never set it compiles to the very same plan and hash. */
+          if (p.onSpent === 'hold' || p.onSpent === 'escalate') cfg.onSpent = p.onSpent;
           // LOOP_NO_DONE (rule fixed 2026-08-22): an UNSET `done` takes the compiler's own default — the first
           // exit in E,S,W,N order — and that is a working gate, not a finding (every user-drawn loop used to
           // nag). Warn only when NO exit qualifies, or when a configured `done` names a lane that is not an
@@ -860,15 +877,20 @@
       if (!jc.backTo && !r.uncrewed) errors.push({ code: 'LOOP_NO_BACK', tile: { x: jx, y: jy }, warn: true });
     }
     /* LOOP escTo (2026-08-30) — the first dock the ESCALATION lane reaches, resolved exactly like backTo
-       so the runner escalates by name instead of walking at run time. An esc lane to an OUTBOX resolves
-       null: exhausted work then ships out on the esc lane (still honest — the crate leaves marked). */
+       so the runner escalates by name instead of walking at run time. An esc lane that reaches NO dock but ships out into an
+       OUTBOX resolves escTo null and escOutbox = that OUTBOX's id (line-hold lane, S2; gateDocks only, outside the hash): a
+       gate set to onSpent 'escalate' ends the crate THERE, marked unapproved, with no agent invented to run it. (This comment used
+       to say exhausted work "ships out on the esc lane"; the runner never did — it left on the done lane.) */
+    const outAt = outAtOf(outs);
     for (const jk in junctions) {
       const jc = junctions[jk];
       if (jc.kind !== 'loop' || !jc.esc) continue;
       const p0 = jk.split(','), jx = +p0[0], jy = +p0[1];
       const r = laneFirstDock(map, junctions, bayTileToDock, jx, jy, jc.esc, null);
       jc.escTo = r.dock ? agentOfDock[r.dock] : null;
-      (gateDocks[jk] = gateDocks[jk] || { backTo: null, escTo: null }).escTo = r.dock;
+      const gd = (gateDocks[jk] = gateDocks[jk] || { backTo: null, escTo: null });
+      gd.escTo = r.dock;
+      if (!r.dock) { const ob = laneOutbox(map, junctions, bayTileToDock, outAt, jx, jy, jc.esc); if (ob) gd.escOutbox = ob; }
     }
     const cyc = detectCycle(map, junctions);
     if (cyc) errors.push({ code: 'CYCLE', tile: cyc });
@@ -1014,13 +1036,12 @@
        answer "which line does this dock belong to?" from the SAME artifact — the one-compiler law. There
        is no second derivation anywhere.
 
-       DERIVATION: lineId === the component's key === the OLDEST member PROP id, ordered by the numeric
-       suffix of the minted id and NOT by string order (propIdCmp — 'p9' is older than 'p10'). Prop ids are
-       stable in the save doc, so a line keeps its identity across reloads and across every edit that keeps
-       THE KEYING PROP; deleting that prop re-keys the line to its next-oldest machine (work already in
-       flight then carries a lineId that no longer names it, and the gate stops it — that is the honest
-       cost of identity-by-member). Pure: no clock, no RNG, no iteration luck (components are sorted by
-       key, bays within a component by propId, and an agent takes the FIRST line that claims it).
+       IDENTITY: the oldest INBOX carrying a saved lineId owns the component key.
+       The model migrates a legacy component by saving its existing key on that
+       INBOX, preserving trigger, spend and shipment references. Deleting a bay
+       cannot rename the line. A fresh INBOX owns a separately minted identity;
+       split components use their own remaining doors. Geometry with no saved
+       identity retains the legacy oldest-member fallback until migration.
 
        Attached AFTER the hash inputs are fixed, and only onto the LEGIBILITY list (`dockBays`) plus these
        lookup maps — the dispatch topology is unchanged, so the same floor keeps the same plan.hash it had
@@ -1028,6 +1049,7 @@
     const lines = [], lineOfProp = {}, lineOfAgent = {}, lineLimits = {}, budgetIntake = {};
     for (const c of lineComponents(geo)) {
       const lineId = c.key, rec = { lineId, propIds: c.props.slice(), intakes: c.intakes.slice(), outboxes: c.outboxes.slice(), agents: [] };
+      if (c.intakeId) rec.intakeId = c.intakeId;   // the durable line identity's owning INBOX, not a routing selector
       // The step tester carries one crate. Advertise its limitation before any paid step starts.
       const gates = Object.keys(junctionProp).filter(k => c.props.indexOf(junctionProp[k]) >= 0).map(k => junctions[k]);
       if (gates.some(j => j.kind === 'split' && j.fanout)) rec.stepTestBarrier = 'fanout';
@@ -1072,7 +1094,7 @@
       const maxHops = rec.limits ? rec.limits.maxHops : LINE_LIMIT_DEFAULTS.maxHops;
       // (the counts ride the line record too — the INBOX's stages n/max reads THESE, never a second count; absent under a loop)
       rec.stages = stages; rec.maxHops = maxHops;
-      if (stages > maxHops + 1) errors.push({ code: 'LINE_TOO_LONG', propId: budgetIntake[rec.lineId] || rec.intakes[0], lineId: rec.lineId, stages, maxHops, warn: true });
+      if (overStageCeiling(stages, maxHops)) errors.push({ code: 'LINE_TOO_LONG', propId: budgetIntake[rec.lineId] || rec.intakes[0], lineId: rec.lineId, stages, maxHops, warn: true });
     }
     // a line's name (its first named INBOX's label) — legibility only, so the sidecar can say "from LINE A" on a hand-off
     for (const rec of lines) for (const iid of rec.intakes) { const ip = props.find(q => q.id === iid); if (ip && typeof ip.label === 'string' && ip.label.trim()) { rec.name = ip.label.trim().slice(0, 48); break; } }
@@ -1103,7 +1125,6 @@
     const onCircle = Object.keys(sendTo).filter(k => sendReaches(sendTo[k].toLine, sendTo[k].fromLine)).sort(propIdCmp);
     for (const k of onCircle) { errors.push({ code: 'SEND_TO_LOOP', propId: k, lineId: sendTo[k].fromLine, toLine: sendTo[k].toLine, warn: true }); delete sendTo[k]; }
     const sendKeys = Object.keys(sendTo).sort(propIdCmp);
-    // (whether the next crew can OPEN the files this line makes is advice, never a routing finding: sendToFileAdvice below)
     if (sendKeys.length) {
       plan.sendTo = {};
       for (const k of sendKeys) plan.sendTo[k] = sendTo[k];
@@ -1125,7 +1146,7 @@
     plan.agentOfDock = agentOfDock;   // dockId -> the agent crewing it (every bound bay, beltless included)
     plan.docksOfAgent = docksOfAgent; // agentId -> [dockId…] oldest first (propIdCmp)
     plan.reachDock = reachDock;       // dockId -> an INBOX reaches it
-    plan.gateDocks = gateDocks;       // loop junction key -> { backTo: dockId|null, escTo: dockId|null }
+    plan.gateDocks = gateDocks;       // loop junction key -> { backTo: dockId|null, escTo: dockId|null, escOutbox?: outboxId } (escOutbox only when the esc lane ships into an OUTBOX and no dock)
     plan.lineOfDock = lineOfDock;     // dockId -> lineId
     plan.entryDock = entryDock;       // agentId -> the dock work ADDRESSED to the agent enters at
     for (const d of dockBays) { const l = lineOfProp[d.propId]; if (l) d.lineId = l; }
@@ -1314,6 +1335,29 @@
     return { dock: null, uncrewed: false };
   }
 
+  // OUTBOX mouth tile -> that OUTBOX's id (as a string), from plan.outs: the first prop to claim a tile owns it (chainStepDock's own reading)
+  function outAtOf(outs) {
+    const m = {};
+    for (const o of (outs || [])) if (o && o.tile && o.propId != null && !m[key(o.tile.x, o.tile.y)]) m[key(o.tile.x, o.tile.y)] = String(o.propId);
+    return m;
+  }
+  /* laneOutbox(map, junctions, dockAt, outAt, jx, jy, dir) -> the id of the OUTBOX a lane SHIPS INTO when it reaches no dock, else
+     null (line-hold lane S2). The same walk laneFirstDock takes (first lane at each junction), remembering the last OUTBOX mouth it
+     passed; the belt running out is the crate shipping out into it — exactly how chainStepDock's walk names the OUTBOX a job landed in
+     (ended()). A dock reached first (that lane is a dock, not an OUTBOX), a lane that never ends (a CYCLE, already an error) or one
+     that passes no OUTBOX answers null. */
+  function laneOutbox(map, junctions, dockAt, outAt, jx, jy, dir) {
+    const v = DIRV[dir]; if (!v) return null;
+    let t = { x: jx + v[0], y: jy + v[1] }, guard = 0, last = null; const seen = {};
+    while (t && map[key(t.x, t.y)] && guard++ < 4096 && !seen[key(t.x, t.y)]) {
+      const k2 = key(t.x, t.y); seen[k2] = true;
+      if (dockAt[k2]) return null;
+      if (outAt[k2]) last = outAt[k2];
+      const nts = nextTiles(map, junctions, t); t = nts[0] || null;
+    }
+    return t ? null : last;
+  }
+
   // dockId -> does an INBOX reach it? BFS from every feed mouth; a dock CONSUMES the box (no expansion past it).
   function dockReachOf(plan, cyclic) {
     const out = {}, dockAt = plan.bayTileToDock || {}, map = plan.belts || {}, junctions = plan.junctions || {};
@@ -1348,13 +1392,15 @@
     const base = Object.assign({}, p, { bayTileToDock });
     const cyclic = (p.errors || []).some(e => e && e.code === 'CYCLE');
     const reachDock = dockReachOf(base, cyclic);
-    const gateDocks = {};
+    const gateDocks = {}, outAt = outAtOf(p.outs);
     for (const jk in junctions) {
       const jc = junctions[jk];
       if (!jc || jc.kind !== 'loop') continue;
       const q = jk.split(','), jx = +q[0], jy = +q[1];
       gateDocks[jk] = { backTo: jc.back ? laneFirstDock(map, junctions, bayTileToDock, jx, jy, jc.back, null).dock : null,
                         escTo: jc.esc ? laneFirstDock(map, junctions, bayTileToDock, jx, jy, jc.esc, null).dock : null };
+      // an esc lane that reaches no dock but an OUTBOX (the compile's own reading, S2)
+      if (jc.esc && !gateDocks[jk].escTo) { const ob = laneOutbox(map, junctions, bayTileToDock, outAt, jx, jy, jc.esc); if (ob) gateDocks[jk].escOutbox = ob; }
     }
     const dockChains = compileDockChains(base, agentOfDock);
     const docksOfAgent = docksOfAgentOf(agentOfDock);
@@ -1520,7 +1566,7 @@
        so the hand-off goes from the OUTBOX the job really landed in, never from another one on the same line. */
     const reach = (ctx && ctx.reach && typeof ctx.reach === 'object') ? ctx.reach : null;
     let outAt = null;
-    if (reach) { outAt = {}; for (const o of (plan.outs || [])) if (o && o.tile && o.propId != null && !outAt[key(o.tile.x, o.tile.y)]) outAt[key(o.tile.x, o.tile.y)] = String(o.propId); }
+    if (reach) outAt = outAtOf(plan.outs);
     const walkNode = r => (r && r.dockId) ? { dockId: r.dockId, agentId: r.agentId } : null;
     const gateNode = d => d ? nodeOf(L, d) : null;
     // a lane with no static next dock is still a step when a LOOP/JOIN gate sits on it (rec.gated) — the
@@ -1564,6 +1610,10 @@
           // as `afterJoin` — walkNode alone dropped it, so the reviewed work never reached the barrier and the joiner timed out
           const after = (nt && map[key(nt.x, nt.y)]) ? walk(nt, null, quiet) : null;
           const ls = { loop: k, max: j.max || LOOP_MAX_DEFAULT, backTo: gateNode(g.backTo), when: j.when || null, esc: gateNode(g.escTo), next: walkNode(after) };
+          // (line-hold lane S2, both only when set, so every older floor's step is byte for byte what it was) escOutbox: an esc lane
+          // that reaches no dock ships into this OUTBOX; onSpent: the gate's policy when its passes run out ('hold' | 'escalate')
+          if (g.escOutbox) ls.escOutbox = g.escOutbox;
+          if (j.onSpent) ls.onSpent = j.onSpent;
           if (after && after.join) ls.afterJoin = after;
           return ls;
         } else if (j && j.kind === 'split' && j.fanout) {
@@ -1609,7 +1659,7 @@
     if (s.dockId) return { agentId: s.agentId };
     if (s.branches) { const out = []; for (const b of s.branches) { const x = a(b); if (x && out.indexOf(x) < 0) out.push(x); } return s.divide ? { branches: out, split: s.split, divide: true } : { branches: out, split: s.split }; }
     if (s.join) return { join: s.join, expect: s.expect, timeoutMin: s.timeoutMin, next: a(s.next) };
-    if (s.loop) { const o = { loop: s.loop, max: s.max, backTo: a(s.backTo), when: s.when, esc: a(s.esc), next: a(s.next) }; if (s.afterJoin) o.afterJoin = { join: s.afterJoin.join, expect: s.afterJoin.expect, timeoutMin: s.afterJoin.timeoutMin, next: a(s.afterJoin.next) }; return o; }
+    if (s.loop) { const o = { loop: s.loop, max: s.max, backTo: a(s.backTo), when: s.when, esc: a(s.esc), next: a(s.next) }; if (s.escOutbox) o.escOutbox = s.escOutbox; if (s.onSpent) o.onSpent = s.onSpent; if (s.afterJoin) o.afterJoin = { join: s.afterJoin.join, expect: s.afterJoin.expect, timeoutMin: s.afterJoin.timeoutMin, next: a(s.afterJoin.next) }; return o; }
     return s;
   }
   function chainStep(plan, agentId, ctx, pick) {
@@ -1878,7 +1928,10 @@
      NOT the user, it is a machine being handed material, so the turn names the line explicitly. Carrying the
      ORIGINAL request as well as the upstream output is load-bearing: a writer handed only research has no
      idea what was asked and invents one. */
-  function handoffPrompt(originalText, fromAgentId, upstream, hop, stageBrief, verdictBrief, lastStage) {
+  function handoffFileBlock(files) {
+    return Array.isArray(files) && files.length ? 'FILES THE UPSTREAM STAGE MADE (you can read these exact paths):\n' + files.slice(0, 64).map(f => '- ' + String(f)).join('\n') + '\n\n' : '';
+  }
+  function handoffPrompt(originalText, fromAgentId, upstream, hop, stageBrief, verdictBrief, lastStage, files) {
     // stageBrief (step editor, 2026-08-05): the RECEIVING dock's standing job brief — optional 5th param so
     // every existing caller composes byte-identical turns. Prompt text only; bounded like the compiled copy.
     // verdictBrief (LOOP verdicts, 2026-08-22): the VERDICT-line instruction for a dock whose lane meets a
@@ -1888,6 +1941,7 @@
     return 'PIPELINE HANDOFF — you are stage ' + (hop + 1) + ' of a work line on this station.\n\n'
       + 'The original request was:\n' + String(originalText || '(none recorded)') + '\n\n'
       + 'The upstream stage (' + fromAgentId + ') produced:\n' + String(upstream) + '\n\n'
+      + handoffFileBlock(files)
       + (brief ? 'YOUR STANDING BRIEF FOR THIS STATION:\n' + brief + '\n\n' : '')
       + (verdict ? verdict + '\n\n' : '')
       /* lastStage (2026-09-30 — found on a real model): the stage whose reply LEAVES the line is told so. "Produce the output for
@@ -1920,22 +1974,11 @@
      run (2026-09-30: NOVA quoted a WRITER step's brief back to the Commander as «because you said …»). Pure. */
   const HANDOFF_HEAD_RE = /^PIPELINE HANDOFF — you are stage \d+ of a work line on this station\./;
   function isHandoff(text) { return HANDOFF_HEAD_RE.test(String(text == null ? '' : text).replace(/^\s+/, '')); }
-  /* stripVerdictLine(text) -> the text without a trailing reviewer VERDICT line (one of its last 3 non-empty lines), for showing
-     a work line's result: the line is the loop gate's control signal, not part of the work (R1; sidecar/routing/verdict.js holds
-     the gate's own reader). A text that is ONLY the verdict line is returned unchanged. Pure. */
+  /* Display strips the same control line the sidecar recognizes. Keep a verdict-only
+     reply visible: an empty display would hide what the reviewer actually said. */
   function stripVerdictLine(text) {
-    const s = String(text == null ? '' : text), lines = s.split(/\r?\n/);
-    let seen = 0;
-    for (let i = lines.length - 1; i >= 0 && seen < 3; i--) {
-      if (!lines[i].trim()) continue;
-      seen++;
-      const l = lines[i].trim().replace(/^[\s>*\-_`#]+/, '').replace(/[\s*_`.!]+$/, '');
-      if (/^verdict\s*[:=\-–—]\s*(approved|approve|accepted|pass|lgtm|revise|revision|rejected|reject|needs[-_]work)$/i.test(l)) {
-        const out = lines.slice(0, i).concat(lines.slice(i + 1)).join('\n').replace(/\s+$/, '');
-        return out.trim() ? out : s;
-      }
-    }
-    return s;
+    const s = String(text == null ? '' : text), out = Verdict.stripVerdict(s);
+    return out.trim() ? out : s;
   }
 
   /* fanSiblings(plan, agentId) -> the OTHER first docks of the fan-out split that feeds this dock, sorted
@@ -2053,11 +2096,12 @@
      "The original request was: <the whole job>" first and — its lane shipping to the OUTBOX — "you are the LAST stage: give
      them exactly what the original request asks for", and did the whole job three times over). It leads with the part, never
      says last stage (the JOINER after it combines), and keeps the whole request only as context at the end. */
-  function partHandoff(originalText, part, i, k, hop, stageBrief) {
+  function partHandoff(originalText, part, i, k, hop, stageBrief, files) {
     const brief = (typeof stageBrief === 'string' && stageBrief.trim()) ? stageBrief.trim().slice(0, 2000) : '';
     return 'PIPELINE HANDOFF — you are stage ' + (hop + 1) + ' of a work line on this station.\n\n'
       + 'The job was split into ' + k + ' parts, and other agents are doing the other parts. YOUR PART (' + (i + 1) + ' of ' + k + '):\n'
       + String(part || '').trim() + '\n\n'
+      + handoffFileBlock(files)
       + (brief ? 'YOUR STANDING BRIEF FOR THIS STATION:\n' + brief + '\n\n' : '')
       + 'Do ONLY your part — not the other parts, and not the whole job. A JOINER puts every part together after you. '
       + 'Answer with the work for your part itself.\n\n'
@@ -2106,14 +2150,10 @@
      ring — the exact hookup semantics compileRoutingPlan's passes use. Pure + deterministic
      (no RNG, no clock, inputs unmutated); the finish-the-line card derives its checklist from
      these against the compiled plan, and the delivery-retirement hook hit-tests `tiles`.
-     `key` = the OLDEST member PROP id — oldest by the monotonic counter the save doc mints ids from
-     (`p1`, `p2`, … `p10`), NOT by string order. See propIdCmp: a default string sort puts 'p10'
-     BEFORE 'p9', so the tenth prop on a line would silently steal the key from the ninth and rename
-     the whole line. Prop ids are stable in the save doc, so a line keeps its identity across reloads
-     and across every edit that keeps THE KEYING PROP. It does NOT survive deleting that prop: the
-     line then re-keys to its next-oldest member, and anything latched on the old key (a lineId a
-     run is carrying, a localStorage entry) no longer names it. That is the real behaviour — a line's
-     identity is its oldest surviving machine, not the line itself. */
+     `key` is the authoritative INBOX's saved lineId. Legacy geometry without
+     that field falls back to the oldest member PROP id for a lossless migration.
+     The component still lists every physical member; saved identity is separate
+     from the machine that happens to be oldest today. */
   /* PROP-ID ORDER (2026-08-07 conveyor audit). Ids come from worldmodel's monotonic `_nid` as
      'p' + N, so numeric order IS creation order. Compare the suffix numerically; anything that is
      not 'p<N>' (a legacy/hand-authored id) falls back to a plain string compare and sorts AFTER the
@@ -2177,10 +2217,28 @@
       const c = byRoot[r];
       if (!c.props.length) continue;              // bare belt scribbles are not a line
       c.props.sort(propIdCmp); c.key = c.props[0];
+      // A saved INBOX owns the line identity. Legacy geometry without that field
+      // keeps its old component key until the model migrates the saved document.
+      const doors = c.intakes.slice().sort(propIdCmp);
+      const owner = doors.map(id => props.find(p => p.id === id)).find(p => p && typeof p.lineId === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(p.lineId));
+      if (owner) { c.key = owner.lineId; c.intakeId = owner.id; }
       c.bays.sort((a, b) => propIdCmp(a.propId, b.propId));
       out.push(c);
     }
-    out.sort((a, b) => propIdCmp(a.key, b.key));
+    // An old key can now outlive the machine that lent it its name. If that
+    // machine moves onto an unfed fragment, the fragment cannot borrow the
+    // saved line's ledger identity just because it still carries the prop id.
+    const owned = new Set(out.filter(c => c.intakeId).map(c => c.key));
+    const reserved = new Set(out.map(c => c.key));
+    out.sort((a, b) => propIdCmp(a.props[0], b.props[0]));
+    for (const c of out) if (!c.intakeId && owned.has(c.key)) {
+      const base = 'unfed-' + c.key; let candidate = base, n = 1;
+      while (reserved.has(candidate)) candidate = base + '-' + (++n);
+      c.key = candidate; reserved.add(candidate);
+    }
+    // Identity is not ordering: preserve the physical oldest-prop tie-break
+    // used by multi-bay agent ownership and the existing floor readers.
+    out.sort((a, b) => propIdCmp(a.props[0], b.props[0]));
     return out;
   }
 
@@ -2241,27 +2299,7 @@
       const body = jobStages(plan, [{ x: xy[0] + v[0], y: xy[1] + v[1] }], jk);
       worst += (j.max || LOOP_MAX_DEFAULT) * (body || stages);
     }
-    return { stages, worst, max: maxHops + 1, maxHops };
-  }
-
-  /* SEND TO FILE ADVICE (final floor lane M19 / M26 / M29, 2026-10-12) — whether the next line's crew can OPEN the files this line
-     makes. Only the finished TEXT is guaranteed to ride on; a file rides as its absolute path (handoff-runner), and opening it is
-     the receiving agent's own file access (sidecar pathtrust): a line with a project folder makes its files there, a station
-     project the next crew may read; a line with none makes them in each agent's PRIVATE workspace, which only that same agent can
-     open. So the advice is TRUE only when the sending line has no project folder AND some crew member on it is not the agent the
-     next line hands the job to (any agent on either line differs) — never for the default SEND TO of one agent's own two lines, and
-     never as a floor nag at rest: it is not a routing finding (plan.errors stays clean, a clean SEND TO is no finding), it is
-     advice the OUTBOX's own card and the lead's refit card say. -> [{ code: 'SEND_TO_PRIVATE_FILES', propId: outboxId, lineId,
-     toLine, agents: [the sending line's crew] }] for the compiled SEND TOs it is true of. Pure. */
-  function sendToFileAdvice(plan) {
-    const out = [], lines = (plan && Array.isArray(plan.lines)) ? plan.lines : [], st = (plan && plan.sendTo) || {};
-    for (const k of Object.keys(st).sort(propIdCmp)) {
-      const s = st[k], src = lines.find(l => l && l.lineId === s.fromLine), dst = lines.find(l => l && l.lineId === s.toLine);
-      if (!src || src.projectRoot) continue;   // files in a project folder: the next crew can open them
-      const from = (src.agents || []).filter(Boolean), to = (dst && dst.agents || []).filter(Boolean);
-      if (from.some(a => to.some(b => b !== a))) out.push({ code: 'SEND_TO_PRIVATE_FILES', propId: k, lineId: s.fromLine, toLine: s.toLine, agents: from.slice(), warn: true });
-    }
-    return out;
+    return { stages, worst, max: stageCeiling(maxHops), maxHops };
   }
 
   /* the lines whose SEND TO hands work on to `toLine` AND that can run: a sender is a line with an INBOX (wave 2 repair, build-12 — a
@@ -2436,7 +2474,7 @@
     return { fromName: m[1] || '', original: orig ? orig[1] : '', output: out ? out[1] : '' };
   }
 
-  return { stepTestRefusal, lineStages, fedLineIds, lineSenders, sendToFileAdvice, rejoinOf, deriveLinks, reconcileLinks, compileRoutingPlan, sendToOf, sendsReachedOf, outboxesReached, lineWord, lineLetterOf, lineNames, uniqueLineName, handoffInput, parseHandoffInput, composeStageBrief, HANDS_LEAD, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, parseHandoff, isHandoff, stripVerdictLine, joinPayload, divideJob, partTurn, partHandoff, divideBrief, divideAfterDock, splitFedByDock, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING,
+  return { stepTestRefusal, lineStages, fedLineIds, lineSenders, rejoinOf, deriveLinks, reconcileLinks, compileRoutingPlan, sendToOf, sendsReachedOf, outboxesReached, lineWord, lineLetterOf, lineNames, uniqueLineName, handoffInput, parseHandoffInput, composeStageBrief, HANDS_LEAD, resolveTarget, lineOf, lineOriginOf, lineLimitsOf, normalizeLineLimits, LINE_LIMIT_DEFAULTS, LINE_LIMIT_CEILINGS, stageCeiling, overStageCeiling, hopsToFit, sourceFor, ok, liveTiles, routeFrom, junctionLaneOwners, chainNext, chainStep, fanSiblings, handoffPrompt, parseHandoff, isHandoff, stripVerdictLine, joinPayload, divideJob, partTurn, partHandoff, divideBrief, divideAfterDock, splitFedByDock, lineComponents, LOOP_MAX_DEFAULT, LOOP_MAX_CEILING,
     // THE DOCK LAYER (multi-bay agents, 2026-09-22) — the dock-keyed truth the agent readings above are views of
     resolveDock, chainNextDock, chainStepDock, fanSiblingsDock, junctionLaneDocks, lineOfDock, lineOriginOfDock, entryDockOf, docksOf, dockOf, agentOfDock: agentOfDockIn, deriveDockLayer, dockLayer, hasDockLayer, stepToAgents, propIdCmp,
     _internals: { DIRV, OPP, LANE_ORDER, key, buildBeltMap, outLanes, inLanes, loopLanes, beltTileNear, ringBelts, junctionAnchor, dirBetween, linkTilesByProp, linkedBeltMap, nextTiles, splitLanes, detectCycle, hashStr, compileChains, compileDockChains, chainCycle, shipFrom, propIdCmp, entryDocksOf, agentChainsView } };

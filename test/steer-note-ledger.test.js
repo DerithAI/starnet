@@ -76,7 +76,7 @@ function setup() {
     const { seq, emit } = setup();
     const b = SB.makeSteerBuffers({});
     const reg = makeRegistry();
-    reg.register({ name: 'slow_handoff', schema: { type: 'object', properties: {} }, run: async () => { b.post('r3', 'use the blue folder', true, 'snA'); return 'handed off'; } });
+    reg.register({ impact: 'none', name: 'slow_handoff', schema: { type: 'object', properties: {} }, run: async () => { b.post('r3', 'use the blue folder', true, 'snA'); return 'handed off'; } });
     const provider = makeReplayProvider({ turns: [
       [{ type: 'tool_start', index: 0, id: 'c1', name: 'slow_handoff' }, { type: 'tool_args', index: 0, chunk: '{}' }, { type: 'done', finishReason: 'tool_calls' }],
       [{ type: 'text', delta: 'done' }, { type: 'done', finishReason: 'stop' }]
@@ -94,7 +94,7 @@ function setup() {
     const b = SB.makeSteerBuffers({});
     const ac = new AbortController();
     const reg = makeRegistry();
-    reg.register({ name: 'slow_handoff', schema: { type: 'object', properties: {} }, run: async () => { b.post('r4', 'use the blue folder', true, 'snB'); ac.abort(); return 'handed off'; } });
+    reg.register({ impact: 'none', name: 'slow_handoff', schema: { type: 'object', properties: {} }, run: async () => { b.post('r4', 'use the blue folder', true, 'snB'); ac.abort(); return 'handed off'; } });
     const provider = makeReplayProvider({ turns: [
       [{ type: 'tool_start', index: 0, id: 'c1', name: 'slow_handoff' }, { type: 'tool_args', index: 0, chunk: '{}' }, { type: 'done', finishReason: 'tool_calls' }],
       [{ type: 'text', delta: 'never' }, { type: 'done', finishReason: 'stop' }]
@@ -144,11 +144,11 @@ function setup() {
   {
     const fs = require('fs'), path = require('path');
     const idx = readSidecarSource();
-    A.ok(/steerBufs\.post\(runId, text, [^\n]*, body\.noteId\)/.test(idx), 'POST /api/run/steer hands the buffer the page\'s noteId');
+    A.ok(/steerBufs\.post\(runId, text, [^\n]*, body\.noteId, body\.message\)/.test(idx), 'POST /api/run/steer hands the buffer the page\'s noteId');
     A.ok(/\{ m: 'GET', qsplit: '\/api\/run\/steer', h: handleRunSteerStatus \}/.test(idx), 'GET /api/run/steer is routed');
     const h = A.fnBody(idx, 'function handleRunSteerStatus(req, res)');
     A.ok(h.length > 50 && /steerNoteStatus\(/.test(h) && /steerBufs\.status\(runId\)/.test(h) && /runStore\.latest\(runId\)/.test(h), 'it answers from the buffer, then the run record');
-    A.ok(/runs\.has\(runId\) \|\| runStopHandles\.has\(runId\)/.test(h), 'live is the same in-flight test the POST uses');
+    A.ok(/live: runReachable\(runId\)/.test(h) && /steerBufs\.post\(runId, text, runReachable\(runId\), body\.noteId, body\.message\)/.test(A.fnBody(idx, 'async function handleRunSteer(')), 'live is the same in-flight test the POST uses');
     A.ok(/steerNotes: steerBufs\.ledgerOf\(runId\)/.test(idx), 'the run record carries the ledger');
   }
 

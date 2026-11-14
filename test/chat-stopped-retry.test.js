@@ -27,7 +27,7 @@ A.ok(!/if\s*\(\s*acc\.trim\(\)\s*\)\s*markStoppedTurn/.test(stoppedBranch[1]),
 // A normal completed stream envelope can also report endReason != done (max_iters, budget,
 // cancellation, refusal). Those cards render RUN STOPPED too and need the same recovery seam.
 // 'clarifying' is excluded: a Task Brief question is a clean decision turn, never a stopped run.
-const envelopeStop = /if\s*\(endReason\s*&&\s*endReason\s*!==\s*'done'\s*&&\s*endReason\s*!==\s*'clarifying'\s*&&\s*!taskQuestion\)\s*\{([\s\S]*?)\n\s*\}\s*else\s+if\s*\(cutShort\)/.exec(src);
+const envelopeStop = /if\s*\(endReason\s*&&\s*endReason\s*!==\s*'done'\s*&&\s*endReason\s*!==\s*'clarifying'\s*&&\s*!taskQuestion\)\s*\{([\s\S]*?)\n\s*\}\s*else\s+if\s*\(chipOc === 'cut_short'\)/.exec(src);   // review 9: the cut branch is the cut_short outcome's
 A.ok(envelopeStop, 'chat.js has a normal-envelope RUN STOPPED branch');
 A.ok(/markStoppedTurn\s*\(\s*ws\s*,\s*replyText\s*\)/.test(envelopeStop[1]),
   'normal-envelope RUN STOPPED marks its partial/empty tail for exact retry');
@@ -53,25 +53,28 @@ A.ok(retryFn, 'retryLast exists');
     { role: 'assistant', content: 'The gate needs brief_proceed to succeed first.', sourceRunId: 'r1' },
     { role: 'assistant', content: '⚠ Something went wrong on that turn — try again.', error: true }
   ];
-  const ctx = { activeWs: { runIds: ['r1'], history }, isBusy: () => false, localLine: () => {}, load: () => {}, send: (text, opts) => sent.push({ text, opts, tail: history[history.length - 1].role }) };
+  const ctx = { activeWs: { runIds: ['r1'], history }, isBusy: () => false, localLine: () => {}, load: () => {}, afterHydration: () => false, send: (text, opts) => sent.push({ text, opts, tail: history[history.length - 1].role }) };
   vm.createContext(ctx); vm.runInContext(body + '; retryLast();', ctx);
   A.eq(sent.length, 1, 'retry sends exactly once');
   A.eq(sent[0].text, 'write Etsy listings', 'retry re-runs the last user turn');
   A.eq(sent[0].tail, 'user', 'the retried history ends on the user turn, never on an assistant message (prefill 400)');
   A.eq(history.length, 3, 'every row of the failed attempt is dropped; the earlier exchange is kept');
   A.eq(history[1].content, 'earlier answer', 'earlier assistant replies before the retried turn survive');
-  const stoppedCtx = { activeWs: { runIds: ['s'], history: [{ role: 'user', content: 'go', sourceRunId: 's' }, { role: 'assistant', content: 'partial', stopped: true }] }, isBusy: () => false, localLine: () => {}, load: () => {}, send: () => {} };
+  const stoppedCtx = { activeWs: { runIds: ['s'], history: [{ role: 'user', content: 'go', sourceRunId: 's' }, { role: 'assistant', content: 'partial', stopped: true }] }, isBusy: () => false, localLine: () => {}, load: () => {}, afterHydration: () => false, send: () => {} };
   vm.createContext(stoppedCtx); vm.runInContext(body + '; retryLast();', stoppedCtx);
   A.eq(stoppedCtx.activeWs.history.length, 1, 'retryLast discards a stopped partial assistant tail before re-running');
   // …but load() re-syncs from the server transcript and can put the replaced replies back before send() builds the
   // request (re-proven live 2026-09-28: /retry still sent [user, assistant] and got the prefill 400). The WIRE is cut too.
-  const cut = /function\s+endOnUserTurn\s*\([^)]*\)\s*\{[\s\S]*?\n\s{2}\}/.exec(src);
+  const cut = A.fnBody(src, 'function endOnUserTurn(');
   A.ok(cut, 'endOnUserTurn exists');
-  const wctx = {}; vm.createContext(wctx); vm.runInContext(cut[0] + '; this.f = endOnUserTurn;', wctx);
+  const wctx = { HistoryFit: require('../frontend/app/historyfit.js') }; vm.createContext(wctx); vm.runInContext(cut + '; this.f = endOnUserTurn;', wctx);
   const wire = wctx.f([{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }, { role: 'assistant', content: 'd' }, { role: 'assistant', content: 'e' }]);
   A.eq(wire.map(m => m.content).join(''), 'abc', 'the retry wire ends on the last user turn');
   A.eq(wctx.f([{ role: 'assistant', content: 'x' }]).length, 1, 'no user turn -> untouched');
-  A.ok(/messages:\s*retry\s*\?\s*endOnUserTurn\(historyWindow\(ws\)\)\s*:\s*historyWindow\(ws\)/.test(src), 'send() cuts the wire on a retry, after the history re-sync');
+  const send = A.fnBody(src, 'async function send(text, opts) {');
+  A.ok(send.indexOf('const plan = HistoryFit.sendPlan(') > send.indexOf('await ensureHistoryReady(') && /messages:\s*plan\.messages/.test(send), 'send() uses its shared plan after the history re-sync');
+  const retryPlan = wctx.HistoryFit.sendPlan([{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }], { retry: true, historyRead: {}, model: { limit: 0, window: 'legacy' } });
+  A.eq(retryPlan.messages.map(m => m.content), ['a'], 'the production plan drops a reloaded failed attempt before posting the retry');
 }
 A.ok(/send\s*\(\s*text\s*,\s*\{\s*retry:\s*true\s*,\s*retryUserRunId:/.test(retryFn[1]),
   'Try again uses the existing no-duplicate retry send path');
@@ -106,7 +109,7 @@ A.ok(/function\s+retryLast[\s\S]*?if\s*\(\s*!activeWs\s*\)\s*return[\s\S]*?if\s*
   const context = { activeWs: { runIds: ['latest-attempt'], history: [
     { role: 'user', content: 'same request', sourceRunId: 'original-user-run' },
     { role: 'assistant', content: 'failed', error: true }
-  ] }, isBusy: () => false, localLine: () => {}, load: () => {}, send: (text, opts) => sent.push({ text, opts }) };
+  ] }, isBusy: () => false, localLine: () => {}, load: () => {}, afterHydration: () => false, send: (text, opts) => sent.push({ text, opts }) };
   vm.createContext(context); vm.runInContext(body + '; retryLast();', context);
   A.eq(sent[0].opts.retryUserRunId, 'original-user-run', 'retry references the original user run, not the latest retry attempt');
   delete context.activeWs.history[0].sourceRunId;

@@ -700,6 +700,9 @@ body.no-curve #stage-wrap::before { background: none; box-shadow: none; }
 .cmsg.tool .who { display: none; }
 .cmsg.tool .body { color: var(--ph-dim); letter-spacing: 0.3px; }
 .cmsg.tool.err .body { color: var(--bad); }
+/* review 8.1: a routine fire that asked a question keeps the ask gold, one that did not finish the warn tone — never the failure red */
+.cmsg.tool.ask .body { color: var(--gold); }
+.cmsg.tool.warn .body { color: var(--warn); }
 .cmsg.deliverable .body { color: var(--ph); }
 .deliverable-link { color: var(--gold); text-decoration: underline; cursor: pointer; }
 .deliverable-link:hover { color: var(--ph-bright); }
@@ -1453,6 +1456,10 @@ body.no-curve #stage-wrap::before { background: none; box-shadow: none; }
   border: 1px solid var(--ph-dim); border-radius: 4px; padding: 2px 5px 2px 7px;
 }
 .queued-pill .queued-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px; opacity: .9; }
+/* QUEUED WITH FILES — the photos/files this queued message carries (chat.js renderQueued): glyph + count, no key */
+.queued-pill .queued-files { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; color: var(--ph-dim); white-space: nowrap; }
+.queued-pill .queued-files .glyph { display: inline-flex; width: 14px; height: 14px; }
+.queued-pill .queued-files .glyph svg { width: 100%; height: 100%; }
 /* .queued-x composes .x-btn (danger hover) — ghost delta only */
 .queued-x { border: none; background: transparent; color: var(--ph-dim); font-size: 12px; padding: 0 2px; border-radius: 3px; }
 /* SEND NOW — steers the live run with this queued line (chat.js sendQueuedNow) */
@@ -2664,6 +2671,11 @@ body:has(#terms > .term:not(.term-min-hidden)) #nav-coach { visibility: hidden; 
 .kb-state.running { color: var(--ph-bright); }
 .kb-state.done { color: var(--gold); }
 .kb-state.failed { color: var(--bad); }
+/* review r8 (stationui boardEnd): each outcome its own tone — a question the ask's gold, a run that did not finish the warn tone, a stop and a
+   run whose outcome was never recorded the plain dim tone (never the failed red) */
+.kb-state.asked { color: var(--gold); }
+.kb-state.unfinished { color: var(--warn); }
+.kb-state.stopped, .kb-state.ended { color: var(--ph-dim); }
 .kb-live { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--ph-bright); animation: wsPulse 1.15s steps(8, jump-none) infinite; }
 
 /* SKILLS — honest capability readout (reuses v7 .perk-grid/.perk) */
@@ -4772,17 +4784,17 @@ body.crew-rail-off #screen-game.active {
    either), on another baseline than its label. Each now draws ONE chevron in CSS, turning as it opens. The list is
    measured, not guessed: every window and section walked live on 10-30 for a summary still drawing the browser's
    disclosure marker. A fold with its own marker (＋/−, ▸/▾) or none by design (the Workflow panel's) is not on it. */
-:is(#ag-persona-card details:not([class]), details.cf-access-more, details.wh-source-settings,
+:is(#ag-persona-card details.ag-tune-fold, details.cf-access-more, details.wh-source-settings,
     details:is(.q-life-goal, .q-goal-starters, .q-goal-plan-editor, .q-goal-optional, .q-growth-history, .q-metric-editor),
     details:is(.sn-menu-options, .lp-adv, .lp-preview), details:is(.cc-details, .cc-alternatives), #cc-list details:not(.cc-group),
     #ts-list details, details.ext-details, #sk-agent details) > summary {
   list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px;
 }
-:is(#ag-persona-card details:not([class]), details.cf-access-more, details.wh-source-settings,
+:is(#ag-persona-card details.ag-tune-fold, details.cf-access-more, details.wh-source-settings,
     details:is(.q-life-goal, .q-goal-starters, .q-goal-plan-editor, .q-goal-optional, .q-growth-history, .q-metric-editor),
     details:is(.sn-menu-options, .lp-adv, .lp-preview), details:is(.cc-details, .cc-alternatives), #cc-list details:not(.cc-group),
     #ts-list details, details.ext-details, #sk-agent details) > summary::-webkit-details-marker { display: none; }
-:is(#ag-persona-card details:not([class]), details.cf-access-more, details.wh-source-settings,
+:is(#ag-persona-card details.ag-tune-fold, details.cf-access-more, details.wh-source-settings,
     details:is(.q-life-goal, .q-goal-starters, .q-goal-plan-editor, .q-goal-optional, .q-growth-history, .q-metric-editor),
     details:is(.sn-menu-options, .lp-adv, .lp-preview), details:is(.cc-details, .cc-alternatives), #cc-list details:not(.cc-group),
     #ts-list details, details.ext-details, #sk-agent details) > summary::before {
@@ -4790,7 +4802,7 @@ body.crew-rail-off #screen-game.active {
   border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg);
   transition: transform var(--t-fast, .12s) var(--ease-soft, ease);
 }
-:is(#ag-persona-card details:not([class]), details.cf-access-more, details.wh-source-settings,
+:is(#ag-persona-card details.ag-tune-fold, details.cf-access-more, details.wh-source-settings,
     details:is(.q-life-goal, .q-goal-starters, .q-goal-plan-editor, .q-goal-optional, .q-growth-history, .q-metric-editor),
     details:is(.sn-menu-options, .lp-adv, .lp-preview), details:is(.cc-details, .cc-alternatives), #cc-list details:not(.cc-group),
     #ts-list details, details.ext-details, #sk-agent details)[open] > summary::before { transform: rotate(45deg); }
@@ -4813,6 +4825,15 @@ input[type=number].key-input:disabled { opacity: .55; cursor: not-allowed; }
 #budget-form .set-row .bg-cap { flex: 1; font-size: 16px; padding: 5px 9px; text-align: right; }
 #budget-spend { font-size: 13px; margin: 2px 0 8px; }
 #budget-spend b { color: var(--ph-bright); }
+/* Effective limits are read-only facts, not the adjacent cap-input form. Keep each value
+   separate from its label and put a saved restart value on its own line in narrow panes. */
+#budget-effective .mc-effective-payer { margin: 12px 0; }
+#budget-effective summary { cursor: pointer; }
+#budget-effective .set-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-top: 14px; }
+#budget-effective .set-row > span:first-child { flex: 1 1 160px; min-width: 0; }
+#budget-effective .set-row > strong { flex: 0 1 auto; overflow-wrap: anywhere; }
+#budget-effective .set-row > .dim { flex: 1 1 100%; }
+#budget-effective .mc-hint { margin-bottom: 16px; }
 /* soft-pool CAP-HIT row + one-click RESUME — rendered ONLY when the governor is actually refusing new runs
    (truthful telemetry: no pool hit, no row). Warn vocabulary, same as the readiness chips. */
 #budget-pools .bg-pool-hit { display: flex; align-items: center; gap: 10px; border: 1px solid var(--warn); background: rgba(0,0,0,.32); padding: 6px 9px; margin: 2px 0 8px; font-size: 12.5px; color: var(--warn); }

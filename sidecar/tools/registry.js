@@ -19,14 +19,16 @@
 'use strict';
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require('../../shared/schema.js'), require('./tool.js'), require('../context.js'));
+    module.exports = factory(require('../../shared/schema.js'), require('./tool.js'), require('../context.js'), require('../inputpolicy.js'));
   } else {
     root.SK = root.SK || {}; root.SK.tools = root.SK.tools || {};
-    root.SK.tools.registry = factory(root.SK.schema, root.SK.tools.tool, root.SK.context);
+    root.SK.tools.registry = factory(root.SK.schema, root.SK.tools.tool, root.SK.context, root.SK.inputpolicy);
   }
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (schema, toolMod, contextMod) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (schema, toolMod, contextMod, inputpolicy) {
   'use strict';
   const responseProvenance = typeof require === 'function' ? require('./response-provenance.js') : null;
+  // the finite impact classes a host registration may declare (an absent policy module declares none: fail closed)
+  const DECLARED_IMPACTS = new Set(inputpolicy && inputpolicy.IMPACTS ? Object.keys(inputpolicy.IMPACTS).map(k => inputpolicy.IMPACTS[k]) : []);
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('../failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
 
@@ -169,6 +171,21 @@
       try { const out = fn(text); return typeof out === 'string' ? out : text; } catch (e) { failNote('tools.registry.resultScrub', e); return '[tool result withheld: its secret scrub failed]'; }
     };
   }
+  /* A HOST REFUSAL'S REASON, for the person (run-paths-polish P2): the refusal's own words without the tool-name frame
+     ("browser.upload: …"), through the station's stored-text scrub whatever the tool's own opt-out (this text is shown
+     and kept, not handed to the model), and withheld if that scrub fails. WHOLE, NOT CUT HERE (Codex A3-REFUSAL-01): a
+     cut made before the scrubs leaves a fragment of a secret or a host path neither scrub knows any more, so the host
+     scrubs host paths out of the whole reason and only then bounds it for the line (index.js loopEmit,
+     host-path-scrub.js boundedScrub). -> string | '' */
+  function refusalReason(toolName, e) {
+    let why = String((e && e.message) || '').trim();
+    const head = String(toolName || '') + ':';
+    if (head.length > 1 && why.indexOf(head) === 0) why = why.slice(head.length).trim();
+    if (!why) return '';
+    if (!resultScrub) return why;
+    try { const out = resultScrub(why); return typeof out === 'string' ? out : ''; }
+    catch (err) { failNote('tools.registry.reasonScrub', err); return ''; }
+  }
   function utf8Bytes(value) {
     const text = String(value == null ? '' : value);
     if (typeof Buffer !== 'undefined' && Buffer.byteLength) return Buffer.byteLength(text, 'utf8');
@@ -301,10 +318,19 @@
   // means we fall back to the plain clamp — losing the tail must never also lose the answer.
   // PROVENANCE rides the park request (capability + any relayed taint) so the HOST can name a park made from
   // untrusted bytes as such; a later fs.read of that file then taints like the result that made it (taint.js).
+  /* QUOTED STREAMS (turn identity commit 11): a tool that hands back ANOTHER session's words (recall_conversation, session.peek) names the
+     workstreams in result.quotedStreams, beside taintedBy. Shaped here, the one seam every result passes: valid workstream ids only,
+     distinct, bounded. The run host latches them (index.js latchRunQuotes) before the result is journaled or handed to the model, and the
+     park meta carries them so a quoted read is never saved as a workspace file (parkOutput refuses). */
+  function quotedList(list) {
+    if (!Array.isArray(list)) return [];
+    return Array.from(new Set(list.filter(id => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)))).slice(0, 100);
+  }
   function parkMeta(call, tool, out) {
     const meta = { tool: (call && call.name) || 'tool' };
     if (tool && tool.capability) meta.capability = String(tool.capability);
     if (out && typeof out === 'object' && typeof out.taintedBy === 'string' && out.taintedBy) meta.taintedBy = out.taintedBy;
+    if (out && typeof out === 'object') { const quoted = quotedList(out.quotedStreams); if (quoted.length) meta.quotedStreams = quoted; }
     return meta;
   }
   async function parkIfOver(content, call, ctx, limit, meta) {
@@ -508,8 +534,18 @@
     // the injected clock a held tool timeout measures what was left by (PAUSABLE DEADLINE); absent = late, never early
     const registryNow = (opts && opts.clock && typeof opts.clock.now === 'function') ? () => opts.clock.now() : null;
 
+    /* EVERY HOST TOOL DECLARES ITS IMPACT (authority-census, 2026-10-30). An undeclared tool used to register and fall
+       through impactOfTool's name/capability ladder, so whether a routine could read a terminal it started depended on
+       a guess (#155: eight tools fell to external-unknown). A host registration now names one of the finite impact
+       classes (inputpolicy.js IMPACTS) or does not register at all. `none` is a declaration, not an exemption: scope,
+       consent, taint locks and the Task Brief still apply. Connector registrations keep their translators' fail-closed
+       contract (mcp/translate.js, plugin-tools.js: external-unknown), so a server can never pick its own class here. */
     function register(def, registration) {
       const provenance = registration && registration.provenance === 'connector' ? 'connector' : 'host';
+      if (provenance === 'host' && !(def && typeof def.impact === 'string' && DECLARED_IMPACTS.has(def.impact))) {
+        throw new Error('tool "' + String((def && def.name) || '') + '" cannot register: a host tool must declare its impact as one of '
+          + Array.from(DECLARED_IMPACTS).join(', ') + ' (got ' + JSON.stringify(def ? def.impact : undefined) + ')');
+      }
       const t = toolMod.makeTool(Object.assign({}, def, { provenance }));
       tools[t.name] = t;
       return t;
@@ -685,12 +721,22 @@
         // stored text was scrubbed above, before the park and before the clamp below cuts it (see resultScrubFor)
         const visible = full !== raw && typeof full === 'string' ? intrinsicReceipt(raw, full.length, fullBytes, parked, shaped ? out.fullContentElided : 0) : raw;
         const done = okResult(visible, shaped ? out.summary : undefined, shaped ? out.control : undefined, parked, shaped ? out.images : undefined, typeof full === 'string' ? full.length : null, fullBytes, shaped ? out.mutationReceipt : null, hostCap);
+        /* A TOOL'S OWN FAILURE VERDICT (typed-outcomes, 2026-10-29). A run() that RETURNS { content, isError: true } — or ok: false,
+           or status: 'error' — failed. Wrapping it as ok:true dropped the flag, so its refusal read as a success on every surface
+           that keys on the result (the tool row, agent.tool_result, the run's toolsOk proof count, the loop guard, an editor's
+           red/green): group.* answered "REFUSED: …" as ok. Honoured HERE, the one seam every result passes; a throw stays the
+           other way to fail. A shaped result that says nothing of the kind is unchanged. */
+        if (shaped && (out.isError === true || out.ok === false || out.status === 'error')) {
+          done.ok = false; done.isError = true;
+          if (!(typeof out.summary === 'string' && out.summary.trim())) done.summary = 'error';
+        }
         // A head+tail capture rides on as outputElided, so the per-turn squeeze and the per-run budget receipt never call it the full output.
         const outputElided = shaped && Number(out.fullContentElided) > 0 ? Number(out.fullContentElided) : 0;
         if (outputElided) { done.outputElided = outputElided; done.content = clampOutput(visible, parked, hostCap, outputElided); }
         // RELAYED TAINT (additive): a tool that hands back ANOTHER run's text (team.dispatch / team.subagents …)
         // reports that run's host-proven taint; the run host latches it on the ingesting run (see taint.relayedTaint).
         if (shaped && typeof out.taintedBy === 'string' && out.taintedBy) done.taintedBy = out.taintedBy.slice(0, 200);
+        if (shaped) { const quoted = quotedList(out.quotedStreams); if (quoted.length) done.quotedStreams = quoted; }   // the sessions this result drew on (commit 11)
         // Only host-minted provenance survives shaping; body text and ordinary metadata fields are not proof.
         if (shaped && responseProvenance) responseProvenance.carry(out, done);
         return await notifyPost(done, elapsed());
@@ -739,6 +785,9 @@
         if (unknownEffect) failed.effectUnknown = true;
         // the HOST wrote this refusal (a URL guard, a path rule) — no outside bytes reached the model (taint observation)
         if (e && e.hostAuthored === true) failed.hostAuthored = true;
+        // ...so the person may read it too: the tool's own refusal reason rides the result (refusalReason), and the loop
+        // puts it on the tool's line, where it used to say only "✗ error" (run-paths-polish P2)
+        if (e && e.hostAuthored === true) { const why = refusalReason(call.name, e); if (why) failed.reason = why; }
         // A refusal that points at a DEFERRED tool (browser.eval -> browser.inspect) must also make it callable: the
         // loop moves revealTools names into the advertised set only when they were already granted and deferred,
         // so this never widens capability. The result stays an error.

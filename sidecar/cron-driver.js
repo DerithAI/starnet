@@ -25,6 +25,11 @@
                            -> string             // LIVE provider credential material when one is key-backed
      deps.providerForJob(job, ident)
                            -> string             // selected runtime provider ('openrouter' or 'codex')
+     deps.wireForJob(job)  -> { model, provider, reasoningEffort, followsStation, source }
+                                                 // OPTIONAL: the host's ONE {provider, model} resolution for this
+                                                 //   routine (index.js cronWireFor -> sidecar/run-wire.js). When
+                                                 //   injected it decides the pair and effort, and providerForJob /
+                                                 //   identityForAgent's model / defaultModel are not consulted for them.
      deps.hasCredential(provider, key, job)
                            -> bool               // OAuth providers can be runnable without a BYOK key
      deps.credentialError(provider, job)
@@ -47,13 +52,31 @@
                                                  //   section header. PROMPT TEXT ONLY — never grants/tools.
      deps.deliveryNoteFor  -> (job) -> string    // OPTIONAL: appended to the entry run's system when its reply goes
                                                  //   to a chat (how to ATTACH files). PROMPT TEXT ONLY.
-     deps.placeWorkitem(agentId, prompt, runId)
+     deps.deliveryStarted(jobId, runId) -> bool  // OPTIONAL: something of this run's result has gone out (its chat lane
+                                                 //   sends the rest, channels/delivery-ledger.js): it is busy for the
+                                                 //   supersede, and a pause holds only results not started yet
+     deps.deliveryWithdrawn(jobId, runId) -> void // OPTIONAL: this run's result was superseded or re-counted before anything
+                                                 //   of it went: what the host queued for it goes (a re-counted result is
+                                                 //   asked again in its turn, with its new count)
+     deps.deliveryRecorded(jobId, runId, out) -> void  // OPTIONAL: this run's markDelivery (out) is on disk; what the host
+                                                 //   kept for the re-ask of the targets it names may go (index.js
+                                                 //   routine-delivery.js deliveryRecorded)
+     deps.placeWorkitem(agentId, prompt, runId, dockId, { byFire })
                            -> void               // OPTIONAL: ride the routine's instruction onto the CONVEYOR as a
                                                  //   box bound for its agent (the SAME workitem.placed plumbing a
                                                  //   Telegram message uses) so a scheduled fire is VISIBLE on the
                                                  //   floor — a crate arrives and the agent goes to work. Injected
                                                  //   (the ambient id-mint + emit live in index.js), so this file
-                                                 //   stays determinism-clean. No-op when not provided. */
+                                                 //   stays determinism-clean. No-op when not provided.
+     deps.settleWorkitem(runId, reason)
+                           -> void               // OPTIONAL: settle that crate once the FIRE has settled (finishFire, its
+                                                 //   work line included): reason 'done' (delivered to the OUTBOX) only for a
+                                                 //   fire whose outcome is succeeded AND whose line delivered the whole job
+                                                 //   (fireOutcome .delivered), else the outcome (a held line, a cut reply, a
+                                                 //   raised error) or 'line_stopped' (a line that stopped short or joined
+                                                 //   partial) — each drains the slot. When provided, the crate is
+                                                 //   placed with { byFire: true } so the host leaves it to the fire
+                                                 //   (never settles it at the entry run's end). No-op when not provided. */
 'use strict';
 (function (root, factory) {
   const api = factory(
@@ -67,6 +90,8 @@
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   // plain words for an unclean end ("the model sent back an empty reply…"), the machine reason kept in brackets
   const incompleteRunMessage = (typeof require === 'function') ? require('./stop-reason.js').incompleteRunMessage : (r) => 'run ended without completion: ' + (r || 'missing terminal outcome');
+  // TYPED OUTCOMES: how a fire ended, read through the ONE resolver every surface shares (frontend/app/runoutcome.js)
+  const RunOutcome = (typeof require === 'function') ? require('../frontend/app/runoutcome.js') : ((typeof globalThis !== 'undefined' && globalThis.RunOutcome) || null);
   // WHO a routine run is (routine id + name, recipe, fire-time idempotency scope) — one definition for this tick and Run Now
   const routineRunIdentity = (typeof require === 'function') ? require('./routine-identity.js').routineRunIdentity
     : function (job, at) { return { cronJobId: job.id, cronJobName: job.name || '', idempotencyScope: 'cron:' + job.id + ':' + String(at == null ? '' : at), recipeId: (job.meta && job.meta.recipeId) || undefined }; };
@@ -74,6 +99,10 @@
   // what a finished work line leaves on the fire: its answer + stop note, its spend, its stop facts (routing/line-fire.js)
   const foldLineIntoFire = (typeof require === 'function') ? require('./routing/line-fire.js').foldLineIntoFire
     : function (state, line) { if (line && String(line.text || '').trim()) state.buf = line.text; if (line && typeof line.usd === 'number' && isFinite(line.usd)) state.usd += line.usd; return state; };
+  const lineFacts = (typeof require === 'function') ? require('./routing/line-fire.js').lineFacts : line => line;
+  // the fire's CRATE rides to the OUTBOX only when its work line delivered the whole job (routing/line-fire.js lineDelivered)
+  const lineDelivered = (typeof require === 'function') ? require('./routing/line-fire.js').lineDelivered
+    : function (line) { return !line || typeof line !== 'object' || (!line.stopped && !line.partial); };
 
   const SILENT_MARKER = '[SILENT]';
   const iso = cron._internals.iso;   // ms(arg) -> ISO; deterministic (the lint bans only the zero-arg new Date)
@@ -90,6 +119,8 @@
     : ((root.SK && root.SK.cronGuard) || { scanAssembled: function () { return { ok: true }; } });
   // #89: the ONE no-credential sentence builder (pure); index.js injects the registry-aware form as deps.credentialError
   const engineCredential = (typeof require === 'function') ? require('./engine-credential.js') : (root.SK && root.SK.engineCredential);
+  // one run's reply, joined the way every reply sink joins it (a steering echo reads '↪ <note>', never the raw marker). Pure.
+  const replyAssembler = (typeof require === 'function') ? require('./reply-assembler.js') : (root.SK && root.SK.replyAssembler);
 
   function makeCronDriver(deps) {
     const d = deps || {};
@@ -100,6 +131,7 @@
     const newId = d.newId, newAbort = d.newAbort, now = d.now;
     const getKey = typeof d.getKey === 'function' ? d.getKey : function () { return ''; };
     const providerForJob = typeof d.providerForJob === 'function' ? d.providerForJob : function () { return 'openrouter'; };
+    const wireForJob = typeof d.wireForJob === 'function' ? d.wireForJob : null;
     const hasCredential = typeof d.hasCredential === 'function' ? d.hasCredential : function (_provider, key) { return !!key; };
     // #89: the blocked-config reason is the SAME sentence Run Now and the quest refresh say (index.js injects the
     // registry-aware form); a host that injects nothing gets the same builder with only the provider id
@@ -113,6 +145,7 @@
     // determinism-clean — a getter is just an injected dep, exactly like getKey/getJobs.
     const personaOf = typeof d.persona === 'function' ? d.persona : function () { return d.persona || ''; };
     const placeWorkitem = typeof d.placeWorkitem === 'function' ? d.placeWorkitem : function () {};
+    const settleWorkitem = typeof d.settleWorkitem === 'function' ? d.settleWorkitem : null;
     // B5 parity (2026-07-06 audit): a routine's run gets the SAME per-bay capability station a routed channel
     // message gets — resolveStation(agentId) -> the bay room's objects, else null -> the host's default office.
     // Optional + injected so this module stays determinism-clean; absent -> pre-fix behavior.
@@ -174,6 +207,20 @@
     const advanceChain = typeof d.advanceChain === 'function' ? d.advanceChain : null;
     const contextFor = typeof d.contextFor === 'function' ? d.contextFor : function () { return ''; };
     const deliverResult = typeof d.deliverResult === 'function' ? d.deliverResult : null;
+    /* A RESULT WHOSE DELIVERY HAS STARTED (channel-delivery-ledger S4). The host's delivery ledger drives a result to the
+       end, part by part, whatever this driver does next, once a part of it landed. So such a result is BUSY for the
+       supersede (it is on the wire: dropping its receipt would send it anyway, and a count a newer one took from it could
+       never be said), and a PAUSE holds only results not started yet (a started one finishes; its outcome is still
+       recorded). A result the host queued but has not started is not busy: a chat that refuses from the first part still
+       gets one current result, not a burst, and deliveryWithdrawn takes back what the collapse dropped or re-counted.
+       Absent: the in-memory maps alone, as before. */
+    const deliveryStarted = typeof d.deliveryStarted === 'function' ? d.deliveryStarted : null;
+    const deliveryWithdrawn = typeof d.deliveryWithdrawn === 'function' ? d.deliveryWithdrawn : null;
+    const deliveryRecorded = typeof d.deliveryRecorded === 'function' ? d.deliveryRecorded : null;
+    function started(jobId, runId) {
+      if (!deliveryStarted) return false;
+      try { return deliveryStarted(jobId, runId) === true; } catch (e) { failNote('cron.delivery.started', e); return false; }
+    }
     const preflightConfig = typeof d.preflightConfig === 'function' ? d.preflightConfig : null;
     const hashText = typeof d.hashText === 'function' ? d.hashText : function (s) { return String(s == null ? '' : s); };
     const blockedRetryMs = (function () { const n = parseInt(d.blockedRetryMs, 10); return Number.isFinite(n) && n > 0 ? n : 60000; })();
@@ -209,16 +256,37 @@
 
     const deliveries = new Map(); // job/run -> one in-flight send across boot, ticks and completion
     const deliveryReceipts = new Map(); // send finished but its acknowledgement has not reached disk
+    let publicationReleaseCursor = 0; // fairness only; every attempt still reads the current durable receipt
+    async function releasePublication(job, f) {
+      if (!deliveryRecorded) return false;
+      const out = { ok: true, deliveredTargets: f.deliveredTargets || [], givenUpTargets: f.givenUpTargets || [], historyPublications: f.historyPublications };
+      try {
+        if (await deliveryRecorded(job.id, f.runId, out) !== true) return false;
+        return setJobs(cronStore.markPublicationReleased(getJobs(), job.id, { runId: f.runId, historyPublications: f.historyPublications })) !== false;
+      } catch (e) { failNote('cron.delivery.publication-release', e); return false; }
+    }
     /* collapseBacklog — the routine's older idle results for a destination are superseded by its newest one
        (cron-store supersedeDeliveries: one current result per chat, never a burst of stale ones). `own` is the run
-       id the caller is about to send — it is in `deliveries` already but is not "busy" for this decision. Returns
-       false only when the supersede could not reach disk (the caller retries on a later pass, sending nothing). */
+       id the caller is about to send — it is in `deliveries` already but is not "busy" for this decision, unless the
+       host's delivery has started it (then it is on the wire like any started result). What the host queued for a result
+       this drops or re-counts goes first: its words are stale, and if the write below fails the next ask queues them
+       again, nothing having been sent. Returns false only when the supersede could not reach disk (the caller retries on
+       a later pass, sending nothing). */
     function collapseBacklog(jobId, own) {
       const jobs = getJobs();
-      const busy = cronStore.pendingDeliveries(cronStore.getJob(jobs, jobId)).map(p => String(p.runId))
-        .filter(r => r !== String(own) && (deliveries.has(jobId + '/' + r) || deliveryReceipts.has(jobId + '/' + r)));
+      const before = cronStore.pendingDeliveries(cronStore.getJob(jobs, jobId));
+      const busy = before.map(p => String(p.runId))
+        .filter(r => (r !== String(own) && (deliveries.has(jobId + '/' + r) || deliveryReceipts.has(jobId + '/' + r))) || started(jobId, r));
       const next = cronStore.supersedeDeliveries(jobs, jobId, { now: now(), busy: busy });
-      return next === jobs || setJobs(next) !== false;
+      if (next === jobs) return true;
+      if (deliveryWithdrawn) {
+        const after = new Map(cronStore.pendingDeliveries(cronStore.getJob(next, jobId)).map(p => [String(p.runId), Number(p.superseded) || 0]));
+        for (const p of before) {
+          if (after.get(String(p.runId)) === (Number(p.superseded) || 0)) continue;
+          try { deliveryWithdrawn(jobId, String(p.runId)); } catch (e) { failNote('cron.delivery.withdrawn', e); }
+        }
+      }
+      return setJobs(next) !== false;
     }
     async function deliverFinalization(job, receipt) {
       const f = receipt || (job && job.finalization);
@@ -234,36 +302,66 @@
         }
         let out = deliveryReceipts.get(key);
         if (!out) {
-          if (cronStore.deliveriesHeld(current)) return false;   // paused by the Commander: kept until resumed
+          // paused by the Commander: kept until resumed — but a RUN NOW pressed on the paused routine goes out (its receipt,
+          // review 7.1), and so does one whose delivery already started (it finishes; its outcome is recorded); nothing
+          // collapses while the routine is paused
+          const held = cronStore.deliveriesHeld(current);
+          if (cronStore.deliveriesHeld(current, cronStore.pendingDeliveries(current).find(p => p.runId === f.runId)) && !started(job.id, f.runId)) return false;
           // Nothing awaits before this point, so a pass that picked several receipts of one routine settles the
           // collapse here, synchronously, before any of them sends.
-          if (!collapseBacklog(job.id, f.runId)) return false;
+          if (!held && !collapseBacklog(job.id, f.runId)) return false;
           current = cronStore.getJob(getJobs(), job.id);
           const live = cronStore.pendingDeliveries(current).find(p => p.runId === f.runId);
           if (!live) return false;                                 // superseded by a newer result for the same chat
           // The committed routing/context snapshot wins over subsequent edits to the routine.
           const deliveryJob = Object.assign({}, job, f.deliveryContext || {}, { deliver: f.deliver, origin: f.origin });
-          try { out = deliverResult ? await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, text: f.result || '', error: f.error || null, deliveredTargets: live.deliveredTargets || f.deliveredTargets || [], superseded: Number(live.superseded) || 0 }) : { ok: true }; }
+          // givenUpTargets: the targets an earlier ask found refused for good (the host never sends to those again)
+          try { out = deliverResult ? await deliverResult(deliveryJob, { runId: f.runId, outcome: f.outcome, runOutcome: f.runOutcome || null, text: f.result || '', error: f.error || null, deliveredTargets: live.deliveredTargets || f.deliveredTargets || [], givenUpTargets: live.givenUpTargets || f.givenUpTargets || [],
+            ...(Object.prototype.hasOwnProperty.call(live, 'historyPublications') ? { historyPublications: live.historyPublications } : {}), superseded: Number(live.superseded) || 0 }) : { ok: true }; }
           catch (e) { out = { ok: false, error: (e && e.message) || String(e) }; }
-          out = { ok: !out || out.ok !== false, error: out && out.error, deliveredTargets: out && out.deliveredTargets };
+          out = { ok: !out || out.ok !== false, error: out && out.error, deliveredTargets: out && out.deliveredTargets, givenUpTargets: out && out.givenUpTargets,
+            ...(out && Object.prototype.hasOwnProperty.call(out, 'historyPublications') ? { historyPublications: out.historyPublications } : {}) };
           deliveryReceipts.set(key, out);
         }
         if (setJobs(cronStore.markDelivery(getJobs(), job.id, Object.assign({ runId: f.runId }, out), { now: now() })) === false) return false;
         deliveryReceipts.delete(key);
+        // the outcome is on disk: what the host's delivery kept so a re-ask would send nothing may go now
+        const saved = cronStore.getJob(getJobs(), job.id);
+        const publication = cronStore.publicationReleases(saved).find(p => p.runId === f.runId);
+        if (publication) await releasePublication(saved, publication);
+        else if (deliveryRecorded) { try { await deliveryRecorded(job.id, f.runId, out); } catch (e) { failNote('cron.delivery.recorded', e); } }
         return out.ok;
       } finally { deliveries.delete(key); }
     }
 
     async function recoverFinalizations() {
       let count = 0;
+      // Completed publication receipts are maintenance, not a new send. They survive
+      // later results and retry even while the routine is paused, at the existing four-item bound.
+      const releases = getJobs().slice().flatMap(job => cronStore.publicationReleases(job).map(f => ({ job, f })));
+      const start = releases.length ? publicationReleaseCursor % releases.length : 0;
+      let visited = 0;
+      for (; visited < Math.min(4, releases.length); visited++) {
+        const { job, f } = releases[(start + visited) % releases.length];
+        const key = job.id + '/' + f.runId;
+        if (deliveries.has(key)) continue;
+        deliveries.set(key, true);
+        try { await releasePublication(job, f); } finally { deliveries.delete(key); }
+      }
+      publicationReleaseCursor = releases.length ? (start + visited) % releases.length : 0;
       // Bound each pass; an unreachable destination must not flood transports on every tick.
       const work = [];
       for (const listed of getJobs().slice()) {
-        if (!listed || cronStore.deliveriesHeld(listed)) continue;   // a paused routine's results wait for its resume
+        if (!listed) continue;
+        // a paused routine's results wait for its resume — all but a RUN NOW pressed on it while paused (deliveriesHeld per
+        // receipt, review 7.1) and one whose delivery already started (it finishes)
+        const held = cronStore.deliveriesHeld(listed);
+        if (!cronStore.pendingDeliveries(listed).some(f => !cronStore.deliveriesHeld(listed, f) || started(listed.id, f.runId))) continue;
         // Collapse first, so the per-pass bound is spent on results that will actually be sent.
-        if (cronStore.pendingDeliveries(listed).length > 1 && !collapseBacklog(listed.id, null)) continue;
+        if (!held && cronStore.pendingDeliveries(listed).length > 1 && !collapseBacklog(listed.id, null)) continue;
         const job = cronStore.getJob(getJobs(), listed.id) || listed;
         for (const f of cronStore.pendingDeliveries(job)) {
+          if (cronStore.deliveriesHeld(job, f) && !started(job.id, f.runId)) continue;
           if (work.length + deliveries.size >= 4) break;
           const key = job.id + '/' + f.runId;
           if (deliveries.has(key) || (!deliveryReceipts.has(key) && Date.parse(f.nextAttemptAt) > now())) continue;
@@ -304,11 +402,50 @@
       if (pending) { state = pending.state; threw = pending.threw; }
       const at = pending ? pending.at : now();
       const reply = (state.buf || '').trim();
-      const terminalReason = String(state.reason || '');
-      const errMsg = state.errMsg
-        || (threw ? ('run failed: ' + ((threw && threw.message) || threw)) : null)
-        || (terminalReason === 'done' ? null : incompleteRunMessage(terminalReason, { toolsRan: state.toolsRan || 0 }));   // tools that ran mean an 'empty' end is not "nothing was done"
-      const ok = !errMsg;
+      // ONE settlement rule for the scheduled fire and Run Now (fireOutcome): only a succeeded run is ok — a provider-cut
+      // reply, a question nobody can answer and a missing end all fail, each in plain words
+      let settled = fireOutcome(state, threw);
+      // A STOP IS ITS OWN OUTCOME (review r7, the family law): a fire someone stopped (Stop, pausing it mid-run, deleting it, E-STOP, or a
+      // STOP on its work line) is neither ok nor a failure — its record says 'stopped' (markRun: no failure streak, no auto-pause), and
+      // cron.result says 'stopped' with the fire's own outcome code beside it (runOutcome), never 'failed'
+      // THE FIRE SETTLES ITS CRATE (typed-outcomes): the entry run's end is not the fire's outcome — a reviewer may still hold its
+      // line. Delivered ('done') only for a fire that SUCCEEDED and whose line delivered the whole job (fireOutcome .crate); a held or
+      // stopped line, a cut reply or an error the run raised drains the slot. Idempotent on the host's side (a crate settles once).
+      if (settleWorkitem) {
+        const jobFacts = { output: state.buf, error: state.errMsg || (threw && (threw.message || String(threw))) };
+        if (state.lineStop && state.lineStop.code === 'day_limit') Object.assign(jobFacts, { stop: state.lineStop, admissionStop: state.lineStop, stopped: settled.outcome === 'stopped' });
+        // The host's acceptance hold is job authority, like a review hold; the successful provider row stays intact.
+        if (state.lineStop && state.lineStop.code === 'blocked') jobFacts.stop = state.lineStop;
+        try {
+          const jobResult = settleWorkitem(runId, settled.crate, jobFacts);
+          if (jobResult && jobResult.jobId) {
+            // The host has durably accepted this result. Keep it in the existing retry receipt: the host item
+            // is gone after success, and a later routine-write retry must neither lose nor replace its cause.
+            state.lineResult = { jobId: jobResult.jobId, outcome: jobResult.outcome, stop: jobResult.stop, error: jobResult.error };
+            if (jobResult.outcome === 'stopped' && state.completionHold && state.line && state.line.blocked === state.completionHold.why) {
+              // A late owned STOP/fault supersedes this acceptance hold. Keep unrelated review/partial facts.
+              state.line = Object.assign({}, state.line);
+              delete state.line.blocked;
+            }
+            if (jobResult.stop) state.line = Object.assign({}, state.line, lineFacts({ stopped: jobResult.error, stop: jobResult.stop, halted: jobResult.outcome === 'stopped' }));
+          }
+          settled = fireOutcome(state, threw);
+        }
+        catch (e) {
+          // A line job could not durably finish. Reuse the driver's existing settlement retry, without publishing a
+          // successful routine result, releasing ownership, or executing the paid work again.
+          failNote('cron.settleWorkitem', e);
+          if (currentLease && currentLease.runId === runId && !currentLease.settlement) currentLease.settlement = { at, state: Object.assign({}, state), threw: threw || null };
+          return false;
+        }
+      }
+      const errMsg = settled.errMsg, ok = !errMsg;
+      const stopped = !ok && settled.outcome === 'stopped';
+      // THE REASON THE FIRE HANDS ON (review 5.1): its run's end word, 'done' only for a fire that SUCCEEDED (RunOutcome.reasonOf over
+      // the fire's outcome): a cut reply is 'cut_short', an error the run raised 'error', a line a reviewer held 'blocked'. ONE value for
+      // the routine's record (lastReason: routine.list) and cron.result (the HUD's "✕ routine failed — …", the routine's COMMS session),
+      // which both read "failed — done" for a cut fire.
+      const fireReason = RunOutcome ? RunOutcome.reasonOf({ reason: state.reason || (ok ? 'done' : 'error'), outcome: settled.outcome }) : (state.reason || (ok ? 'done' : 'error'));
       const transient = !!(state.transient || (threw && threw.transient));
       // GENERATION FENCE (2026-07-15 reliability audit): only the run that STILL OWNS the job's lease may
       // settle its record. A run whose lease was reclaimed (the sweep declared it a zombie — and possibly
@@ -322,10 +459,12 @@
       if (owned) {
         try {
           const next = cronStore.markRun(getJobs(), jobId, {
-            runId: runId, status: ok ? 'ok' : 'error',
-            reason: state.reason || (ok ? 'done' : 'error'),
+            runId: runId, status: ok ? 'ok' : (stopped ? 'stopped' : 'error'),
+            reason: fireReason,
+            outcome: settled.outcome || undefined, failureCode: settled.failureCode || undefined,   // the run's outcome code (additive)
             error: errMsg || undefined, transient: transient, output: ok ? reply : undefined, usd: state.usd || 0,
             line: state.line || null,   // the work line's stop facts (stopped / unapproved / partial), null on a clean or no line
+            pausedAtStart: lease.pausedAtStart === true,   // a RUN NOW pressed on a routine already paused (handleCronRun's lease): its result is not held
             monitorHash: ok ? state.monitorHash : undefined
           }, { now: at, defaultTz: defaultTz, maxConsecutiveFailures: maxConsecutiveFailures });
           committed = setJobs(next) !== false;
@@ -342,20 +481,29 @@
           return false;
         }
       }
-      // job-level outcome: a FAILED run always reports (never silent); SILENT only on a clean, exactly-"[SILENT]" reply.
-      const outcome = !ok ? 'failed' : (reply === SILENT_MARKER ? 'silent' : 'ok');
-      let baseReason = state.reason || (errMsg ? 'error' : 'done');
+      // job-level outcome: a FAILED run always reports (never silent); SILENT only on a clean, exactly-"[SILENT]" reply; a STOP is 'stopped'.
+      const outcome = !ok ? (stopped ? 'stopped' : 'failed') : (reply === SILENT_MARKER ? 'silent' : 'ok');
+      let baseReason = fireReason;
+      let pausedAfter = 0;
       // AUTO-PAUSE telemetry: when THIS settlement tripped the consecutive-failure ceiling the job is now
-      // disabled — say so on the governed reason string (the payload shape is unchanged; reason is free text).
+      // disabled — say so on the governed reason string (kept for older readers) and as its own field (pausedAfter, review r7: a reader
+      // that resolved the suffixed reason read it as no run reason at all).
       if (owned && committed) {
-        const settled = cronStore.getJob(getJobs(), jobId);
-        if (settled && settled.enabled === false && settled.disabledReason === 'consecutive-failures' && (settled.disabledAt === iso(at))) {
-          baseReason = baseReason + ' (paused: consecutive-failures x' + settled.consecutiveFailures + ')';
+        const settledJob = cronStore.getJob(getJobs(), jobId);
+        if (settledJob && settledJob.enabled === false && settledJob.disabledReason === 'consecutive-failures' && (settledJob.disabledAt === iso(at))) {
+          pausedAfter = Number(settledJob.consecutiveFailures) || 0;
+          baseReason = baseReason + ' (paused: consecutive-failures x' + settledJob.consecutiveFailures + ')';
         }
       }
       // an UNOWNED settle whose runId already reported (its reclaim settled it) stays silent: one run, one cron.result
       const alreadyReported = !owned && runId != null && settledRunIds.has(String(runId));
-      if ((!owned || committed) && !alreadyReported) try { emit('cron.result', { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') }); } catch (_) {}
+      // (review r7, additive) the fire's OWN outcome code rides beside the coarse word: a reader never re-derives stopped / cut_short / blocked
+      // from the free-text reason, whose ' (paused: …)' / ' (stale-lease)' suffix put it outside the reason vocabulary
+      const resultPayload = { jobId: jobId, runId: runId, outcome: outcome, reason: owned ? baseReason : (baseReason + ' (stale-lease)') };
+      if (RunOutcome && RunOutcome.isOutcome(settled.outcome)) resultPayload.runOutcome = settled.outcome;
+      if (settled.failureCode) resultPayload.failureCode = String(settled.failureCode);
+      if (pausedAfter > 0) resultPayload.pausedAfter = pausedAfter;
+      if ((!owned || committed) && !alreadyReported) try { emit('cron.result', resultPayload); } catch (_) {}
       if (owned && committed) noteSettled(runId);
       const continueAfterCommit = !(owned && committed && afterFinalizationCommitted && afterFinalizationCommitted(cronStore.getJob(getJobs(), jobId)) === false);
       if (owned && committed && continueAfterCommit) {
@@ -420,11 +568,16 @@
         if (typeof scan.cleaned === 'string' && scan.cleaned) assembledPrompt = scan.cleaned;
       }
       const ident = identityForAgent(job.agentId, job) || {};
-      const model = (job.model && String(job.model).trim()) || (ident.model && String(ident.model).trim()) || defaultModel;
-      const provider = providerForJob(job, ident) || 'openrouter';
+      // the routine's pair is ONE resolution when the host injects it (run-wire.js): the model and the provider can never
+      // come from two different levels (a routine's own model on its agent's provider by accident, a stale stamp, …)
+      const wired = wireForJob ? (wireForJob(job) || {}) : null;
+      const model = wired ? String(wired.model || '').trim()
+        : ((job.model && String(job.model).trim()) || (ident.model && String(ident.model).trim()) || defaultModel);
+      const provider = (wired ? wired.provider : providerForJob(job, ident)) || 'openrouter';
       const key = getKey(provider, job);
       let configIssue = null;
-      if (!job.noAgent && !model) configIssue = { code: 'missing-model', reason: 'no model is configured; choose a model for this routine or its assigned agent' };
+      // a routine saved on a provider this station does not know is refused by the resolution (run-wire.js): say which
+      if (!job.noAgent && !model) configIssue = { code: 'missing-model', reason: (wired && wired.unknownProvider && wired.error) ? String(wired.error) : 'no model is configured; choose a model for this routine or its assigned agent' };
       else if (!job.noAgent && !hasCredential(provider, key, job)) configIssue = { code: 'missing-credential', reason: String(credentialError(provider, job)) };
       if (!configIssue && preflightConfig) {
         try {
@@ -485,15 +638,23 @@
       try { emit('cron.fire', { jobId: job.id, runId: runId, scheduledFor: scheduledFor }); } catch (_) {}
       // ride the routine's instruction onto the CONVEYOR as a box bound for this agent — only NOW (past the
       // capability gate, lease taken), so a crate appears on the floor iff a run is genuinely firing.
-      try { placeWorkitem(job.agentId, assembledPrompt, runId, job.dockId || undefined); } catch (e) { failNote('cron.placeWorkitem', e); }
+      try { placeWorkitem(job.agentId, assembledPrompt, runId, job.dockId || undefined, { byFire: !!settleWorkitem, runsLine: job.runsLine === true, entry: 'schedule', signal: ac.signal, stopHandle: () => ac.abort() }); }
+      catch (e) {
+        failNote('cron.placeWorkitem', e);
+        if (job.runsLine === true) {
+          finishFire(job.id, runId, { buf: '', reason: 'error', errMsg: 'the line job could not be recorded: ' + ((e && e.message) || e), usd: 0 }, null);
+          return false;
+        }
+      }
 
-      // in-process emit sink: assemble the reply from agent.token deltas (the SAME contract harness.js/hub.js use —
+      // in-process emit sink: assemble the reply from agent.token deltas (reply-assembler.js, the SAME one the hub uses —
       // there is no agent.message event), capture the end reason / error / transient flag off the RAW payload
       // (internal outcome bookkeeping stays whole), then FORWARD each event to the HUD through the SHARED tee
       // redaction so an unattended run is observable live in the SAME redacted shape a routed channel run ships
       // (tool_call name-only, tool_result outcome-only, metadata events whole; token deltas dropped to stay quiet,
       // and any event runTeeView maps to null — e.g. the noisy inner streams — is dropped rather than leaked raw).
       const state = { buf: '', errMsg: null, reason: null, transient: false, usd: 0, monitorHash: sourceHash, toolsRan: 0 };
+      const assembler = replyAssembler.makeReplyAssembler();
       const sink = function (name, payload) {
         const p = payload || {};
         // NS-0 HEARTBEAT: every run-progress event proves this run is still alive → renew the in-RAM lease
@@ -501,12 +662,18 @@
         // survives a restart and suppresses the fireClaim zombie re-fire. Throttle keeps the hot token path
         // from persisting on every delta: only persist once the durable heartbeat is older than heartbeatMs.
         renewLease(job.id, runId);
-        if (name === 'agent.token') { state.buf += (p.delta || ''); return; }   // token stream never leaves the driver
-        if (name === 'agent.tool_call') { state.buf = ''; state.toolsRan++; }   // prior prose was narration; only the terminal segment is deliverable
-        if (name === 'agent.run.error') { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; }
+        const fed = assembler.feed(name, p);
+        if (fed) { state.buf = assembler.text(); state.toolsRan = assembler.toolsRan; }   // a tool call: prior prose was narration; only the terminal segment is deliverable
+        if (fed === 'token') return;   // token stream never leaves the driver
+        // THE LEAD'S OWN RUN settles the fire (typed-outcomes, the /v1 rule): team.dispatch / team.spawn forward a worker's
+        // agent.run.error / .end onto this stream under the WORKER's runId (orchestration.js FORWARD). A worker that failed is the
+        // lead's tool result, never the routine's outcome; its spend still counts (usd below).
+        const lead = !p.runId || String(p.runId) === String(runId);
+        if (name === 'agent.run.error') { if (lead) { state.errMsg = p.message || 'run error'; state.transient = !!p.transient; state.failureCode = p.failureCode || state.failureCode || ''; } }
         else if (name === 'capdenied') state.errMsg = state.errMsg || ('no ' + (p.need || 'capability') + ' — ' + (p.reason || ''));
         else if (name === 'agent.run.end') {
-          state.reason = p.reason;
+          if (lead) state.reason = p.reason;
+          if (lead) state.end = p;   // the end as the station stamped it (outcome, finishReason, failureCode): fireOutcome reads it
           // A duplicated terminal event must not erase an already-observed non-zero cost. Providers and
           // test/recovery hosts can both close a stream; cost is cumulative and therefore monotonic.
           if (typeof p.usd === 'number' && isFinite(p.usd)) state.usd = Math.max(state.usd, p.usd);
@@ -546,10 +713,13 @@
           // reconstructs a stream when messages<=1), so cron behavior is byte-identical — the frontend
           // autosessions module reads GET /api/transcript?stream=cron-<runId> to surface the output as a session.
           runId: runId, streamId: 'cron-' + runId, surface: 'autonomous', trigger: 'schedule', provider: provider,
-          // "Follow station default": an unpinned agent's routine runs on the Overseer's model AND effort (the
-          // identity resolver supplies both), exactly as a channel hop does. A pinned agent or an explicit routine
-          // model leaves this undefined, so the run's own roster effort applies unchanged.
-          reasoningEffort: (!(job.model && String(job.model).trim()) && ident.followsStation) ? ident.reasoningEffort : undefined,
+          // the injected resolution carries THE ONE effort rule (run-wire.js): the agent's own effort, else the
+          // Overseer's when it follows the station default, else undefined (the provider default). Legacy host (no
+          // wireForJob): an unpinned agent's routine runs on the Overseer's effort, else the run's own roster effort.
+          reasoningEffort: wired ? (wired.reasoningEffort || undefined)
+            : ((!(job.model && String(job.model).trim()) && ident.followsStation) ? ident.reasoningEffort : undefined),
+          // WHERE the pair came from (routine / agent / station / env), recorded on the run row (wireSource)
+          wireSource: wired ? (wired.source || undefined) : undefined,
           // Host-minted recovery identity. The active-run journal can now tie an interrupted headless run back
           // to the routine that launched it without trusting model text or guessing from the stream id. Same helper as
           // Run Now (routine-identity.js): cronJobId/cronJobName, the recipe's provenance (recipeId), and the IDEMPOTENCY
@@ -581,18 +751,25 @@
         });
       } catch (e) { p = Promise.reject(e); }
       Promise.resolve(p).then(
-        function () {
+        function (ran) {
+          state.lineStop = ran && ran.lineStop || null;
+          holdForCompletion(state, job.meta && job.meta.postconditions);
           // The line advances ONLY on a COMPLETED entry run. finishFire treats any terminal reason other
           // than 'done' as failure, yet this gate let a truncated run (max_turns/budget/missing terminal —
           // none of which set errMsg) buy every downstream hop on partial stage-one material, then recorded
           // the routine as failed anyway. The reason check closes that split verdict.
-          if (!advanceChain || state.errMsg || state.reason !== 'done' || !String(state.buf || '').trim()) { finishFire(job.id, runId, state, null); return; }
+          // (typed-outcomes: and a provider-cut 'done' is not a finished stage either — only a SUCCEEDED run hands on: fireOutcome)
+          // The line is SEEDED with the run's returned TERMINAL text (line-runner.js), never the reply streamed into state.buf: that
+          // can carry the host's private-files note or a steer echo, and neither is stage one's work.
+          const handed = (ran && typeof ran.text === 'string') ? ran.text : String(state.buf || '');
+          if (!advanceChain || state.errMsg || state.reason !== 'done' || fireOutcome(state, null).errMsg || !handed.trim()) { finishFire(job.id, runId, state, null); return; }
           // hops ride the ROUTINE'S OWN stream so its session reads as one multi-stage job, and each hop renews
           // the lease — a line that outran the heartbeat would be declared a zombie and re-fired mid-work.
           Promise.resolve(advanceChain({
             // the ASSEMBLED prompt (contextFrom output + directive): hops no longer replay the stream, so a downstream stage
             // sees the routine's upstream context only if the handoff's "original request" carries it (token-burn audit 2026-10-17)
-            agentId: job.agentId, dockId: job.dockId || undefined, text: state.buf, originalText: assembledPrompt, ask: String(job.prompt || ''),
+            agentId: job.agentId, dockId: job.dockId || undefined, text: handed, originalText: assembledPrompt, ask: String(job.prompt || ''),
+            jobId: job.id,   // the routine this fire belongs to (a work line that parks at a reviewer's gate names it: index.js advanceChain)
             signal: ac.signal, runId: runId, streamId: 'cron-' + runId, key: key, model: model, provider: provider,
             // the entry run's reconciled spend: the chain's $ ceiling covers the WHOLE line, stage one
             // included (2026-08-10 audit — the entry run rode outside its own line's cap on every path).
@@ -620,7 +797,7 @@
             onHop: function () { renewLease(job.id, runId); }
           })).then(
             // the LINE's answer, its stop note when it stopped short, its spend and its stop facts — as the channel hub folds it
-            function (line) { foldLineIntoFire(state, line); finishFire(job.id, runId, state, null); },
+            function (line) { foldLineIntoFire(state, line, handed); finishFire(job.id, runId, state, null); },
             // A CHAIN FAILURE NEVER CHANGES THE ROUTINE'S OUTCOME: stage one really did run and really did
             // produce work. Same law the channel path holds — the line is never a gate on the answer.
             // It is still SAID OUT LOUD: a silently swallowed chain error is indistinguishable from a floor
@@ -907,5 +1084,52 @@
     return headClip + (body.length > max ? '…' + body.slice(-max) : body);
   }
 
-  return { makeCronDriver: makeCronDriver, SILENT_MARKER: SILENT_MARKER, clipScriptError: clipScriptError, SCRIPT_ERROR_TAIL: SCRIPT_ERROR_TAIL };
+  /* fireOutcome(state, threw) -> { errMsg, outcome, failureCode } — how a routine's run ended, from what its sink saw (the
+     stamped agent.run.end in state.end, the error's message and code), read through RunOutcome. errMsg is null ONLY for a
+     succeeded run: a provider-cut reply ('done' + finishReason), a Task Brief question nobody is there to answer and a
+     stream with no end each settle as a failure with their plain sentence — the routine is never stamped green for work
+     it did not finish, and the result is never delivered or pinged as done. Shared by the scheduled fire (finishFire) and
+     Run Now (sidecar/index.js handleCronRun), so the two settle the same run the same way.
+     .crate (review 4.3) is the reason the fire's conveyor CRATE settles with: 'done' (delivered to the OUTBOX) only for a fire that
+     SUCCEEDED and whose work line delivered the whole job (routing/line-fire.js lineDelivered) — a line that stopped short (a hop
+     failed) or whose joiner sent on without every branch keeps the fire's record as it was, but its crate drains as 'line_stopped',
+     the rule the channel hub, chain.js's line-output receipt and the trigger / SEND TO runners hold. Otherwise the fire's outcome. */
+  // A caller-required contract is separate from provider execution. Only the lead's host-stamped terminal
+  // evidence can release that requirement; provider words and delegated workers' ends never populate state.end.
+  // Keep the hold on the fire so strict LineJob settlement and routine-write retries share the same decision.
+  function holdForCompletion(state, contract) {
+    if (!state || contract == null || (state.end && state.end.completionVerdict === 'completed_verified')) return false;
+    const ownError = state.errMsg ? { failureCode: state.failureCode || '' } : null;
+    const succeeded = RunOutcome.ofEnd(state.end || null, ownError).ok;
+    if (!succeeded) return false;   // an existing STOP, fault, cap or incomplete execution keeps its own cause
+    const why = "Verification required: the routine's completion checks were not proven; nothing was handed on.";
+    const stop = { code: 'blocked', why };
+    state.completionHold = stop;
+    state.lineStop = stop;
+    state.line = Object.assign({}, state.line, lineFacts({ stopped: why, blocked: why, stop }));
+    return true;
+  }
+
+  function fireOutcome(state, threw) {
+    const st = state || {};
+    const terminalReason = String(st.reason || '').trim();
+    const end = (st.end && typeof st.end === 'object') ? st.end : (terminalReason ? { reason: terminalReason, finishReason: st.finishReason || undefined } : null);
+    const failed = (st.errMsg || threw) ? { failureCode: st.failureCode || '' } : null;
+    // a work line a reviewer BLOCKED (st.line, folded by routing/line-fire.js) held the work: the fire is 'blocked', not ok
+    // A committed stopped LineJob is the final host decision, including a STOP/fault after the entry capped.
+    // Other line outcomes retain the established distinction between the entry run and the whole line.
+    const stoppedJob = st.lineResult && st.lineResult.outcome === 'stopped';
+    const ended = RunOutcome ? (stoppedJob ? RunOutcome.ofEnd({ reason: 'cancelled' }, null) : RunOutcome.ofLine(RunOutcome.ofEnd(end, failed), st.line)) : { outcome: stoppedJob ? 'stopped' : terminalReason === 'done' ? 'succeeded' : 'failed', failureCode: '' };
+    const finishReason = end && end.finishReason;
+    const errMsg = (stoppedJob ? st.lineResult.error : st.errMsg)
+      || (threw ? ('run failed: ' + ((threw && threw.message) || threw)) : null)
+      || (ended.outcome === 'blocked' ? String(st.line.blocked) : null)   // the gate's own sentence: which reviewer held it, and that nothing was sent on
+      // a line SOMEONE STOPPED (review r7: st.line.halted, routing/chain.js) — the fire is 'stopped', said as a stop and where it landed
+      || (ended.outcome === 'stopped' && st.line && st.line.halted ? 'the work line was stopped before it finished' + (st.line.stopped && String(st.line.stopped) !== 'stopped' ? ' (' + String(st.line.stopped) + ')' : '') : null)
+      || (ended.outcome === 'succeeded' ? null : incompleteRunMessage(terminalReason, { toolsRan: st.toolsRan || 0, finishReason: finishReason }));   // tools that ran mean an 'empty' end is not "nothing was done"
+    const crate = (!errMsg && ended.outcome === 'succeeded') ? (lineDelivered(st.line) ? 'done' : 'line_stopped') : (ended.outcome || 'error');
+    return { errMsg: errMsg, outcome: ended.outcome, failureCode: ended.failureCode, crate: crate };
+  }
+
+  return { makeCronDriver: makeCronDriver, fireOutcome: fireOutcome, holdForCompletion: holdForCompletion, SILENT_MARKER: SILENT_MARKER, clipScriptError: clipScriptError, SCRIPT_ERROR_TAIL: SCRIPT_ERROR_TAIL };
 });

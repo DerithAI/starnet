@@ -9,10 +9,9 @@
    exported BEFORE the Skynet→StarNet rename holds `skynet.*` keys + a `skynet.backup` schema; both
    import fine and are mapped forward to `starnet.*` on restore.
 
-   v1 restores the browser-side state (which is what a wipe destroys). The notebook lives on the
-   sidecar's own disk and is preserved IN the file for portability + a future restore route, but is
-   not pushed back here — see docs note. Pure-ish: side effects are download + localStorage writes
-   only; everything else returns plain summaries and never throws. */
+   Restore applies the browser-side state and asks the sidecar to merge the notebook. A refused
+   notebook write reports a partial restore. Exports use U.saveFile: a confirmed desktop receipt
+   names its proven path; a browser download reports only the request. */
 'use strict';
 
 const Backup = (() => {
@@ -110,36 +109,97 @@ const Backup = (() => {
     } catch (_) { return null; }
   }
 
+  /* A PACKED SAVE IS NOT A PORTABLE ONE (save v7, history by reference). A saved conversation may NAME a run of rows the station's
+     transcript holds instead of repeating them (historyref.js), which only means something beside that transcript. This file leaves
+     the station — for another browser, another machine — so the save in it carries its rows BY VALUE: every conversation that names
+     rows is read back from the station (POST /api/transcript/rows, the reader the page hydrates with) and written out whole, the
+     page-only fields back on its rows; a turn the Commander undid or forgot is not brought back. A conversation the station cannot
+     return in full (it does not answer, it cannot find a row and cannot prove it undone) stops the export — a file that kept the
+     reference would lose those turns on the machine that opens it — and exportAll says so. A save that names nothing is the very text
+     it was (nothing is parsed, nothing is asked). The one-step undo of a CLEARED conversation (sessionUndo) goes the same way; one the
+     station cannot return is left out, since a cleared conversation is not one anybody exports on purpose. */
+  const ROWS_ASK_MS = 20000;
+  const historyRefModule = () => typeof HistoryRef !== 'undefined' ? HistoryRef : (typeof require === 'function' ? require('./historyref.js') : null);
+  async function readRows(agentId, streamId, rowIds) {
+    if (typeof Harness === 'undefined' || !Harness.api || typeof Harness.api.post !== 'function') throw new Error('the station is not connected');
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), ROWS_ASK_MS) : null;
+    try {
+      const r = await Harness.api.post('/api/transcript/rows', { agent: agentId || 'agent', streams: [{ streamId, rowIds }] }, controller ? { signal: controller.signal } : undefined);
+      const one = r && r.ok && r.j && Array.isArray(r.j.streams) ? r.j.streams[0] : null;
+      if (!one || one.streamId !== streamId || !Array.isArray(one.turns)) throw new Error('the station did not return the rows');
+      return one;
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  // -> { raw, inflated, short }: the save text with every packed history read back (raw itself when none is packed), and the ids of the
+  // conversations the station could not return in full (then raw is left as it was)
+  async function portableSave(raw) {
+    const out = { raw, inflated: 0, short: [] };
+    let changed = false;
+    if (typeof raw !== 'string' || raw.indexOf('"$ref"') < 0) return out;
+    let doc;
+    try { doc = JSON.parse(raw); } catch (_) { return out; }   // not a save this can judge: carried as it is, as before
+    if (!doc || typeof doc !== 'object') return out;
+    const HR = historyRefModule();
+    const packed = h => Array.isArray(h) && h.some(el => el && typeof el === 'object' && typeof el.$ref === 'string');
+    const inflate = async (id, agentId, history) => {
+      if (!HR || typeof id !== 'string' || !id) return null;
+      let r;
+      try { r = await HR.expand(history, { streamId: id, fetchRows: (streamId, rowIds) => readRows(agentId, streamId, rowIds) }); } catch (_) { return null; }
+      return r && r.complete && !r.error && !r.malformed ? r.rows : null;
+    };
+    for (const w of Array.isArray(doc.workstreams) ? doc.workstreams : []) {
+      if (!w || !packed(w.history)) continue;
+      const rows = await inflate(w.id, w.agentId, w.history);
+      if (rows) { w.history = rows; out.inflated++; changed = true; } else out.short.push(String(w.id));
+    }
+    const undo = doc.sessionUndo;
+    if (undo && Array.isArray(undo.rows) && undo.rows.some(row => row && packed(row.history))) {
+      let whole = true;
+      for (const row of undo.rows) {
+        if (!row || !packed(row.history)) continue;
+        const rows = await inflate(row.id, 'agent', row.history);
+        if (rows) { row.history = rows; out.inflated++; } else { whole = false; break; }
+      }
+      if (!whole) doc.sessionUndo = null;
+      changed = true;
+    }
+    if (!out.short.length && changed) out.raw = JSON.stringify(doc);
+    return out;
+  }
+  const packedExportError = short => Object.assign(new Error('Export stopped: ' + short.length + ' saved conversation' + (short.length === 1 ? '' : 's')
+    + ' could not be read back from the station in full, and a file that names rows only the station holds would lose them anywhere else. Nothing was written. Try again when the station answers.'),
+    { code: 'EXPORT_PACKED_UNREADABLE', sessions: short.slice() });
+
   async function build() {
     const saveRaw = memorySaveRaw();   // read once: the file name and the store describe the same save
+    const store = collectStore(saveRaw);
+    if (typeof store[SAVE_KEY] === 'string') {
+      const made = await portableSave(store[SAVE_KEY]);
+      if (made.short.length) throw packedExportError(made.short);
+      store[SAVE_KEY] = made.raw;
+    }
     return {
       schema: SCHEMA, version: VERSION, app: 'starnet',
       exportedAt: Date.now(),
       agentName: agentName(saveRaw),
       secretsIncluded: false,
       secretPolicy: SECRET_POLICY,
-      store: collectStore(saveRaw),
+      store,
       notebook: await snapshotNotebook()
     };
   }
 
-  function triggerDownload(filename, text) {
-    try {
-      const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 1000);
-      return true;
-    } catch (e) { console.warn('[backup] download failed:', e); return false; }
-  }
+  function utilities() { return typeof U !== 'undefined' ? U : require('../js/util.js'); }
 
   async function exportAll() {
-    const bundle = await build();
+    let bundle;
+    try { bundle = await build(); }
+    catch (e) { if (e && e.code === 'EXPORT_PACKED_UNREADABLE') return { ok: false, line: e.message, sessions: e.sessions, records: 0, keys: 0 }; throw e; }
     const file = 'starnet-' + slug(bundle.agentName) + '-' + stamp(new Date()) + '.json';
-    const ok = triggerDownload(file, JSON.stringify(bundle, null, 2));
+    const receipt = await utilities().saveFile({ name: file, ext: 'json', text: JSON.stringify(bundle, null, 2) });
     const records = Object.keys(bundle.store).length;
-    return { ok, file, records, keys: records, secretsIncluded: false, notes: bundle.notebook ? bundle.notebook.length : 0 };
+    return Object.assign({}, receipt, { records, keys: records, secretsIncluded: false, notes: bundle.notebook ? bundle.notebook.length : 0 });
   }
 
   /* #134 EXPORT STATION (Settings › STATION BACKUP) — the line says where the file went only as far as the app KNOWS.
@@ -150,7 +210,8 @@ const Backup = (() => {
        browser: POST /api/config/export, hand the envelope to the browser as starnet-station-<day>.json, and say
                 exactly that: the file name, and that it went to the browser's downloads.
      A desktop save the sidecar could not make (folder permission denied, an older sidecar) falls back to the browser
-     hand-off and says why. `post` is Harness.api.post ({ ok, status, j }); `download` defaults to triggerDownload. */
+     hand-off and says why. U.saveFile owns the path validation, fallback and receipt line;
+     the host still builds/redacts the station envelope. `post` is Harness.api.post ({ ok, status, j }). */
   const SECRETS_NOTE = 'secrets excluded, re-enter keys after importing';
   function stationFileName(now) {
     return 'starnet-station-' + new Date(now == null ? Date.now() : Number(now)).toISOString().slice(0, 10) + '.json';
@@ -158,32 +219,122 @@ const Backup = (() => {
   async function exportStation(opts) {
     const o = opts || {};
     const post = o.post;
-    const download = typeof o.download === 'function' ? o.download : triggerDownload;
     const body = { sections: o.sections || {} };
-    let refused = '';
-    if (o.desktop) {
-      let r = null;
-      try { r = await post('/api/config/export/save', body); } catch (e) { r = null; refused = 'the station did not answer'; }
-      const j = r && r.j;
-      if (r && r.ok && j && j.ok && j.path) {
-        return { ok: true, where: 'disk', path: String(j.path), file: String(j.file || ''), line: '✓ saved to ' + j.path + ' — ' + SECRETS_NOTE };
+    const receipt = await utilities().saveFile({ name: stationFileName(o.now), ext: 'json', desktop: o.desktop, download: o.download,
+      save: () => post('/api/config/export/save', body),
+      text: async () => {
+        let r;
+        try { r = await post('/api/config/export', body); }
+        catch (_) { throw new Error('the station did not answer'); }
+        if (!r || !r.ok || !r.j || typeof r.j !== 'object' || r.j.starnetExport !== 1) {
+          throw new Error(r && r.j && r.j.error ? String(r.j.error) : 'the station did not confirm an export envelope');
+        }
+        return JSON.stringify(r.j, null, 2);
       }
-      if (j && j.error && r.status !== 404) refused = String(j.error);
-      else if (!refused) refused = 'this station cannot save files yet';
+    });
+    return receipt.ok ? Object.assign({}, receipt, { line: receipt.line + ' — ' + SECRETS_NOTE }) : receipt;
+  }
+
+  /* RECOVERY BUNDLE (#119, Settings › APP & BACKUP): the whole station, not the configuration EXPORT STATION writes. The
+     sidecar owns the barrier, the capture, the write and the read-back; this only proves the newest save first, hands over
+     this window's own state, and says what the station's receipt says. complete and "an exact copy" are two different
+     answers, so they are two different lines. A save this window could not confirm does not stop the bundle (it may be
+     the moment a person most needs one): the line says so, and this window's copy rides in the bundle anyway. */
+  const RECOVERY_TIMEOUT_MS = 15 * 60 * 1000;
+  function bytesWords(n) {
+    const b = Number(n) || 0;
+    return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
+  }
+  const CATEGORY_WORDS = { rooms_props: 'rooms and props', connector_references: 'connector references' };
+  function describeRecovery(r) {
+    const lines = [];
+    const i = r.integrity || {}, c = i.counts || {};
+    const gate = r.gate || {};
+    const wanting = (r.requirements || []).filter(x => x && x.status !== 'present');
+    if (gate.noAgents) lines.push('THIS BUNDLE HOLDS NO READABLE AGENT. It would replace a station with nothing, so a restore refuses it unless you pass --allow-no-agents.');
+    if (!wanting.length) lines.push('All required categories are present.');
+    else {
+      lines.push('Some categories have nothing in this bundle:');
+      // "never used" is only the likely reason when nothing was lost on the way in: a locked save is not a category you never used
+      const why = i.verbatim ? 'Expected if you never used it.' : 'Expected if you never used it, unless a file listed below belongs to it.';
+      for (const w of wanting) {
+        const name = CATEGORY_WORDS[w.category] || w.category;
+        lines.push(w.status === 'omitted' ? '  ' + name + ': left out, see below.' : '  ' + name + ': nothing captured. ' + why);
+      }
     }
+    if (i.verbatim) lines.push('Nothing was skipped, nothing was repaired from a .bak, no torn file was kept.');
+    else {
+      lines.push('Not an exact copy of what is on disk:');
+      const row = (n, words) => { if (n) lines.push('  ' + n + ' ' + words); };
+      row(c.omitted, 'left out because it could not be read');
+      row(c.unportable, 'left out because the name cannot be stored safely');
+      row(c.unreadable, 'could not be read');
+      row(c.tooLarge, 'too large for one bundle');
+      row(c.symlinks, 'symbolic link(s) with data outside the station not followed');
+      row(c.credentialFiles, 'credential file(s) left out by name, which cannot come back from this bundle');
+      row(c.linksNotFollowed, 'link(s) inside the station not followed: run its install step again after a restore');
+      row(c.promotedFromBak, 'replaced from the last good .bak');
+      row(c.unusableBak, 'with an unusable .bak');
+      row(c.tornKept, 'torn store(s) kept as they were');
+      const gaps = Array.isArray(r.gaps) ? r.gaps : [];
+      for (const g of gaps.slice(0, 12)) {
+        lines.push('  ' + String(g.path) + ': ' + String(g.reason));
+        if (g.howToGet) lines.push('    ' + String(g.howToGet));
+      }
+      const more = (Number(r.gapsTotal) || gaps.length) - Math.min(gaps.length, 12);
+      if (more > 0) lines.push('  and ' + more + ' more, all listed by the inspect command below.');
+      if (gate.gaps) lines.push('  A restore refuses this bundle unless you pass --allow-incomplete.');
+    }
+    if (Array.isArray(gate.tornSaves) && gate.tornSaves.length) lines.push('Agent save(s) that do not parse: ' + gate.tornSaves.join(', '));
+    if (c.excludedByDesign) lines.push(c.excludedByDesign + ' item(s) left out on purpose: known credential fields, approvals, locks, runtime state and older .bak generations.');
+    lines.push('This file is NOT encrypted. Conversations, agents\' files, plugin data, app data and hook commands are in it as readable text, including anything pasted into them. Keep it as private as your computer, and do not send it to anyone.');
+    const reauth = Array.isArray(r.reauthentication) ? r.reauthentication : [];
+    if (reauth.length) {
+      lines.push('After a restore, reconnect or approve again ' + reauth.length + ':');
+      for (const x of reauth.slice(0, 12)) lines.push('  ' + String(x.kind) + ' ' + String(x.id));
+      if (reauth.length > 12) lines.push('  and ' + (reauth.length - 12) + ' more.');
+    }
+    return lines;
+  }
+  // a capture blocks the station for as long as it reads: the connection chip must not offer a restart for that silence
+  let capturing = false;
+  function isCapturing() { return capturing; }
+  async function createRecoveryBundle(opts) {
+    const o = opts || {};
+    capturing = true;
+    try { return await writeRecoveryBundle(o); }
+    finally { capturing = false; }
+  }
+  async function writeRecoveryBundle(o) {
+    let confirmed = false;
+    try { const d = typeof o.drain === 'function' ? await o.drain() : null; confirmed = !!(d && d.ok); } catch (_) { confirmed = false; }
     let r;
-    try { r = await post('/api/config/export', body); }
-    catch (e) { return { ok: false, line: 'export failed — the station did not answer' }; }
-    if (!r || !r.ok || !r.j || typeof r.j !== 'object') {   // never download an error body as a "backup"
-      const why = (r && r.j && r.j.error) ? String(r.j.error) : ('http ' + (r ? r.status : '?'));
-      return { ok: false, line: 'export failed — ' + why };
+    try { r = await o.post('/api/recovery/backup', { browserStore: collectStore() }, { timeoutMs: RECOVERY_TIMEOUT_MS }); }
+    catch (e) { return { ok: false, line: 'No bundle confirmed: ' + ((e && e.message) || 'the station did not answer') }; }
+    const j = r && r.j;
+    if (!r || !r.ok || !j || j.ok !== true || !j.file) {
+      const why = String((j && j.error) || ('http ' + (r ? r.status : '?')));
+      return { ok: false, line: j && j.leftFile
+        ? 'The bundle could not be verified, and this unverified file could not be removed: ' + String(j.leftFile) + '. Delete it: it holds your station as readable text. Reason: ' + why
+        : 'No bundle was written: ' + why };
     }
-    const file = stationFileName(o.now);
-    if (!download(file, JSON.stringify(r.j, null, 2))) return { ok: false, line: 'export failed — the file could not be handed to the browser' };
-    const handed = refused
-      ? 'could not save it (' + refused + ') — handed to the app\'s downloads as ' + file + ' instead (usually your Downloads folder)'
-      : 'sent to your browser\'s downloads as ' + file;
-    return { ok: true, where: 'browser', file, line: handed + ' — ' + SECRETS_NOTE };
+    const lines = [];
+    if (!confirmed) lines.push('This window\'s newest changes were not confirmed in the station file. Its own copy is in the bundle.');
+    return {
+      ok: true, file: String(j.file), complete: j.complete === true, recovery: j.recovery || null,
+      line: '✓ saved to ' + j.file + ' (' + bytesWords(j.bytes) + ', read back and verified). It is on this computer\'s disk: copy it somewhere else.',
+      detail: lines.concat(describeRecovery(j)).join('\n')
+    };
+  }
+  // what COPY copies: the check alone. Copying the whole list would paste a restore that runs as soon as the line lands.
+  function recoveryCheckCommand(info) { const c = info && info.commands; return c && c.rehearse ? String(c.rehearse) : ''; }
+  // the station's own finished commands (GET /api/recovery/info, or this bundle's receipt): printed exactly, never edited here
+  function recoverySteps(info) {
+    const c = info && info.commands;
+    if (!c || !c.restore) return '';
+    const where = 'Run these in ' + String(info.shell || 'a terminal') + (info.bundleKnown ? '.' : ', with the path to your bundle in place of <path to the bundle>.');
+    return [where, '', 'Check a bundle without touching any station:', String(c.rehearse), '',
+      'Restore it: quit StarNet completely (tray too), then run this. Restore only a bundle you made yourself: StarNet cannot prove who made a file. The folder it replaces is kept beside it as a .rollback- folder.', String(c.restore)].join('\n');
   }
 
   // validate a parsed bundle WITHOUT mutating anything — callers decide whether to apply.
@@ -233,16 +384,16 @@ const Backup = (() => {
 
   // push the bundle's memory snapshot back to the sidecar so a restored/moved agent isn't amnesiac. The route
   // merges additively (existing notes win), so this is safe to call even over an agent that already has memory.
-  // Best-effort: a UI-only preview or unreachable sidecar just yields 0 restored.
+  // A refusal is a partial restore, never a fabricated zero-memory success.
   // memory-truth: the sidecar skips a note the Commander FORGOT (its text is on the declined list) and reports how many
   // in `forgotten` — kept on the side so the status line can say so instead of a silent shortfall.
-  let lastForgotten = 0;
-  function restoreNotebook(notes) {
-    lastForgotten = 0;
-    return fetch('/api/notebook/restore', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agent: 'agent', notes: notes })
-    }).then(r => r.ok ? r.json() : null).then(j => { if (j && j.ok) { lastForgotten = Number(j.forgotten) || 0; return j.added || 0; } return 0; }).catch(() => 0);
+  async function restoreNotebook(notes) {
+    if (typeof Harness === 'undefined' || !Harness.api) throw new Error('the station is not connected');
+    const r = await Harness.api.post('/api/notebook/restore', { agent: 'agent', notes });
+    if (!r.ok || !r.j || r.j.ok !== true || !Number.isInteger(r.j.added) || r.j.added < 0) {
+      throw new Error(Harness.api.why(r) || 'the station did not confirm restored memories');
+    }
+    return { added: r.j.added, forgotten: Number(r.j.forgotten) || 0 };
   }
 
   async function importFile(file) {
@@ -277,12 +428,17 @@ const Backup = (() => {
       } catch (_) {}
     }
     if (res.ok && Array.isArray(doc.notebook) && doc.notebook.length) {
-      res.memoriesRestored = await restoreNotebook(doc.notebook);   // fold memory back into the sidecar
-      if (lastForgotten) res.memoriesForgotten = lastForgotten;   // forgotten memories stayed forgotten
+      try {
+        const restored = await restoreNotebook(doc.notebook);
+        res.memoriesRestored = restored.added;
+        if (restored.forgotten) res.memoriesForgotten = restored.forgotten;
+      } catch (error) {
+        return Object.assign({}, res, { ok: false, error: 'Backup partly restored; memories were not confirmed. ' + String(error && error.message || error) });
+      }
     }
     return res;
   }
 
-  return { exportAll, exportStation, stationFileName, importFile, applyBundle, validate, collectStore, build, isCredentialKey, SCHEMA, VERSION, SECRET_POLICY };
+  return { exportAll, exportStation, stationFileName, createRecoveryBundle, isCapturing, describeRecovery, recoverySteps, recoveryCheckCommand, importFile, applyBundle, validate, collectStore, build, isCredentialKey, SCHEMA, VERSION, SECRET_POLICY };
 })();
 if (typeof module !== 'undefined' && module.exports) module.exports = Backup;

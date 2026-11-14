@@ -4,7 +4,9 @@
    get_text, and vision. Element refs are valid only until the next snapshot.
 
    SECURITY: browser.navigate refuses private/loopback/intranet URLs before
-   navigation and validates the final URL after redirects. Mutating actions are
+   navigation and validates the final URL after redirects, through the ONE outbound
+   boundary (sidecar/net/safe-egress.js, POLICIES.browser), as do the login window,
+   desktop links and the owned browser's network proxy. Mutating actions are
    consent-gated by the same registry/capability path as every other tool. */
 'use strict';
 (function (root, factory) {
@@ -19,8 +21,10 @@
   const FS = require('node:fs');
   const CP = require('../../child-env.js').guardChildProcess(require('node:child_process'));   // Chrome never inherits station secrets
   const NET = require('node:net');
+  const Egress = require('../../net/safe-egress.js');   // the ONE outbound boundary: classifier, one DNS answer, pinned dial
   const { swallow, note: failNote } = require('../../failopen.js');
   const RunPaths = require('../../run-paths.js');   // the run's one path decision: receipts name paths the next tool opens
+  const RuntimeInfo = require('../../runtimeinfo.js');   // hostFacts: the platform phrase a tool description may state
   const Challenge = require('./browserchallenge.js');
   const { deriveReadClient } = require('./browser-workflow.js');
   const Orphans = require('./browser-orphans.js');   // #61: end only the station's OWN orphaned Chromium
@@ -602,82 +606,52 @@
     return { text: ' — HTTP ' + code + (r.statusText ? ' ' + r.statusText : '') +
              ' (the page below is the server\'s error response, not the content you asked for)', summary: ' ' + code };
   }
-  /* The host, normalized for COMPARISON. Two normalizations matter and both were missing:
-     · lowercase + IPv6 bracket strip (as before).
-     · TRAILING DOTS. `http://localhost./` is the FQDN-root spelling of `localhost` and every resolver
-       treats them as the same name — but WHATWG only strips the dot for IP literals, so the name kept it
-       and `h === 'localhost'`, `h.endsWith('.local')`, and the single-label `bareName` rule ALL missed.
-       Every name-based rule in assertSafeUrl was therefore one keystroke from being bypassed
-       (`localhost.`, `svc.internal.`, `router.lan.`, `wiki.` all reached the network). Strip the root
-       label here so the one comparison helper is right for every caller. */
-  function hostOf(u) {
-    let h = u.hostname.toLowerCase();
-    if (h.charAt(0) === '[') h = h.slice(1, -1);
-    else h = h.replace(/\.+$/, '');
-    return h;
-  }
-  function isPrivateV4(h) {
-    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
-    const p = h.split('.').map(Number);
-    if (p.some(n => n > 255)) return true;
-    const a = p[0], b = p[1];
-    return a === 0 || a === 127 || a === 10 ||
-      (a === 192 && b === 168) || (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 100 && b >= 64 && b <= 127);
-  }
-  function isPrivateV6(h) {
-    h = String(h).toLowerCase();
-    return h === '::1' || h === '::' || /^::ffff:/.test(h) || /^fe[89ab][0-9a-f]:/.test(h) || /^f[cd][0-9a-f]{2}:/.test(h);
-  }
+  /* The host, normalized for COMPARISON: lowercase, IPv6 brackets off, and the FQDN root dots off. `http://localhost./`
+     is the root spelling of `localhost`, and WHATWG strips that dot only for IP literals, so every name rule was one
+     keystroke from a bypass (`localhost.`, `svc.internal.`, `router.lan.`, `wiki.`). The boundary's normalizeHost is
+     the one place that rule lives. */
+  function hostOf(u) { return Egress.normalizeHost(u.hostname); }
+  // one-line delegates kept for the tests that name them: the boundary's classifier decides
+  const isPrivateV4 = h => /^\d{1,3}(\.\d{1,3}){3}$/.test(String(h)) && !Egress.classifyHost(String(h)).public;
+  const isPrivateV6 = h => String(h).indexOf(':') >= 0 && !Egress.classifyHost(String(h)).public;
   /* A refusal the HOST wrote (never page bytes): it does not taint the run (index.js taint observation), and its row
      says why in a few words instead of "✗ error" (registry toolSummary). Live walkthrough 2026-10-13: an agent's
      browser.navigate to its OWN saved file:// page was refused, the refusal latched "outside content", and a later
-     shell call was locked with a false reason. */
+     shell call was locked with a false reason. The URL guard's refusals come from the boundary, marked the same way
+     for the caller's own URL; this one serves the browser's other refusals (the loopback test URL rule). */
   function hostRefusal(msg, summary) {
     const e = new Error(msg);
     e.hostAuthored = true;
     if (summary) e.toolSummary = summary;
     return e;
   }
-  function assertSafeUrl(raw) {
-    let u;
-    try { u = new URL(raw); } catch (e) { throw hostRefusal('invalid URL: ' + raw, 'invalid URL'); }
-    if (u.protocol === 'file:') throw hostRefusal('only http(s) URLs are allowed. To check a file you saved, fs_read it; the Commander opens it from its deliverable card.', 'not a web address (file://)');
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw hostRefusal('only http(s) URLs are allowed', 'not a web address');
-    const h = hostOf(u);
-    const numericHost = /^\d+$/.test(h) || /^0x[0-9a-f]+$/i.test(h);
-    const blockedName = h === 'localhost' || h === '0.0.0.0' || h.endsWith('.localhost') || h.endsWith('.local') ||
-      h.endsWith('.internal') || h.endsWith('.lan') || h.endsWith('.intranet') || h.endsWith('.home') || h.endsWith('.corp');
-    const bareName = h.indexOf('.') < 0 && h.indexOf(':') < 0 && !numericHost;
-    if (blockedName || bareName || numericHost || isPrivateV4(h) || isPrivateV6(h)) {
-      throw hostRefusal('refusing to navigate to private/loopback/intranet host: ' + h, 'private address refused');
-    }
-    return u;
-  }
-  /* DNS-REBINDING GUARD — the half assertSafeUrl structurally cannot do. Name rules only ever see the
-     STRING; a public name that RESOLVES to 127.0.0.1 / RFC-1918 (nip.io, localtest.me, or simply an
-     attacker-controlled A record) walked straight through them. web_fetch has resolved every hop since the
-     web lane (web.js assertResolvedSafe); browser.navigate — the tool that then RUNS the page's scripts —
-     did not, so the weaker guard sat in front of the more capable tool.
-     Resolution fails closed. The owned browser's proxy pins each validated DNS answer to its TCP dial,
-     including page subresources. Pass lookup:null only in injected driver tests. */
-  function nodeLookup(host) { const dns = require('node:dns'); return dns.promises.lookup(host, { all: true }); }
-  // every address the lookup answered, each one checked — [] for an IP literal or no lookup
-  async function resolveVerified(u, lookup) {
-    if (!lookup) return [];
-    const h = hostOf(u);
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') >= 0) return [];   // already a literal
-    const addrs = await lookup(h);
-    if (!Array.isArray(addrs) || !addrs.length) throw new Error('no verified DNS address for ' + h);
-    for (const a of (addrs || [])) {
-      const ip = (a && a.address) || '';
-      if (!NET.isIP(ip)) throw new Error('resolver returned an invalid IP address for ' + h);
-      if (isPrivateV4(ip) || isPrivateV6(ip)) throw new Error('refusing to navigate: ' + h + ' resolves to private address ' + ip);
-    }
-    return addrs;
+  // the browser's URL rule (POLICIES.browser): http(s) only, and no private, loopback, intranet or metadata host
+  function assertSafeUrl(raw) { return Egress.validateUrl(raw, 'browser'); }
+  /* DNS-REBINDING GUARD — the half assertSafeUrl structurally cannot do. Name rules only ever see the STRING; a public
+     name that RESOLVES to 127.0.0.1 / RFC-1918 (nip.io, localtest.me, or simply an attacker-controlled A record) walked
+     straight through them, and the browser is the tool that then RUNS the page's scripts. The boundary asks DNS ONCE
+     and checks every answer; resolution fails closed. The owned browser's proxy checks each of its connections the
+     same way (page subresources included) and pins that connection's one answer to its TCP dial. lookup: absent = this
+     computer's DNS (read at call time); null = no DNS, only in injected driver tests. origin 'redirect' for a URL the
+     site chose: its refusal is never the host's own. */
+  // every validated address ({address, family}), in DNS order; [] for an IP literal or with lookup:null
+  async function resolveVerified(u, lookup, origin) {
+    const dest = await Egress.resolveValidated(u, { policy: 'browser', lookup, origin });
+    return dest.literal ? [] : dest.addresses;
   }
   async function assertResolvedSafe(u, lookup) { return (await resolveVerified(u, lookup))[0]; }
+  /* The caller's OWN URL (navigate, the login window): validated, and its DNS asked once. Its refusal is the host's own
+     (it never taints the run, as web_fetch's never did), and a PUBLIC name answered privately says which setting on
+     this computer answered, in explainRefusal's words. */
+  async function resolveCallerUrl(u, lookup) {
+    try { return await resolveVerified(u, lookup); }
+    catch (e) { throw Egress.withAnswerExit(e, 'browser'); }
+  }
+  /* The owned browser's proxy guards (makeCdpDriver starts the proxy for every Chromium it spawns): the browser's URL
+     rule, and every address of ONE validated DNS answer, which the proxy pins to its dial. */
+  function proxyGuards(lookup) {
+    return { validate: assertSafeUrl, resolve: u => resolveVerified(u, lookup) };
+  }
   /* The proxy's refusal behind a tunnel failure: the one for the host this navigation asked for, else the latest (a
      redirect hop, e.g. etsy.com -> www.etsy.com, is refused under ITS name). */
   function pickRefusal(list, url) {
@@ -696,12 +670,8 @@
     const reason = String((r && r.reason) || 'refused');
     const host = String((r && r.host) || 'the site');
     const priv = /resolves to private address (\S+)/.exec(reason);
-    if (priv) {
-      return { code: 'NETWORK_REFUSED', text: 'StarNet\'s browser safety check refused it: this computer\'s DNS answered ' + priv[1] + ' for ' + host +
-        ', a private or blocked address. That answer usually comes from a DNS filter (Pi-hole, AdGuard, NextDNS, router parental controls), ' +
-        'a VPN, a security app or the hosts file on this computer. A browser using its own secure DNS can still open the site, so it may work there. ' +
-        'StarNet\'s browser uses no outside proxy, VPN or gateway: it connects from this computer. Fix or allow ' + host + ' in that DNS filter.' };
-    }
+    // the DNS-filter exit lives with the boundary now (web_fetch and web_request say it too), in the browser's voice here
+    if (priv) return { code: 'NETWORK_REFUSED', text: Egress.privateAnswerExit(host, priv[1], 'browser') };
     if (/ENOTFOUND|EAI_AGAIN|ESERVFAIL|ETIMEOUT|ECONNREFUSED.*53|getaddrinfo|no verified DNS address/i.test(reason)) {
       return { code: 'NAVIGATION_FAILED', text: 'this computer could not look up ' + host + ' (' + reason + '). Its DNS did not answer for that name; ' +
         'if it keeps failing, check this computer\'s DNS or VPN settings.' };
@@ -889,6 +859,10 @@
     // `__STARNET_*` on every site.
     const inputMarker = internalMarker(profileDir, 'input');
     const settleMarker = internalMarker(profileDir, 'settle');
+    // #104: per tab, the one upload click listening to that tab's Page events (pageFileChooser); a bare endpoint's session is ''
+    const chooserWaits = new Map();
+    const chooserWaitFor = sid => chooserWaits.get(sid || '') || chooserWaits.get('') || null;
+    let chooserEvents = 0, requestsStarted = 0;   // Chrome's own counts: choosers it reported, requests it saw start
     const inputStateExpr = 'globalThis[' + JSON.stringify(inputMarker) + ']';
     const settleBootstrap = settleSource(settleMarker);
     const settleProbe = settleProbeSource(settleMarker);
@@ -907,6 +881,7 @@
     const settleQuietPolls = deps.settleQuietPolls == null ? SETTLE_QUIET_POLLS : Number(deps.settleQuietPolls);
     const settleNavBudgetMs = deps.settleNavBudgetMs == null ? SETTLE_NAV_BUDGET_MS : Number(deps.settleNavBudgetMs);
     const settleActionBudgetMs = deps.settleActionBudgetMs == null ? SETTLE_ACTION_BUDGET_MS : Number(deps.settleActionBudgetMs);
+    const closeExitWaitMs = Number(deps.closeExitWaitMs) > 0 ? Number(deps.closeExitWaitMs) : 8000;
     const settleEmptyGraceMs = deps.settleEmptyGraceMs == null ? SETTLE_EMPTY_GRACE_MS : Number(deps.settleEmptyGraceMs);
     const settleMinObserveMs = deps.settleMinObserveMs == null ? SETTLE_MIN_OBSERVE_MS : Number(deps.settleMinObserveMs);
     const downloadWaitMs = deps.downloadWaitMs == null ? DOWNLOAD_WAIT_MS : Math.max(0, Number(deps.downloadWaitMs));
@@ -1015,6 +990,12 @@
        matters — the failure mode of a multi-target driver is quietly reading the WRONG DOM, so
        switching is never implicit. */
     const pageSessions = new Map();    // CDP sessionId -> targetId, for every adopted extra tab
+    /* THE MAIN DOCUMENT EACH TAB SHOWS, as Chrome's own events report it (run-paths-polish, review round 7 minor 4): a
+       Page.frameNavigated for a main frame carries the loaderId of the document that just committed in that tab ('' is
+       the session-less page endpoint). browser.upload's staged copies ask "is the page I was handed to still there?"
+       (uploadDocAlive), and a renderer that is busy answers no command in time; the browser-side event needs none.
+       Only events write it (a seeded guess never could tell a later navigation it missed). */
+    const mainLoaders = new Map();
     const tabWaiters = new Set();      // bounded observers waiting for popup adoption to become visible
     let activeSession = null;
     /* TAB EPOCH: bumps whenever the tab the driver acts on went away underneath the agent (tab 0 closed while the agent
@@ -1389,10 +1370,7 @@
       // writes the bound port into this profile's DevToolsActivePort, which stays the readiness proof.
       launchPort = privatePort ? await allocateEphemeralPort() : cdpPort;
       if (spawn === CP.spawn && deps.networkProxy !== false) {
-        networkProxy = await startPinnedProxy({
-          validate: assertSafeUrl,
-          resolve: u => resolveVerified(u, ('lookup' in deps) ? deps.lookup : nodeLookup)
-        });
+        networkProxy = await startPinnedProxy(proxyGuards(deps.lookup));
         for (const origin of allowedLocalOrigins) networkProxy.allowLocal(origin);
       }
       const args = ['--disable-blink-features=AutomationControlled', '--no-first-run', '--no-default-browser-check',
@@ -1485,6 +1463,7 @@
               ws.addEventListener('error', reject, { once: true });
             });
             cdp = new CdpClient(ws, timeoutMs);
+            mainLoaders.clear();   // a new connection: no document of the last one is known to be shown
             attachedPort = port;
             // Browser.* download events are emitted on the root connection, not a page session. Register
             // before enabling downloads so a fast local/file response cannot finish between setup steps.
@@ -1588,6 +1567,7 @@
               if (!p || !p.sessionId) return;
               frameSessions.delete(p.sessionId);
               pageSessions.delete(p.sessionId);
+              mainLoaders.delete(p.sessionId);
               wakeTabWaiters();
               // A closed tab must never leave the driver pointed at a dead session - nor its refs aimed at tab 0.
               if (activeSession === p.sessionId) { activeSession = null; tabEpoch++; }
@@ -1691,6 +1671,7 @@
             });
             cdp.on('Network.requestWillBeSent', p => {
               if (!p || !p.requestId) return;
+              requestsStarted++;
               inflight.add(p.requestId);
               const req = p.request || {};
               netRecord(p.requestId, { method: req.method || 'GET', url: req.url || '', type: p.type || '' });
@@ -1719,7 +1700,19 @@
               consoleLog.push({ type: p.type || 'log', text: clamp(text, 500) });
               if (consoleLog.length > 200) consoleLog = consoleLog.slice(-200);
             });
-            cdp.on('Page.javascriptDialogOpening', p => { dialog = { type: p.type || 'alert', message: p.message || '' }; });
+            // #104: an upload's click owns what its own tab says during that click (chooserWaitFor); nothing else changes
+            cdp.on('Page.javascriptDialogOpening', (p, sid) => {
+              const w = chooserWaitFor(sid);
+              dialog = w ? null : { type: p.type || 'alert', message: p.message || '' };
+              if (w) w.dialog(p);
+            });
+            cdp.on('Page.fileChooserOpened', (p, sid) => { chooserEvents++; const w = chooserWaitFor(sid); if (w) w.chooser(p); });
+            cdp.on('Page.frameRequestedNavigation', (p, sid) => { const w = chooserWaitFor(sid); if (w) w.navigation(p); });
+            cdp.on('Page.frameNavigated', (p, sid) => {
+              const f = p && p.frame;
+              if (!f || f.parentId || !f.loaderId || (sid && frameSessions.has(sid))) return;   // a main frame of a page, never an iframe's
+              mainLoaders.set(sid || '', String(f.loaderId));
+            });
             return cdp;
           }
         } catch (_) {}
@@ -2370,45 +2363,81 @@
       await waitForSettle(await page(), { budgetMs: settleNavBudgetMs, fallbackMs: 500 });
       return evalJS('location.href');
     }
+    /* #104: click a control with the file chooser intercepted, and answer with the input the PAGE opened (a backend node id),
+       or null when the click opened none (browser-upload.js clickForChooser). The chooser stays intercepted only for this
+       click: no dialog shows, and a later real click behaves as usual. THE GRACE covers a page whose handler opens the
+       chooser after a tick, and a loaded box where Chrome's event trails the click's own answer: only a control that
+       opens nothing waits it out. ONE CLICK PER TAB: interception is the tab's, so a second upload clicking on the same
+       tab would turn it off under the first; it is refused, and uploads on other tabs do not touch each other. */
+    const CHOOSER_GRACE_MS = 2000;
+    const chooserBoundMs = Math.min(timeoutMs, Math.max(8000, settleActionBudgetMs + 5000));
+    function pageFileChooser(pinned, node) {
+      const key = pinned.sid || '';
+      if (chooserWaits.has(key)) throw Object.assign(new Error('another browser.upload is clicking on this tab; no file was selected. Try again when it has finished'), { notClicked: true });
+      return require('./browser-upload.js').clickForChooser({ cdp: pinned, node, click: clickOn, graceMs: CHOOSER_GRACE_MS, boundMs: chooserBoundMs,
+        listen: handlers => { chooserWaits.set(key, handlers); return () => { chooserWaits.delete(key); }; } });
+    }
     // #104: the pinned tab owns selection and its readback; never guess remote upload completion.
+    // a page's own answer about its document is bounded: a busy renderer answers nothing, and "unknown" is the answer then
+    const DOC_READ_MS = Math.min(2000, timeoutMs);
     async function upload(node, absPaths, expectedFiles) {
       const pinned = await pinTab();
       /* THE PAGE THE FILES GO INTO (review round 6): its main frame's loaderId, read BEFORE the hand-off (a form that
          submits on change navigates during it). Every new document gets a new loaderId, so the tool layer can tell
-         when this page is gone and drop the staged copies it was handed (uploadDocAlive). */
+         when this page is gone and drop the staged copies it was handed (uploadDocAlive). Bounded (DOC_READ_MS): a page
+         that cannot say is a page this driver cannot name, and its copy lives only until the reply ends. */
       let doc = null;
       try {
-        const t = await pinned.send('Page.getFrameTree');
+        const t = await pinned.send('Page.getFrameTree', {}, undefined, DOC_READ_MS);
         const f = t && t.frameTree && t.frameTree.frame;
         if (f && f.loaderId) doc = { sid: pinned.sid || null, loader: String(f.loaderId) };
       } catch (e) { failNote('browser.upload.doc', e); }
-      const receipt = await require('./browser-upload.js').selectFiles({ cdp: pinned, node, paths: absPaths, expected: expectedFiles,
-        settle: c => waitForSettle(c, { budgetMs: settleActionBudgetMs }) });
-      return doc ? Object.assign({}, receipt, { doc }) : receipt;
+      try {
+        const receipt = await require('./browser-upload.js').selectFiles({ cdp: pinned, node, paths: absPaths, expected: expectedFiles, openChooser: pageFileChooser, requestsSeen: () => requestsStarted,
+          settle: c => waitForSettle(c, { budgetMs: settleActionBudgetMs }) });
+        return doc ? Object.assign({}, receipt, { doc }) : receipt;
+      } catch (e) {
+        // a failed hand-off still names its page, so the tool can empty that page's inputs before it drops the copies (m1)
+        if (doc && e && typeof e === 'object') e.uploadDoc = doc;
+        throw e;
+      }
     }
     // cancel a selection (hand the input an empty FileList) when the staged copy changed around the hand-off
     async function clearUpload(node) { return require('./browser-upload.js').clearFiles({ cdp: await pinTab(), node }); }
-    // the page an upload went into (upload's doc): true while it is still that tab's document; false once it navigated
-    // or its tab or browser is gone; null when there is no doc to compare
+    /* the page an upload went into (upload's doc): true while it is still that tab's document; false once it navigated
+       or its tab or browser is gone; null when it cannot be told in time. ROBUST (review round 7 minor 4; P1 keeps a
+       copy while its page lives, so a wrong "gone" deletes a file the person is about to submit): the browser's own
+       facts first (the browser alive, the tab's session open, the main document Chrome last reported for that tab:
+       mainLoaders), and only when no event has spoken, the page's renderer, bounded (DOC_READ_MS). A timeout or any
+       other failure to read is null, never false. */
     async function uploadDocAlive(doc) {
       if (!doc || !doc.loader) return null;
       if (!cdp || !alive()) return false;
       const sid = doc.sid || undefined;
       if (sid ? (sid !== openerSession && !pageSessions.has(sid)) : pageLost) return false;   // its tab closed
+      const shown = mainLoaders.get(sid || '');
+      if (shown) return shown === String(doc.loader);
       let t;
-      try { t = await cdp.send('Page.getFrameTree', {}, sid); }
-      catch (e) { if (TARGET_GONE.test(String((e && e.message) || ''))) return false; throw e; }
+      try { t = await cdp.send('Page.getFrameTree', {}, sid, DOC_READ_MS); }
+      catch (e) {
+        const m = String((e && e.message) || '');
+        if (TARGET_GONE.test(m) || /CDP connection closed/.test(m)) return false;
+        failNote('browser.upload.doc-alive', e);
+        return null;
+      }
       const f = t && t.frameTree && t.frameTree.frame;
-      return !!f && String(f.loaderId) === doc.loader;
+      return f && f.loaderId ? String(f.loaderId) === String(doc.loader) : null;
     }
     // empty every file input of that page holding one of `paths` (by the File's own path: DOM.getFileInfo), whatever
-    // ref, scroll or layout it has now. -> { cleared, gone? }
-    async function clearStagedInputs(doc, paths) {
+    // ref, scroll or layout it has now, and only while it still holds those very Files (Codex A3-LIFE-01). opts.signal:
+    // the registry stopped waiting, so nothing is changed after it. -> { cleared, gone? }
+    async function clearStagedInputs(doc, paths, opts) {
       const Up = require('./browser-upload.js');
-      if (!doc) return Up.clearFilesHolding({ cdp: await pinTab(), paths, caseless: process.platform === 'win32' });
+      const signal = opts && opts.signal;
+      if (!doc) return Up.clearFilesHolding({ cdp: await pinTab(), paths, caseless: process.platform === 'win32', signal });
       if (await uploadDocAlive(doc) === false) return { cleared: 0, gone: true };   // that page is gone: no input of it is left
       const sid = doc.sid || undefined;
-      return Up.clearFilesHolding({ cdp: { send: (m, p) => cdp.send(m, p, sid) }, paths, caseless: process.platform === 'win32' });
+      return Up.clearFilesHolding({ cdp: { send: (m, p) => cdp.send(m, p, sid) }, paths, caseless: process.platform === 'win32', signal });
     }
     async function testInput(action) {
       const a = Object.assign({}, action || {});
@@ -2864,8 +2893,10 @@
         cdp = null;
         if (owned && waitForClose && !exited) {
           // a force-killed process can take seconds to leave on a busy Windows box (antivirus holding a freshly unpacked
-          // browser's files, measured 2026-09-30): wait long enough before calling it stuck
-          exited = await exitedWithin(8000);
+          // browser's files, measured 2026-09-30): wait long enough before calling it stuck. Still bounded at 8 s, so a person's
+          // close never hangs. On a box at 100% CPU it can take over a minute (67 s, 2026-11-01): the test fixtures wait that out
+          // themselves (browser-close-cleanup.test.js, the upload e2es) instead of making every close wait for it.
+          exited = await exitedWithin(closeExitWaitMs);
           if (!exited) throw new Error('owned Chromium did not exit after synthetic test session closed');
         }
         // Retain ownership after a failed close: a later close must still prove exit before deleting the profile.
@@ -2899,7 +2930,7 @@
     // actually on the user's screen. Headless mode, or a headless-only binary fallback in
     // a headed request, both read as not visible.
     function visible() { return headed; }
-    return { navigate, snapshot, click, type, press, hover, drag, selectOption, viewport, forward, upload, clearUpload, uploadDocAlive, clearStagedInputs, tabs, waitForTabCount, selectTab, closeTab, inspect, evalPublic, waitFor, pdf, intercept, emulate, usingPersistentProfile: onPersistent, profileFallback: () => heldFallback, testInput, testEval, testState, scroll, back, getText, challengeStatus, handleDialog, screenshot, streamStart, streamStop, humanInput, pageInfo, setDownloadDir, alive, ownedPid, bringToFront, close, consoleLog: readConsoleLog, networkLog: () => netLog.map(r => Object.assign({}, r)), lastDialog: () => dialog, lastResponse: () => lastResponse, tabEpoch: () => tabEpoch, visible, headed, headlessFallback: wantHeaded && binIsHeadlessOnly, attachedPort: () => attachedPort, allowLocal, profileDir, lastOrphanSweep: () => lastOrphanSweep };
+    return { chooserEventCount: () => chooserEvents, navigate, snapshot, click, type, press, hover, drag, selectOption, viewport, forward, upload, clearUpload, uploadDocAlive, clearStagedInputs, tabs, waitForTabCount, selectTab, closeTab, inspect, evalPublic, waitFor, pdf, intercept, emulate, usingPersistentProfile: onPersistent, profileFallback: () => heldFallback, testInput, testEval, testState, scroll, back, getText, challengeStatus, handleDialog, screenshot, streamStart, streamStop, humanInput, pageInfo, setDownloadDir, alive, ownedPid, bringToFront, close, consoleLog: readConsoleLog, networkLog: () => netLog.map(r => Object.assign({}, r)), lastDialog: () => dialog, lastResponse: () => lastResponse, tabEpoch: () => tabEpoch, visible, headed, headlessFallback: wantHeaded && binIsHeadlessOnly, attachedPort: () => attachedPort, allowLocal, profileDir, lastOrphanSweep: () => lastOrphanSweep };
   }
 
   function makeBrowserSession(deps) {
@@ -2994,6 +3025,7 @@
     function reviveIfDead() {
       if (!driver || injected || attachedToUserBrowser || typeof driver.alive !== 'function' || driver.alive()) return false;
       const dead = driver; driver = null; driverHeaded = null; version++; navEpoch++; reviveNext = true;
+      uploadStage.dropAll().catch(e => failNote('browser.upload.drop-dead', e));   // a dead browser shows no page: its copies go
       // asked again at reclaim time (not now): by then the old process may have exited and its id be reused
       revivePid = typeof dead.ownedPid === 'function' ? () => dead.ownedPid() : null;
       Promise.resolve().then(() => dead.close({ keepProfile: true })).catch(e => failNote('browser.dead-driver.close', e));
@@ -3034,6 +3066,8 @@
       // role+text "recovered" onto whatever the new browser shows (refs die with the browser, as in reviveIfDead).
       if (driver) {
         const closing = driver;
+        // the old browser goes, and its pages with it: so do their staged copies (an attached Chrome stays open: emptied first)
+        await uploadStage.dropAll({ clear: attachedToUserBrowser });
         try { await closing.close(); }
         catch (e) {
           driver = null; driverHeaded = null; version++; navEpoch++;
@@ -3232,21 +3266,15 @@
       return '[' + ((n && n.role) || 'element') + ']' + ((n && n.text) ? ' "' + String(n.text).slice(0, 60) + '"' : '');
     }
     // DNS-rebinding resolver for PUBLIC navigation (never for the loopback test tool, which is an explicit
-    // allowlist). Defaults to real Node DNS; deps.lookup === null disables it for rigs/tests.
-    const doLookup = ('lookup' in deps) ? deps.lookup : nodeLookup;
+    // allowlist). Absent: this computer's DNS, read at call time; deps.lookup === null disables it for rigs/tests.
+    const doLookup = deps.lookup;
     async function navigate(url, opts) {
       opts = opts || {};
       const local = opts.local === true;
       const validate = local ? assertLoopbackUrl : assertSafeUrl;
       const u = validate(url);
-      if (!local) {
-        try { await assertResolvedSafe(u, doLookup); }   // refuse names that RESOLVE private (rebinding)
-        catch (e) {
-          // a PUBLIC name answered privately is this computer's DNS filter/VPN far more often than an attack: say which
-          if (/resolves to private address/.test(String(e && e.message))) e.message += '. ' + explainRefusal({ host: hostOf(u), reason: e.message }).text;
-          throw e;
-        }
-      }
+      // refuse names that RESOLVE private (rebinding); a PUBLIC name answered privately says which DNS setting answered
+      if (!local) await resolveCallerUrl(u, doLookup);
       const wantedMode = local ? false : ('visible' in opts ? !!opts.visible : undefined);
       let d = wantedMode === undefined ? ensureDriver() : await ensureDriverMode(wantedMode);
       if (local && typeof d.allowLocal === 'function') d.allowLocal(u.href);
@@ -3301,9 +3329,10 @@
       }
       if (finalUrl) {
         try {
-          validate(finalUrl);
-          // the post-redirect host must clear the SAME resolution bar as the one we asked for
-          if (!local) await assertResolvedSafe(new URL(finalUrl), doLookup);
+          // the post-redirect host must clear the SAME bar (and resolution) as the one we asked for; where the page
+          // landed is the site's choice, so its refusal is a redirect hop's (origin 'redirect'), never the host's own
+          if (local) validate(finalUrl);
+          else await resolveVerified(finalUrl, doLookup, 'redirect');
         } catch (e) {
           try { await d.navigate('about:blank'); } catch (_) {}
           throw new Error('blocked unsafe redirect: ' + e.message);
@@ -3372,19 +3401,50 @@
       return out;
     }
     async function forward() { const d = ensureDriver(); version++; navEpoch++; return driverFn(d, 'forward')(); }
-    async function upload(ref, absPaths, expectedFiles) { const d = ensureDriver(); return actOnRef(ref, n => driverFn(d, 'upload')(n, absPaths, expectedFiles)); }
+    // the page an upload went into, tied to the driver (the browser) that showed it: a new browser is a new page
+    function tieDoc(doc, d) {
+      const o = { sid: doc.sid == null ? null : doc.sid, loader: doc.loader == null ? null : String(doc.loader) };
+      Object.defineProperty(o, 'drv', { value: d, enumerable: false });
+      return o;
+    }
+    async function upload(ref, absPaths, expectedFiles) {
+      const d = ensureDriver();
+      try {
+        const r = await actOnRef(ref, n => driverFn(d, 'upload')(n, absPaths, expectedFiles));
+        return r && typeof r === 'object' && r.doc && typeof r.doc === 'object' ? Object.assign({}, r, { doc: tieDoc(r.doc, d) }) : r;
+      } catch (e) {
+        if (e && typeof e === 'object' && e.uploadDoc && typeof e.uploadDoc === 'object') e.uploadDoc = tieDoc(e.uploadDoc, d);
+        throw e;
+      }
+    }
     async function clearUpload(ref) { const d = ensureDriver(); return actOnRef(ref, n => driverFn(d, 'clearUpload')(n)); }
     /* browser.upload's staged copies (review round 6) ask, without launching anything: is the page an upload went into
-       (its receipt's doc) still live? false when this browser is gone or the driver says the page is; null when the
-       driver cannot tell. And: empty the inputs that hold these files (null: this driver cannot; use clearUpload). */
+       (its receipt's doc) still live? false when this browser is gone, is not the browser that showed that page, or the
+       driver says the page is gone; null when the driver cannot tell. And: empty the inputs that hold these files
+       (null: this driver cannot; the registry then falls back to clearUpload by ref, an injected test driver only). */
     async function uploadDocAlive(doc) {
       if (!driver || (typeof driver.alive === 'function' && !driver.alive())) return false;
+      if (doc && doc.drv && doc.drv !== driver) return false;
       return doc && typeof driver.uploadDocAlive === 'function' ? driver.uploadDocAlive(doc) : null;
     }
-    async function clearStagedInputs(doc, paths) {
+    async function clearStagedInputs(doc, paths, opts) {
       if (!driver || (typeof driver.alive === 'function' && !driver.alive())) return { cleared: 0, gone: true };
-      return typeof driver.clearStagedInputs === 'function' ? driver.clearStagedInputs(doc, paths) : null;
+      if (doc && doc.drv && doc.drv !== driver) return { cleared: 0, gone: true };
+      return typeof driver.clearStagedInputs === 'function' ? driver.clearStagedInputs(doc, paths, opts) : null;
     }
+    /* THE STAGED UPLOAD COPIES THIS BROWSER HOLDS (run-paths-polish P1; upload-stage.js). A copy lives as long as the page
+       it went into, so the registry belongs to the session, which outlives a run (the station browser), and every run's
+       tools on this browser re-prove it before each action. It asks this session's own methods, never a run's view of
+       them (browser-view.js: a driving call through a run's view would take the wheel). */
+    const uploadStage = require('./upload-stage.js').makeUploadStage({
+      docAlive: doc => uploadDocAlive(doc),
+      clearInputs: (doc, paths, opts) => clearStagedInputs(doc, paths, opts),
+      clearByRef: ref => (driver && typeof driver.clearUpload === 'function' ? clearUpload(ref) : null),
+      navEpoch: () => navEpoch,
+      keepMs: deps.uploadKeepMs, sweepMs: deps.uploadSweepMs, aliveTimeoutMs: deps.uploadAliveTimeoutMs, clearTimeoutMs: deps.uploadClearTimeoutMs,
+      maxLive: deps.uploadMaxLive, maxLiveBytes: deps.uploadMaxLiveBytes,
+      setTimeout: deps.uploadSetTimeout, clearTimeout: deps.uploadClearTimeout
+    });
     async function inspect(ref) { const d = ensureDriver(); return actOnRef(ref, n => driverFn(d, 'inspect')(n)); }
     // wait() is READ-ONLY and takes no ref, so it needs no recovery — it is the tool an agent reaches for
     // precisely when it does NOT yet know what is on the page.
@@ -3501,6 +3561,7 @@
         driver = null; driverHeaded = null; version++; navEpoch++;
         try { await d.close(); out.closedOwn = true; }
         catch (e) { out.closeError = String((e && e.message) || e); }
+        await uploadStage.dropAll();   // the browser closed: its pages' staged copies go with it
       }
       const pp = deps.persistentProfile;
       const sweepFn = typeof deps.orphanSweep === 'function' ? deps.orphanSweep
@@ -3514,6 +3575,8 @@
     async function detach() {
       if (!attachedToUserBrowser) return 'Not attached; nothing to detach.';
       const port = attachedUserPort;
+      // the Commander's Chrome stays open without us: every input holding a staged copy is emptied, then the copies go
+      await uploadStage.dropAll({ clear: true });
       // Drop the CDP socket WITHOUT killing the browser: driver.close() only kills a process it spawned,
       // and in attach mode there is none.
       try { if (driver && driver.close) await driver.close(); } catch (_) {}
@@ -3647,7 +3710,7 @@
         throw new Error('browser.login unavailable: this host pins the browser headless (STARNET_BROWSER_HEADLESS)');
       }
       const u = assertSafeUrl(url);
-      await assertResolvedSafe(u, doLookup);   // same rebinding bar as navigate — a login window is not a weaker surface
+      await resolveCallerUrl(u, doLookup);   // same rebinding bar as navigate — a login window is not a weaker surface
       const host = hostOf(u);
       const approved = d => !!d && d !== 'deny';
       // fresh: both asks approve THIS sign-in only. askHuman marks the prompt freshConsent, so handleConsent applies and
@@ -3688,7 +3751,8 @@
       let finalUrl = null;
       try {
         finalUrl = await d.navigate(u.href);
-        if (finalUrl) assertSafeUrl(finalUrl);
+        // where the sign-in page landed is the site's choice: its refusal is a redirect hop's, never the host's own
+        if (finalUrl) Egress.validateUrl(finalUrl, 'browser', 'redirect');
         const vis = typeof d.visible === 'function' ? d.visible() : true;
         if (!vis) throw new Error('no full Chrome found — only a headless-shell binary, so a visible login window is impossible; install Chrome or set STARNET_CHROME');
       } catch (e) {
@@ -3744,6 +3808,8 @@
          · downloads are re-pointed at the driving agent's own jail. */
     async function handTo(info) {
       version++; navEpoch++;
+      // ANOTHER AGENT takes the wheel: the copies an earlier agent selected are never its to submit (upload-stage.js handTo)
+      if (info && info.agentId) await uploadStage.handTo(info.agentId);
       const dir = info && info.downloadDir ? String(info.downloadDir) : null;
       if (!dir) return;
       deps.downloadDir = dir;   // a driver not yet built reads this at creation
@@ -3751,8 +3817,11 @@
     }
     function hasDriver() { return !!driver; }
     async function close() {
+      // its pages go with it, and so do their staged copies (a Chrome we only attached to stays open: emptied first)
+      const attached = attachedToUserBrowser;
+      if (attached) await uploadStage.dropAll({ clear: true });
       try { if (driver && driver.close) await driver.close(); }
-      finally { releasePersistent(); }
+      finally { releasePersistent(); if (!attached) await uploadStage.dropAll(); }
     }
     // Visibility of the controlled window, for truthful navigate reporting. Only meaningful
     // once a driver exists; an injected test driver may not expose it (default true = don't lie about headless).
@@ -3773,13 +3842,15 @@
       const d = driver || null;
       return d && typeof d.attachedPort === 'function' ? d.attachedPort() : null;
     }
-    return { waitForProfile, reset, navigate, snapshot, click, type, press, hover, drag, select: selectOption, viewport, forward, upload, clearUpload, uploadDocAlive, clearStagedInputs, tabs, selectTab, closeTab, inspect, evalPublic, evalAllowed, wait, find, pdf, intercept, emulate, attach, detach, attachedToUser: () => attachedToUserBrowser, testInput, testEval, testState, testSnapshot, scroll, back, getText, challengeStatus, consoleLog, networkLog, dialog, vision, screenshot, login, handoffSurface, freeze, thaw, frozen, handTo, hasDriver, close, visible, headlessFallback, profileNote, attachedPort, lastResponse, _internals: { refs, version: () => version, navEpoch: () => navEpoch, localMode: () => localMode, localOrigin: () => localOrigin, leaseHeld: () => leaseHeld } };
+    return { waitForProfile, reset, navigate, snapshot, click, type, press, hover, drag, select: selectOption, viewport, forward, upload, clearUpload, uploadDocAlive, clearStagedInputs, uploadStage, tabs, selectTab, closeTab, inspect, evalPublic, evalAllowed, wait, find, pdf, intercept, emulate, attach, detach, attachedToUser: () => attachedToUserBrowser, testInput, testEval, testState, testSnapshot, scroll, back, getText, challengeStatus, consoleLog, networkLog, dialog, vision, screenshot, login, handoffSurface, freeze, thaw, frozen, handTo, hasDriver, close, visible, headlessFallback, profileNote, attachedPort, lastResponse, _internals: { refs, version: () => version, navEpoch: () => navEpoch, localMode: () => localMode, localOrigin: () => localOrigin, leaseHeld: () => leaseHeld } };
   }
 
   function makeBrowserTools(deps) {
     deps = deps || {};
     const session = deps.session || makeBrowserSession(deps);
     const allowVisible = deps.allowVisible === true;
+    // gh#128 family: a description goes to every model on this machine, so a platform it names is this machine's
+    const hostFacts = RuntimeInfo.hostFacts(String(deps.platform || process.platform));
     // resultScrub false: a browser tool's result is the PAGE (text, snapshot, eval, console, network), external content
     // the task may have to transcribe, not a station store (registry.js resultScrubFor; review r3)
     const read = (name, description, schema, run) => ({ name, capability: 'web', impact: 'synthetic-browser', scope: 'read', requiresConsent: false, timeoutMs: 20000, resultScrub: false, description, schema, run });
@@ -3806,9 +3877,15 @@
        outside the reader's verified handle, so a folder swapped for a junction after the proof changed the bytes
        uploaded. The reader's stage mode copies the proven bytes, through that handle, into a fresh random folder of the
        station-owned staging root OUTSIDE every jail (egress-files.js defaultStagingRoot), one fresh file under the
-       original name, and the browser is handed that copy. At most uploadMaxBytes (200 MB) a file. The copies go when
-       this run's own browser closes, when the run ends (releaseUploads, called by the host), when the page they were
-       handed to is gone, and at boot for any a crash left behind.
+       original name, and the browser is handed that copy. At most uploadMaxBytes (200 MB) a file. THE LIFECYCLE
+       (run-paths-polish P1; upload-stage.js, the registry the SESSION keeps): a copy lives while the page it went into
+       lives, so the form can still be submitted after the reply ends, and goes when that page navigates away or its tab
+       or browser closes, after a bounded TTL (30 min, inputs still holding it emptied), when another agent takes the
+       station browser, and at boot for any a crash left behind. The host's run-end release (releaseUploads) keeps a copy
+       whose page is alive and drops the rest (live walk W-R7 (b): it used to drop every copy, so the person's later
+       Submit failed with ERR_FILE_NOT_FOUND while the input still showed the file). Only the STATION browser outlives
+       the run: a run's own browser, and the private one a COMMS run gets while the station is busy, close at the run
+       end with their copies, and the receipt says so (outlivesRun below; review round 1).
        THE THREAT MODEL (owner decision, review round 6; egress-files.js header). These checks guard the browser.upload
        TOOL path and accidental leaks. A run with an unsandboxed local shell already has the user's own file and network
        reach, so a hostile same-user shell is out of scope here; its own sandbox and consent govern it. What follows
@@ -3826,73 +3903,71 @@
        closed; a driver that cannot tell falls back to the session's navigation epoch) is dropped. The page's lifetime
        is used, not "is it still in a file input": a page may keep the File in script after emptying its input (the
        /clears fixture), and would send it at its next click.
-       RESIDUAL RISK: a swap that lands between the pre-action check and Chrome's read (milliseconds), a page that
-       submits by itself on a timer, and anything a human does while holding the browser (STEP-IN, sign-in) are not
-       re-checked. FOLLOW-UP (not built): verify at the network boundary with CDP Fetch interception, refusing any
-       multipart part whose sha256 is not a proven one. The receipt says only what is true: the file was selected, and
-       it is re-checked before each later browser action. */
+       RESIDUAL RISK (review round 7 minor 5): the full re-check runs only before AGENT actions. A swap that lands after
+       it and before Chrome or the page has finished reading the file (the whole upload: Chrome reads it for as long as
+       the request body takes, and a page's own chunked uploader reads it whenever it likes), a page that submits by
+       itself on a timer, and any human input to the station browser (its window, the BROWSER pane, STEP-IN, sign-in,
+       a Submit the person clicks after the reply ended) are not re-hashed; the registry's sweep re-checks each copy's
+       identity every 15 s, which catches a swapped or resized copy, not an in-place overwrite of the same size.
+       FOLLOW-UP (not built): verify at the network boundary with CDP Fetch interception, refusing any multipart part
+       whose sha256 is not a proven one. The receipt says only what is true: the file was selected, the copy's lifecycle
+       as above, and that it is re-checked before each later browser action. */
     const EgressFiles = require('../../egress-files.js');
     const uploadEgress = deps.egress && typeof deps.egress.readFor === 'function' ? deps.egress
       : (canSaveShots ? EgressFiles.makeEgressReader({ fsp: shotFsp, pathMod: shotPath, workspaces: shotRoot }) : null);
     const uploadMaxBytes = Number(deps.uploadMaxBytes) > 0 ? Number(deps.uploadMaxBytes) : EgressFiles.STAGE_MAX_BYTES;
-    // the staged copies this browser was handed, each with its proof: { dir, name (bounds the delete), path, size, ino,
-    // dev, nlink, sha256, shown (the chat-safe name), ref, doc (the page it went into), epoch (navigation epoch then) }
-    const stagedUploads = new Set();
-    async function unstageAll(copies) {
-      for (const c of copies) {
-        stagedUploads.delete(c);
-        try { await uploadEgress.unstage(c.dir, c.name); } catch (e) { failNote('browser.upload.unstage', e); }
-      }
-    }
-    const releaseUploads = () => unstageAll(Array.from(stagedUploads));
+    // THE STAGED COPIES' REGISTRY is the SESSION's (upload-stage.js: a copy lives as long as its page, and the station
+    // browser outlives a run). A copy: { dir, name (bounds the delete), path, size, ino, dev, nlink, sha256, shown (the
+    // chat-safe name), ref, agentId, doc (the page it went into), epoch (navigation epoch then), verify(), unstage() }
+    const UploadStage = require('./upload-stage.js');
+    // #104: only a complete look can say "nothing happened": an ancestor frame this page cannot read leaves it partial
+    const pageSilent = r => !!(r && r.pageReaction && !r.pageReaction.partial && !r.pageReaction.domChanges && !r.pageReaction.requests);
     function navEpochNow() {
       const i = session && session._internals;
       return i && typeof i.navEpoch === 'function' ? i.navEpoch() : null;
     }
-    // drop every staged copy whose page is gone (see above)
-    async function dropGoneUploads() {
-      for (const c of Array.from(stagedUploads)) {
-        let alive = null;
-        if (typeof session.uploadDocAlive === 'function') {
-          try { alive = await session.uploadDocAlive(c.doc); } catch (e) { failNote('browser.upload.doc-alive', e); alive = null; }
+    let ownStage = null;
+    const usedStages = new Set();   // the registries this run's tools touched (the host's run-end release reaches only these)
+    const ownCopies = new Set();    // ...and the copies this run's browser.upload put in them (the only ones its end releases)
+    function stageNow() {
+      let st = null;
+      try { st = session.uploadStage; } catch (e) { failNote('browser.upload.stage', e); }
+      if (!UploadStage.isUploadStage(st)) {
+        // a session with no registry of its own (an injected rig): one for this tool set, over the session's own methods
+        if (!ownStage) {
+          ownStage = UploadStage.makeUploadStage({
+            docAlive: doc => (typeof session.uploadDocAlive === 'function' ? session.uploadDocAlive(doc) : null),
+            clearInputs: (doc, paths, opts) => (typeof session.clearStagedInputs === 'function' ? session.clearStagedInputs(doc, paths, opts) : null),
+            clearByRef: ref => (typeof session.clearUpload === 'function' ? session.clearUpload(ref) : null),
+            navEpoch: navEpochNow, keepMs: deps.uploadKeepMs, sweepMs: deps.uploadSweepMs, maxLive: deps.uploadMaxLive, maxLiveBytes: deps.uploadMaxLiveBytes
+          });
         }
-        if (alive === null) { const now = navEpochNow(); alive = c.epoch == null || now == null || now === c.epoch; }
-        if (!alive) await unstageAll([c]);
+        st = ownStage;
       }
+      usedStages.add(st);
+      return st;
     }
-    // a copy that changed after it was selected: empty the input(s) holding it, then drop it. -> false when no input
-    // could be proven emptied
-    async function cancelStaged(c) {
-      let emptied = false;
-      try {
-        const r = typeof session.clearStagedInputs === 'function' ? await session.clearStagedInputs(c.doc, [c.path]) : null;
-        if (r && typeof r === 'object') emptied = true;
-        else if (typeof session.clearUpload === 'function' && c.ref) { await session.clearUpload(c.ref); emptied = true; }
-      } catch (e) { failNote('browser.upload.clear', e); }
-      await unstageAll([c]);
-      return emptied;
-    }
-    // BEFORE a browser action that can submit or read: every live staged copy must still be the proven bytes
-    async function recheckUploads(toolName) {
-      if (!stagedUploads.size || !uploadEgress) return;
-      await dropGoneUploads();
-      const changed = [];
-      for (const c of Array.from(stagedUploads)) {
-        const v = await uploadEgress.verifyStaged(c.path, c);
-        if (!v.ok) changed.push({ c, why: v.error });
-      }
-      if (!changed.length) return;
-      let unemptied = false;
-      for (const x of changed) { if (!(await cancelStaged(x.c))) unemptied = true; }
-      throw new Error(toolName + ' was refused: an uploaded file changed on disk after you selected it, so it was not sent; select it again ('
-        + changed.map(x => '"' + x.c.shown + '": ' + x.why).join('; ') + ').'
-        + (unemptied ? ' Its file input could not be emptied, and the staged copy is gone: do not submit that form until the file is selected again.' : ''));
-    }
-    // this run's OWN browser: its copies go with it (a station browser outlives the run; the host releases at run end)
-    if (!deps.session && session && typeof session.close === 'function') {
-      const closeSession = session.close;
-      session.close = async function () { try { return await closeSession.apply(session, arguments); } finally { await releaseUploads(); } };
-    }
+    /* THE HOST'S REPLY / RUN END (index.js runOnceCore). It closes no page: a copy whose page is alive (or cannot be
+       read in time) is kept, a copy whose page is gone is dropped, and a copy no page identity was read for is dropped
+       after its inputs are emptied (upload-stage.js release). The run's OWN browser closes at run end, and its copies
+       go with it (session.close).
+       ONLY THIS RUN'S COPIES (polish review round 1, minor 2; coordinator call 2026-10-30). The station's registry is
+       shared, and a run whose first browser tool is a test_*, login or need_human call binds it before any take (those
+       skip waitForProfile), even when that run then browses privately. Its end used to release every copy in it,
+       dropping the driving run's copy mid-reply. A run's end now releases only the copies its own browser.upload
+       selected. A copy an earlier reply selected lives on for a later run of the SAME agent while its page does (the
+       egress decision was made and proven when it was staged, and it is re-proved before every action); another agent
+       taking the station browser drops it (upload-stage.js handTo). */
+    async function releaseUploads() { for (const st of Array.from(usedStages)) await st.release(ownCopies); }
+    /* DOES THIS BROWSER OUTLIVE THE RUN? The receipt promises a submit after the reply only when it does (review round 1:
+       it promised one from every browser that names its page). A tool set's OWN browser (no deps.session: every
+       unattended run, and a COMMS run with no station browser) closes at the run end (index.js runOnceCore
+       session.close -> upload-stage.js dropAll), and so does the private one a COMMS run gets while another run drives
+       the station: that view says outlivesRun false (browser-view.js). A session the caller keeps (the station view)
+       outlives the run. */
+    const outlivesRun = () => !!deps.session && session.outlivesRun !== false;
+    // a refusal the host wrote (no page bytes): it never taints the run, and its tool line shows why (P2)
+    const uploadRefusal = msg => Object.assign(new Error(msg), { hostAuthored: true });
     /* THE RECEIPT NAMES A PATH THE NEXT TOOL CAN OPEN (run-paths lane). A frame, a PDF or a download is saved on the
        private shelf and named relative to it. In a project run a relative path means the PROJECT, so fs.read of
        "shots/x.png" looked there and failed. The run's path object places the name: unchanged outside a project, the
@@ -3984,7 +4059,7 @@
           const held = session.profileNote ? session.profileNote() : '';
           return { content: 'Browser navigated to ' + url + http.text + suffix + authHint(challenge) + (held ? ' ' + held : ''), summary: 'navigated' + http.summary };
         }), { timeoutMs: NAV_TOOL_TIMEOUT_MS }),
-      testRead('browser.test_navigate', 'Open an agent-owned local dev URL (127.0.0.1/localhost/::1 only) in the HEADLESS CDP browser for UI/game testing. In normal runs serverId must name this agent\'s running shell background server. Physical pointer/keyboard locks are emulated inside the page, so they never reach Windows.', { type: 'object', required: localNavRequired, properties: { url: { type: 'string' }, serverId: { type: 'string' } } },
+      testRead('browser.test_navigate', 'Open an agent-owned local dev URL (127.0.0.1/localhost/::1 only) in the HEADLESS CDP browser for UI/game testing. In normal runs serverId must name this agent\'s running shell background server. Physical pointer/keyboard locks are emulated inside the page, so they never reach ' + hostFacts.desktopShort + '.', { type: 'object', required: localNavRequired, properties: { url: { type: 'string' }, serverId: { type: 'string' } } },
         async (a, ctx) => {
           assertLoopbackUrl(a.url);
           if (deps.requireOwnedServer === true) {
@@ -4126,20 +4201,27 @@
         async a => ({ content: 'Now on tab ' + a.index + ': ' + await session.selectTab(a.index) + ' — take a fresh browser.snapshot.', summary: 'tab ' + a.index }), false),
       exec('browser.tab_close', 'Close a tab by index from browser.tabs. Tab 0 cannot be closed.', { type: 'object', required: ['index'], properties: { index: { type: 'number' } } },
         async a => ({ content: await session.closeTab(a.index), summary: 'tab closed' })),
-      exec('browser.upload', 'Select files in a page file input and read back the selection. A relative path resolves in this run\'s project, otherwise its private workspace; only a file inside one of those two can be uploaded. "ref" is the file input, its associated label, or a control beside exactly one file input from the latest browser.snapshot. This may trigger the website\'s upload handler, but the receipt proves selection only: inspect its thumbnail/status or network response before claiming the website received the file.', { type: 'object', required: ['ref', 'paths'], properties: { ref: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } } },
+      exec('browser.upload', 'Select files in a page file input and read back the selection. A relative path resolves in this run\'s project, otherwise its private workspace; only a file inside one of those two can be uploaded. "ref" is the file input, its associated label, or the page\'s upload button from the latest browser.snapshot (a control named as an upload control is clicked once to find the input it opens, with no chooser shown; a submit button, a link, or any other control is never clicked, and the only file input near it is used instead). This may trigger the website\'s upload handler, but the receipt proves selection only: inspect its thumbnail/status or network response before claiming the website received the file.', { type: 'object', required: ['ref', 'paths'], properties: { ref: { type: 'string' }, paths: { type: 'array', items: { type: 'string' } } } },
         async (a, ctx) => {
-          if (!uploadEgress) throw new Error('browser.upload needs a workspace; this run has none');
+          if (!uploadEgress) throw uploadRefusal('browser.upload needs a workspace; this run has none');
           const aid = (ctx && ctx.agentId) || 'agent';
           const rels = Array.isArray(a.paths) ? a.paths : [a.paths];
-          if (!rels.length || rels.some(p => typeof p !== 'string' || !p.trim())) throw new Error('browser.upload needs at least one non-empty file path');
+          if (!rels.length || rels.some(p => typeof p !== 'string' || !p.trim())) throw uploadRefusal('browser.upload needs at least one non-empty file path');
           const shelf = runPathsOf(ctx) || (ctx && RunPaths.isRunPaths(ctx.paths) ? ctx.paths : null);
-          if (!shelf || !shelf.jail) throw new Error('browser.upload needs a workspace; this run has none');
+          if (!shelf || !shelf.jail) throw uploadRefusal('browser.upload needs a workspace; this run has none');
           const P = shotPath || require('node:path');
           // the staged copy lives in a STATION-OWNED root OUTSIDE this agent's jail (review round 5), under a per-agent
           // subfolder — never <jail>/.upload-staging, a folder a same-run process could find and swap
           const stageDir = typeof uploadEgress.stageDirFor === 'function' ? uploadEgress.stageDirFor(aid) : null;
-          if (!stageDir) throw new Error('browser.upload needs a workspace; this run has none');
+          if (!stageDir) throw uploadRefusal('browser.upload needs a workspace; this run has none');
+          const stage = stageNow();
+          // STRICTLY BOUNDED (Codex A3-CAP-01): a selection over the registry's bound (32 files, 1 GB) is refused whole,
+          // before a byte is staged when the count says so, else as soon as the staged bytes pass it
+          const maxLive = Number(stage.maxLive) > 0 ? Number(stage.maxLive) : Infinity, maxLiveBytes = Number(stage.maxLiveBytes) > 0 ? Number(stage.maxLiveBytes) : Infinity;
+          const overBound = typeof stage.boundRefusal === 'function' ? stage.boundRefusal : () => 'too many files at once; nothing was selected or uploaded';
+          if (rels.length > maxLive) throw uploadRefusal('browser.upload: ' + overBound(rels.length, 0));
           const abs = [], expected = [], staged = [];
+          let stagedBytes = 0;
           try {
             for (const rel of rels) {
               // proven by the egress reader through THIS run's path object, then copied through its verified handle into
@@ -4147,54 +4229,102 @@
               // a later swap can redirect), and its proof (dev/ino, size, sha256 of the bytes written) rides with it so
               // it is re-proven around the hand-off and before every later browser action (review round 6)
               const got = await uploadEgress.readFor(aid, rel, ctx, RunPaths.rootOf(ctx), { stage: { dir: stageDir, maxBytes: uploadMaxBytes }, allowEmpty: true });
-              if (!got || !got.ok) throw new Error('browser.upload: ' + ((got && got.error) || 'that file cannot be uploaded'));
-              if (!got.staged) throw new Error('browser.upload: that file could not be staged for the browser');
+              if (!got || !got.ok) throw uploadRefusal('browser.upload: ' + ((got && got.error) || 'that file cannot be uploaded'));
+              if (!got.staged) throw uploadRefusal('browser.upload: that file could not be staged for the browser');
               const name = P.basename(got.abs);
-              staged.push({ dir: got.staged, name, path: got.abs, size: got.size, ino: got.ino, dev: got.dev, nlink: got.nlink, sha256: got.sha256,
-                shown: got.shown || name, ref: a.ref, doc: null, epoch: null });
+              const c = { dir: got.staged, name, path: got.abs, size: got.size, ino: got.ino, dev: got.dev, nlink: got.nlink, sha256: got.sha256,
+                shown: got.shown || name, ref: a.ref, agentId: aid, doc: null, epoch: null };
+              // the full proof (bytes re-hashed), or with { quick } the copy's identity only (the registry's sweep)
+              c.verify = o => uploadEgress.verifyStaged(c.path, o && o.quick ? { size: c.size, ino: c.ino, dev: c.dev } : c);
+              c.unstage = () => uploadEgress.unstage(c.dir, c.name);
+              staged.push(c);
               abs.push(got.abs); expected.push({ name, size: got.size });
+              stagedBytes += Number(got.size) || 0;
+              if (stagedBytes > maxLiveBytes) throw uploadRefusal('browser.upload: ' + overBound(rels.length, stagedBytes));
             }
-          } catch (e) { await unstageAll(staged); throw e; }   // a refused selection leaves no copy behind
-          for (const c of staged) stagedUploads.add(c);
+            await stage.add(staged);   // registered BEFORE the hand-off, so a concurrent action re-proves them too
+          } catch (e) {   // a refused selection leaves no copy behind (add registers none of a selection it refuses)
+            const held = new Set(stage.copies());
+            for (const c of staged) { try { if (held.has(c)) await stage.drop([c]); else await c.unstage(); } catch (e2) { failNote('browser.upload.unstage', e2); } }
+            if (e && e.code === 'EUPLOADBOUND') throw uploadRefusal('browser.upload: ' + e.message);
+            throw e;
+          }
+          for (const c of staged) ownCopies.add(c);   // this run's own: its end releases them (releaseUploads)
           // RE-PROVE EACH STAGED COPY IS UNCHANGED immediately before the hand-off: a same-run process that found the
           // staging root and swapped a copy (a hard link, a junction, an in-place overwrite) since staging is caught here.
-          const reverify = async (when) => {
-            for (const c of staged) {
-              const v = await uploadEgress.verifyStaged(c.path, c);
-              if (!v.ok) {
-                try { if (typeof session.clearUpload === 'function') await session.clearUpload(a.ref); } catch (e) { failNote('browser.upload.clear', e); }
-                await unstageAll(staged.slice());
-                throw new Error('browser.upload: the file to upload changed ' + when + ' it was selected (' + v.error + '); the selection was cancelled and nothing was uploaded');
-              }
+          // Nothing was handed yet, so no input can hold these copies: they are dropped and no input is touched (review
+          // round 7 minor 2: emptying "the input at the ref" here destroyed an earlier, valid selection).
+          for (const c of staged) {
+            const v = await c.verify();
+            if (!v.ok) {
+              await stage.drop(staged);
+              throw uploadRefusal('browser.upload: the file to upload changed before it was selected (' + v.error + '); nothing was selected or uploaded. Select it again; if it keeps changing, something on this computer is rewriting it');
             }
-          };
-          await reverify('before');
+          }
+          /* AN EARLIER SELECTION, BEFORE A CLICK: the gate re-proved every live copy when this tool started, but staging above
+             can take a while on a big file, and the hand-off may now click a control on the page holding an earlier copy.
+             This is a browser action like any other, so those copies are re-proved once more right before it. */
+          if (stage.copies().some(c => !staged.includes(c))) {
+            try { await stage.recheck('browser.upload', aid); }
+            catch (e) { await stage.drop(staged.filter(c => stage.copies().includes(c))); throw e; }
+          }
           const epoch = navEpochNow();
           for (const c of staged) c.epoch = epoch;
-          const receipt = await session.upload(a.ref, abs, expected);
-          // the page the copies went into (CDP driver: its main document), so they are dropped once it is gone
-          for (const c of staged) c.doc = receipt && receipt.doc && typeof receipt.doc === 'object' ? receipt.doc : null;
+          let receipt;
+          try { receipt = await session.upload(a.ref, abs, expected); }
+          catch (e) {
+            /* A FAILED HAND-OFF NEVER KEEPS ITS COPIES (review round 7 minor 1). Before the files reached the input (no
+               associated input, an ambiguous or disabled one, a one-file input) nothing can hold them, and they are
+               dropped. After (e.handed; or the page went away during the readback, e.effectUnknown: a form that submits
+               on change had sent them by the time its new page committed) every input of that page holding them is
+               emptied by the File's own path, then they are dropped. Every drop re-proves the folder before each unlink. */
+            stage.settle(staged, e && e.uploadDoc && typeof e.uploadDoc === 'object' ? e.uploadDoc : null);
+            if (e && (e.handed || e.effectUnknown)) await stage.cancel(staged);
+            else await stage.drop(staged);
+            throw e;
+          }
+          // the page the copies went into (CDP driver: its main document), so they live while it does (upload-stage.js)
+          stage.settle(staged, receipt && receipt.doc && typeof receipt.doc === 'object' ? receipt.doc : null);
           // ...and again right after the hand-off returns. This does NOT cover the read: the browser reads the file at
-          // submit, a later action, and the gate before every such action (recheckUploads) re-proves it then
-          await reverify('after');
+          // submit, a later action, and the gate before every such action (the registry's recheck) re-proves it then.
+          // The inputs holding a changed copy are emptied by the File's own path (review round 7 minor 2), never by ref.
+          for (const c of staged) {
+            const v = await c.verify();
+            if (!v.ok) {
+              const r = await stage.cancel(staged);
+              throw uploadRefusal('browser.upload: the file to upload changed after it was selected (' + v.error + '); '
+                + (r.emptied ? 'the selection was cancelled (its file input was emptied) and nothing was uploaded. Select it again'
+                  : 'nothing was uploaded, but its file input could not be emptied: do not submit that form until the file is selected again'));
+            }
+          }
           if (!receipt || receipt.status !== 'selected' || !Array.isArray(receipt.files)
             || receipt.files.length !== expected.length || receipt.files.some((f, i) => f.name !== expected[i].name || f.size !== expected[i].size)) {
-            throw new Error('browser.upload did not return verified file-selection evidence; inspect the page before retrying');
+            const r = await stage.cancel(staged);   // m1: an unproven selection keeps no copy
+            throw uploadRefusal('browser.upload did not return verified file-selection evidence' + (r.emptied ? '' : ' (and its file input could not be emptied: do not submit that form)') + '; inspect the page before retrying');
           }
           const readback = Object.assign({}, receipt);
           delete readback.doc;   // host bookkeeping (a CDP session and loader id), not the page's readback
-          // HONEST: selected, and re-checked before each later browser action. Never "verified" bytes that can still change.
-          // BOUNDED TO THIS REPLY (0.14.2 walk W-R7): the page holds the STAGED copy, which releaseUploads removes when the
-          // run ends, so a form the person submits after the reply fails in Chrome (ERR_FILE_NOT_FOUND) while the input
-          // still shows the file. "retained" is the readback at this moment; the input holds the files only NOW, and the
-          // agent is told what to pass on. Text only: the copy's lifetime belongs to the run-paths-polish lane.
-          const many = receipt.files.length > 1;
-          return { content: 'File selected for upload; StarNet re-checks it before each later browser action. '
-            + (receipt.retained ? 'The input holds the requested ' + (many ? 'files' : 'file') + ' now. ' : 'The input was cleared, replaced, or no longer retains the selection after a file-selection event. ')
-            + 'StarNet removes its checked ' + (many ? 'copies' : 'copy') + ' when this reply ends, so submit the form before this reply ends; if the person wants to review and submit it themselves, tell them to re-attach the ' + (many ? 'files' : 'file') + ' in the page first. '
+          /* HONEST: selected, the copy's lifecycle exactly as the registry runs it (upload-stage.js), and re-checked before
+             each later browser action. Never "verified" bytes that can still change. */
+          const keep = Math.max(1, Math.round(stage.keepMs / 60000)) + ' min';
+          const life = !staged[0].doc
+            ? 'This browser cannot name the page, so StarNet keeps that copy only until this reply ends (an input still holding it is then emptied) and re-checks it before each later browser action: submit the form in this reply, or select the file again later. '
+            : outlivesRun()
+              ? 'StarNet keeps that copy while this page stays open, at most ' + keep + ', so the form can still be submitted after this reply (by you later, or by the person), and re-checks it before each later browser action. '
+                + 'When the page navigates away, its tab or the browser closes, another agent takes this browser, or ' + keep + ' pass, the copy is dropped and an input still holding it is emptied. '
+              // its browser closes at the run end (upload-stage.js dropAll), and the copy with it: no later submit is promised
+              : 'This run browses in its own browser, which closes when this reply ends: StarNet keeps that copy until then (at most ' + keep + ') and re-checks it before each later browser action, so submit the form in this reply; after it, that page and its file are gone. '
+                + 'If the page navigates away or its tab closes first, the copy is dropped and an input still holding it is emptied. ';
+          return { content: 'File selected for upload: the input was handed a checked copy of it. ' + life
+            + (receipt.retained ? 'The input holds the requested ' + (receipt.files.length > 1 ? 'files' : 'file') + ' now. ' : 'The input was cleared, replaced, or no longer retains the selection after a file-selection event. ')
+            // #104: how the input was found, and what the page did: never acceptance, but a silent page must not read as a working one
+            + (/^position/.test(String(receipt.resolvedBy || '')) ? 'This input was found by position, not because the page opened it, so the page may not be listening on it. ' : '')
+            + (receipt.clicked ? 'This control was clicked to look for the page\'s own file chooser. ' : '')
+            + (pageSilent(receipt)
+              ? 'THE PAGE DID NOT REACT: no page change and no network request appeared during the wait. A plain form that sends on submit looks like this too, but a photo tile or drop zone has probably ignored the selection: check with a screenshot and do not report the file as attached until you see it. ' : '')
             + fenceExternal(JSON.stringify(readback), 'file input readback from the controlled browser')
             + '\nRemote upload/server acceptance is not verified. Inspect the page\'s thumbnail/status or network response before reporting upload success. Submit the form only when the task requires it.',
-            summary: 'selected ' + receipt.files.length + ' file(s)' };
+            summary: 'selected ' + receipt.files.length + ' file(s)' + (pageSilent(receipt) ? '; the page did not react' : '') };
         }),
       exec('browser.back', 'Go back in browser history.', { type: 'object', properties: {} },
         async () => ({ content: 'Browser went back to ' + await session.back(), summary: 'back' }), false),
@@ -4419,17 +4549,29 @@
     /* THE STAGED-UPLOAD GATE (review round 6 BLOCKER; the browser.upload comment above). Innermost wrapper, so it runs
        after the frozen and profile checks and as close to the action as it can: before every browser tool that can
        submit a form or let page script read a File (everything but the pure observers below), every live staged copy
-       is re-proven or the action is refused; after it, a copy whose page is gone is dropped. With no staged copy live
-       it costs nothing. A NEW browser tool is gated by default; only a tool that dispatches no input, runs no page
-       script and navigates nowhere belongs in OBSERVES. */
+       of this BROWSER (whichever run selected it: the registry is the session's) is re-proven or the action is
+       refused; after it, a copy whose page is gone is dropped, and what the registry did meanwhile (a TTL drop, a
+       swapped copy the sweep caught) is said on the result, only ever about the acting agent's own copies (the station
+       registry is shared by every agent that drives it: upload-stage.js WHO IS TOLD). With no staged copy live it
+       costs nothing. A NEW browser tool is gated by default; only a tool that dispatches no input, runs no page script
+       and navigates nowhere belongs in OBSERVES. */
     const OBSERVES = /^browser\.(snapshot|find|wait|tabs|console|inspect|network|get_text|vision|screenshot|pdf|test_snapshot|test_state|attach|detach|reset|intercept)$/;
+    const uploadAgent = ctx => (ctx && ctx.agentId) || 'agent';   // the agent browser.upload files a copy under
+    const withUploadNotes = (stage, out, ctx) => {
+      const said = stage.takeNotes(uploadAgent(ctx));
+      if (said.length && out && typeof out === 'object' && typeof out.content === 'string') out.content += '\n[StarNet, staged uploads] ' + said.join(' ');
+      return out;
+    };
     for (const tool of tools) {
       if (OBSERVES.test(tool.name)) continue;
       const run = tool.run;
       tool.run = async (args, ctx) => {
-        await recheckUploads(tool.name);
-        try { return await run(args, ctx); }
-        finally { if (stagedUploads.size) await dropGoneUploads(); }
+        const stage = stageNow();
+        await stage.recheck(tool.name, uploadAgent(ctx));
+        let out;
+        try { out = await run(args, ctx); }
+        finally { if (stage.size) await stage.dropGone(); }
+        return withUploadNotes(stage, out, ctx);
       };
     }
     // Reserve before driver creation, within the tool's existing abort/timeout budget. Local test tools
@@ -4458,5 +4600,5 @@
     return { tools, session, releaseUploads, register(reg) { tools.forEach(t => reg.register(t)); return reg; }, _internals: { assertSafeUrl, assertLoopbackUrl, assertResolvedSafe, isPrivateV4, isPrivateV6, makeBrowserSession, makeCdpDriver, makeDownloadLedger, downloadClickReceipt, findChrome, resolveChrome, headlessRequested, SYNTHETIC_INPUT_BOOTSTRAP, CHROME_CANDIDATES } };
   }
 
-  return { makeBrowserTools, _internals: { CdpClient, assertSafeUrl, assertLoopbackUrl, assertResolvedSafe, resolveVerified, isPrivateV4, isPrivateV6, makeBrowserSession, makeCdpDriver, makeDownloadLedger, downloadClickReceipt, findChrome, resolveChrome, setExtraChrome, needsNoSandbox, profileOwnerPid, macEditingCommands, headlessRequested, SYNTHETIC_INPUT_BOOTSTRAP, SETTLE_BOOTSTRAP, SETTLE_PROBE, SETTLE_QUIET_POLLS, describeResponse, pickRefusal, explainRefusal, jsLiteral, normalizeBrowserLocale, detectBrowserVersion, makeLaunchIdentity, browserVersionFrom, cleanBrandRows, makeCdpIdentity, CHROME_CANDIDATES } };
+  return { makeBrowserTools, _internals: { CdpClient, assertSafeUrl, assertLoopbackUrl, assertResolvedSafe, resolveVerified, proxyGuards, isPrivateV4, isPrivateV6, makeBrowserSession, makeCdpDriver, makeDownloadLedger, downloadClickReceipt, findChrome, resolveChrome, setExtraChrome, needsNoSandbox, profileOwnerPid, macEditingCommands, headlessRequested, SYNTHETIC_INPUT_BOOTSTRAP, SETTLE_BOOTSTRAP, SETTLE_PROBE, SETTLE_QUIET_POLLS, describeResponse, pickRefusal, explainRefusal, jsLiteral, normalizeBrowserLocale, detectBrowserVersion, makeLaunchIdentity, browserVersionFrom, cleanBrandRows, makeCdpIdentity, CHROME_CANDIDATES } };
 });

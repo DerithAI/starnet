@@ -89,7 +89,8 @@ function boot(port, env, attemptsLeft) {
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     child.on('error', e => { if (!settled) { settled = true; reject(e); } });
-    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 9000);
+    child.on('close', code => { if (!settled) { settled = true; reject(new Error('sidecar exited before it was up (' + code + ')' + ':\n' + out)); } });
+    setTimeout(() => { if (!settled) { settled = true; try { child.kill(); } catch (_) {} reject(new Error('boot timeout:\n' + out)); } }, 30000).unref();
   });
 }
 
@@ -112,7 +113,10 @@ function trustedInterests(label, now) {
   const candidates = Interests.parse('TOPIC: ' + label + ' | EVIDENCE: ' + label,
     { activityLines: ['Observed clean work: ' + label], requireExactEvidence: true });
   let state = Interests.fresh(now);
-  for (let i = 0; i < 5; i++) state = Interests.fold(state, candidates, { now, trustedActivity: true });
+  // a trusted quote names the owner row it came from (turn identity commit 12); a station re-proves sourceless trusted evidence at boot and
+  // quarantines what no owner row contains, so a seeded WARM station seeds sourced evidence
+  const activity = [{ line: 'Observed clean work: ' + label, src: { streamId: 'seed-stream', runId: 'seed-run', rowId: 1 } }];
+  for (let i = 0; i < 5; i++) state = Interests.fold(state, candidates, { now, trustedActivity: true, activity });
   return state;
 }
 

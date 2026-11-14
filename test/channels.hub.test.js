@@ -201,7 +201,8 @@ async function run() {
       o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done', turns: 1, usd: 0 });
     };
     const hub = makeChannelHub({ runOnce, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); }, secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen() });
-    const p1 = hub.onInbound(dm('first'));   // parks
+    const p1 = hub.onInbound(dm('first'));
+    await waitFor(() => call === 1);            // this case supersedes an already-started run
     await hub.onInbound(dm('second'));         // aborts the first, runs + delivers
     await p1;                                  // first unwinds: superseded -> no delivery
     // 2026-10-11: superseded, never SILENT — a one-line notice that the earlier task stopped, then the newer reply; no stale partial
@@ -332,6 +333,7 @@ async function run() {
       o.emit('agent.run.start', { agentId: o.agentId, runId: o.runId, trigger: 'event', model: o.model });
       o.emit('agent.token', { agentId: o.agentId, runId: o.runId, delta: o.agentId + ' output' });
       o.emit('agent.run.end', { agentId: o.agentId, runId: o.runId, reason: 'done', turns: 1, usd: 0 });
+      return { reason: 'done', text: o.agentId + ' output' };   // what runOnce returns: a stage hands on its terminal text (line-runner.js)
     };
     const chain = makeChainRunner({ nextAgent: (a, ctx) => router.chainNext(a, ctx), now: () => 0 });
     const store = fakeStore();
@@ -381,6 +383,7 @@ async function run() {
     });
     const pa = hub.onInbound(dm('from-A', 'A'));   // chat A -> agent 'shared'
     const pb = hub.onInbound(dm('from-B', 'B'));   // chat B -> the SAME agent 'shared'
+    await waitFor(() => Object.keys(parks).length === 2);   // both actual runs passed awaited history
     for (const id in parks) parks[id]();           // release both in-flight runs
     await Promise.all([pa, pb]);
     A.eq(sends.length, 2, 'both chats got a reply — neither superseded the other despite sharing an agent');
@@ -611,7 +614,10 @@ async function run() {
     const { readSidecarSource } = require('./helpers/source');
     const host = readSidecarSource();
     A.ok(!/attachmentPath\s*:/.test(host) && !/function attachmentDurablePath\(/.test(host), 'round 2: no host hook names a stored turn\'s file by its absolute path');
-    A.ok((host.match(/scrubOutbound: scrubOutbound/g) || []).length >= 4 && !/hostPathPrefixes: \(\) =>/.test(host), 'round 3: the host\'s hubs take the one scrub, not a per-hub prefix list');
+    const { KINDS } = require('../sidecar/channels/factory');
+    const { productionHubBag } = require('./helpers/channel-hub-bags');
+    A.ok(KINDS.filter(kind => kind !== 'sample').every(kind => productionHubBag(kind).props.some(prop => prop.key === 'scrubOutbound' && prop.expr.trim() === 'scrubOutbound'))
+      && !/hostPathPrefixes: \(\) =>/.test(host), 'round 3: every actual factory hub takes the one scrub, not a per-hub prefix list');
   }
 
   // ---- M2. media-only message (no caption) is still admitted; download failure degrades to an honest note ----
@@ -744,7 +750,7 @@ async function run() {
   }
 
   // ---- V. E-STOP is not a supersede: the chat is TOLD it was stopped on purpose ----------------------
-  // Both set `superseded` so the stale partial is abandoned, but they mean opposite things about what happens
+  // Either ending abandons the stale partial, but they mean opposite things about what happens
   // next: a supersede has a newer message already running its replacement, an E-STOP has nothing coming. On a
   // phone — no floor, no browser, no other signal — the shared silent return made a deliberate stop
   // byte-identical to a crashed bot, while /stop typed in the same chat answers "Stopped the run in progress."
@@ -768,8 +774,8 @@ async function run() {
     A.eq(sends.filter(s => /E-STOP/.test(s)).length, 1, 'the stop notice is delivered exactly once');
   }
 
-  // ---- V1. THE STATION'S OWN FAULT is not an E-STOP (wave 2 repair, conveyor-backend-08): the process-fault containment marks the
-  // runs it kills `faulted` first, so the chat is told the station hit a fault — never that someone pressed an E-STOP ----------------
+  // ---- V1. THE STATION'S OWN FAULT is not an E-STOP (wave 2 repair, conveyor-backend-08): the process-fault containment ends the
+  // runs it kills 'faulted' first, so the chat is told the station hit a fault — never that someone pressed an E-STOP ----------------
   {
     const { killAll, markFaulted } = require('../sidecar/halt.js');
     const store = fakeStore(); const sends = [];
@@ -803,6 +809,7 @@ async function run() {
     };
     const hub = makeChannelHub({ runOnce, store, send: (c, t) => { sends.push(t); return Promise.resolve({ ok: true }); }, secrets: () => ({ key: 'k', model: 'm' }), classify: () => false, newId: idGen() });
     const p1 = hub.onInbound(dm('first'));
+    await waitFor(() => call === 1);   // this notice belongs to work that actually started
     await hub.onInbound(dm('second'));
     await p1;
     A.ok(!sends.some(x => /stale partial/.test(x)), 'no stale partial');

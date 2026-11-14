@@ -8,8 +8,10 @@
       "afterTokens",
       "agentId",
       "beforeTokens",
+      "new",
       "reason",
       "removed",
+      "reused",
       "runId"
     ]
   },
@@ -56,7 +58,9 @@
       "agentId",
       "budgetCapUsd",
       "budgetScope",
+      "failureCode",
       "finishReason",
+      "outcome",
       "reason",
       "runId",
       "turns",
@@ -72,6 +76,7 @@
     ],
     "properties": [
       "agentId",
+      "failureCode",
       "message",
       "runId",
       "transient"
@@ -86,9 +91,11 @@
     ],
     "properties": [
       "agentId",
+      "directiveRowId",
       "model",
       "runId",
-      "trigger"
+      "trigger",
+      "turnId"
     ]
   },
   "agent.token": {
@@ -378,10 +385,13 @@
       "runId"
     ],
     "properties": [
+      "failureCode",
       "jobId",
       "outcome",
+      "pausedAfter",
       "reason",
-      "runId"
+      "runId",
+      "runOutcome"
     ]
   },
   "cron.skipped": {
@@ -716,8 +726,10 @@
     ],
     "properties": [
       "agentId",
+      "failureCode",
       "id",
       "kind",
+      "outcome",
       "status",
       "title"
     ]

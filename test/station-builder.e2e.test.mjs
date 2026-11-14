@@ -11,7 +11,7 @@
    Last, vibe design: "the left side cozy, the right side a line that builds and tests code" lands exactly so, in one undo. Isolated like station-layout.e2e (APPDATA / LOCALAPPDATA / USERPROFILE / HOME /
    HERMES_HOME to scratch, a fresh Chrome profile, OS-picked ports, a local mock model). Skips LOUDLY with no Chromium. */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import http from 'node:http';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -21,6 +21,7 @@ import { findChrome, connectCDP, evalJS, collectDiagnostics, sleep } from '../sc
 import { materializeSeedWorkspace, bootSeededSidecar, waitUp, waitDevReady } from '../scripts/lib/seed.mjs';
 const require = createRequire(import.meta.url);
 const { bootToken } = require('./_httpToken.js');
+const { hintFor } = require('./helpers/saved-floor.js');   // the compile the router routes by: the station's SAVED floor, compiled the way the page does
 
 let chromePath = null;
 try { chromePath = findChrome(); } catch (_) { chromePath = null; }
@@ -53,7 +54,8 @@ const stopChild = (child, graceful = false) => new Promise(resolve => {
 // given, then answers.
 // A refusal (no planId in the tool result) ends the run in words — the way a real model reads REFUSED.
 function startMock() {
-  const mock = { requests: [], results: [], planTool: 'station_plan', planArgs: {}, lookFirst: false, searched: [] };
+  // verdict: the VERDICT line a reviewer stage of the line under test ends its reply with (null: a reviewer that forgets it)
+  const mock = { requests: [], results: [], planTool: 'station_plan', planArgs: {}, lookFirst: false, searched: [], verdict: 'approved' };
   const server = http.createServer((req, res) => {
     if (req.url.indexOf('/models') >= 0) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -76,7 +78,7 @@ function startMock() {
         send({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 } });
       };
       // a step of a line the lead is TESTING (station_test_line): the job, or the step before it, is in its user turn
-      if ((p.messages || []).some(m => m && m.role === 'user' && /TEST JOB:|LINE STEP DONE/.test(typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))) { mock.lineSteps = (mock.lineSteps || 0) + 1; say('LINE STEP DONE: hello'); res.write('data: [DONE]\n\n'); return res.end(); }
+      if ((p.messages || []).some(m => m && m.role === 'user' && /TEST JOB:|LINE STEP DONE/.test(typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))) { mock.lineSteps = (mock.lineSteps || 0) + 1; say('LINE STEP DONE: hello' + (mock.verdict ? '\nVERDICT: ' + mock.verdict : '')); res.write('data: [DONE]\n\n'); return res.end(); }
       const pre = ['tool_search'].concat(mock.lookFirst ? ['station_map'] : []), seq = pre.length;   // tool calls before the plan
       if (offered && answered.length === 1) mock.searched.push({ result: answered[0], toolsAfter: null });
       if (offered && answered.length === 1 && mock.searched.length) mock.searched[mock.searched.length - 1].toolsAfter = (p.tools || []).map(t => t && t.function && t.function.name);
@@ -161,16 +163,20 @@ try {
   const floor = await evalJS(cdp, `(() => { const st = App.station(), hero = App.heroId();
     const ip = st.props().find(p => p.t === 'intake' && p.label === 'SHIP IT');
     const bays = st.props().filter(p => p.t === 'bay');
-    return { rooms: st.rooms().filter(r => r.kind !== 'corridor').map(r => r.name), intake: ip && ip.id, cap: ip && ip.limits && ip.limits.maxUsdPerDay,
+    return { rooms: st.rooms().filter(r => r.kind !== 'corridor').map(r => r.name), intake: ip && ip.id, lineId: ip && ip.lineId, cap: ip && ip.limits && ip.limits.maxUsdPerDay,
       bays: bays.map(b => [b.role, b.agentId === hero, (b.brief || '').slice(0, 20)]), loop: (st.props().find(p => p.t === 'loop') || {}).maxIter }; })()`);
   check('a new room named for the line, beside the station', floor.rooms.length === before.rooms.length + 1 && floor.rooms.includes('SHIP IT'), JSON.stringify(floor.rooms));
   check('the Inbox is named and carries the $5 daily cap', !!floor.intake && floor.cap === 5, JSON.stringify(floor));
   check('both steps are staffed by the lead with their standard instructions', floor.bays.length === 2 && floor.bays.every(b => b[1] && b[2].length > 5) && floor.loop === 3, JSON.stringify(floor.bays));
 
-  const posted = JSON.parse(readFileSync(join(workspace, 'routing.plan.json'), 'utf8'));
+  // Nothing a page posts is installed or kept: the router routes by the floor the station SAVED. So the plan to hold the receipt against is that floor's, compiled
+  // the way the router compiles it (the old read of routing.plan.json, the last plan a page posted, is a file the station no longer writes).
+  const savedNow = await fetch(base + '/api/save?agent=agent', { headers: { 'X-StarNet-Token': token, Origin: base } }).then(r => r.json()).catch(() => null);
+  const posted = savedNow && savedNow.save && savedNow.save.station ? hintFor(savedNow.save.station).plan : {};
   const builtSync = await evalJS(cdp, 'World.planStatus()');
   check('the build receipt follows publication even with the frame pump held',
-    !!BL && !!BL.routing && BL.routing.published === true && (posted.lines || []).some(l => l.lineId === floor.intake && l.name === 'SHIP IT')
+    !!BL && !!BL.routing && BL.routing.published === true && typeof floor.lineId === 'string' && !!floor.lineId
+      && (posted.lines || []).some(l => l.lineId === floor.lineId && (l.intakes || []).includes(floor.intake) && l.name === 'SHIP IT')
       && !builtSync.pending && !builtSync.inflight && !builtSync.stale && !builtSync.refusedHash && BL.routing.hash === posted.hash,
     JSON.stringify({ routing: BL && BL.routing, hash: posted.hash, lines: (posted.lines || []).map(l => l.lineId), world: builtSync }));
 
@@ -200,6 +206,29 @@ try {
   check('what the line delivered comes back fenced as data, not instructions', /\[BEGIN EXTERNAL WEB CONTENT — what the line SHIP IT delivered/.test(tl) && /LINE STEP DONE: hello/.test(tl), tl.slice(-240));
   const jobs = await fetch(base + '/api/line-jobs', { headers: { 'X-StarNet-Token': token, Origin: base } }).then(r => r.json()).catch(() => null);
   check('and the job is on record like any SEND A JOB', !!jobs && (jobs.jobs || []).some(j => j.name === 'SHIP IT' && j.status === 'delivered'), JSON.stringify(jobs || {}).slice(0, 240));
+
+  // 4b2. THE SAME LINE, A REVIEWER THAT FORGETS ITS VERDICT (line-hold lane): a verdict gate that gets no usable VERDICT line holds the work
+  // for a person at once, with nothing more bought, instead of looping its review tries and shipping the work unapproved. The lead's tool says
+  // so in words, the job is on record as HELD (not delivered, no end time), and a STOP is the person's answer.
+  mock.verdict = null;
+  const nRes2 = mock.results.length, steps1 = mock.lineSteps || 0;
+  const runH = await leadRun(base, token, 'test the SHIP IT line once more');
+  const th = mock.results[nRes2] || '';
+  let HJ = null; try { HJ = JSON.parse(th.split('\n')[0]); } catch (_) { HJ = null; }
+  check('a reviewer with no VERDICT line holds the work: station_test_line says it is held for a person, never delivered', runH.status === 200 && !!HJ && HJ.status !== 'delivered' && HJ.outcome === 'blocked' && /no usable VERDICT line/.test((HJ.stop && HJ.stop.why) || '') && /saved for a person to decide/.test(th), th.slice(0, 300));
+  check('and nothing was bought after the gate: the two stages ran once each, no review pass was repeated', (mock.lineSteps || 0) - steps1 === 2, String((mock.lineSteps || 0) - steps1));
+  const heldList = await fetch(base + '/api/line-jobs', { headers: { 'X-StarNet-Token': token, Origin: base } }).then(r => r.json()).catch(() => null);
+  const heldJob = ((heldList && heldList.jobs) || []).find(j => j.name === 'SHIP IT' && j.status === 'held');
+  check('and the job is on record as HELD: no end time, saved for a person to decide', !!heldJob && heldJob.endedAt == null, JSON.stringify(heldJob || heldList || {}).slice(0, 240));
+  const stopHeld = heldJob ? await fetch(base + '/api/line-jobs/' + heldJob.id, { method: 'DELETE', headers: { 'X-StarNet-Token': token, Origin: base } }).then(r => r.json()).catch(() => null) : null;
+  let afterStop = null;
+  for (let i = 0; heldJob && i < 30; i++) {
+    afterStop = await fetch(base + '/api/line-jobs/' + heldJob.id, { headers: { 'X-StarNet-Token': token, Origin: base } }).then(r => r.json()).catch(() => null);
+    if (afterStop && afterStop.job && afterStop.job.status === 'stopped') break;
+    await sleep(100);
+  }
+  check('a STOP is the person\'s answer: the held job ends stopped, and still nothing more was bought', !!stopHeld && stopHeld.stopRequested === true && !!afterStop && !!afterStop.job && afterStop.job.status === 'stopped' && (mock.lineSteps || 0) - steps1 === 2, JSON.stringify([stopHeld, afterStop && afterStop.job && afterStop.job.status]).slice(0, 300));
+  mock.verdict = 'approved';
 
   // 4c. WHAT STARTS A LINE (10-01): a schedule and a webhook through the panel's own cores, and a trigger turned off
   const api = (p, o) => fetch(base + p, Object.assign({ headers: { 'Content-Type': 'application/json', 'X-StarNet-Token': token, Origin: base } }, o || {})).then(r => r.json()).catch(() => null);
@@ -440,6 +469,18 @@ try {
   check('one UNDO takes the refit back', undone12 === true);
   mock.lookFirst = false; mock.mapArgs = {};
 
+  /* A STATION DESIGNED WHOLE, through the real tools: a palette in the Commander's words, from a prebuild, a design review on the plan and the receipt. */
+  mock.lookFirst = false; mock.planTool = 'station_plan';
+  mock.planArgs = { layout: { theme: 'a moody cyberpunk club', from: 'software', rooms: [{ name: 'AFTER HOURS', style: 'games', size: { w: 26, h: 16 } }] }, replace: true };
+  at = mock.results.length;
+  const runDesigned = await leadRun(base, token, 'design me a gorgeous cyberpunk club of a software studio');
+  const designRows = mock.results.slice(at).map(x => { try { return JSON.parse(x); } catch (_) { return null; } }).filter(Boolean);
+  const designPlan = designRows.find(x => x.planId), designBuilt = designRows.find(x => x.built === true);
+  check('the designed station run completes', runDesigned.status === 200);
+  check('its plan carries a design review', !!designPlan && !!designPlan.design && typeof designPlan.design.score === 'number' && !!designPlan.design.grade, JSON.stringify(designPlan || null).slice(0, 300));
+  check('its receipt carries the review of what was built', !!designBuilt && designBuilt.built === true && !!designBuilt.design && typeof designBuilt.design.score === 'number', (mock.results[at + 2] || '').slice(0, 300));
+  const designed = await evalJS(cdp, `(() => { const st = App.station(), r = st.rooms().find(x => x.name === 'AFTER HOURS'), b = r && r.rects[0]; return { floor: r && r.floorStyle, w: b && b.x2 - b.x1 + 1, lines: st.props().filter(p => p.t === 'intake').length, loaded: typeof StationDesign !== 'undefined' }; })()`);
+  check('the palette, the heart size and the line from the prebuild all landed', designed.loaded && designed.floor === 'magenta' && designed.w === 26 && designed.lines >= 1, JSON.stringify(designed));
   check('the mock carried every model call (no real provider)', mock.requests.length >= 30, String(mock.requests.length));
   check('no page exceptions', diagnostics.exceptions.length === 0, JSON.stringify(diagnostics.exceptions.slice(0, 3)));
 } catch (error) {

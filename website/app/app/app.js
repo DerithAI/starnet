@@ -388,8 +388,9 @@ const App = (() => {
     const manual = (d.manual || '').trim();
     if (manual) p += '\n\nSTANDING ORDERS (operating-manual.md) — always follow these:\n' + manual;
     // THE COMMANDER DOSSIER: the station-wide model of the user, folded in so every agent knows the
-    // Commander (durable beliefs only → the prefix stays byte-stable for the cache). '' until something
-    // is known, so a cold station adds nothing here.
+    // Commander. '' until something is known, so a cold station adds nothing here. This block and the fork
+    // block below must stay LAST: the sidecar cuts the persona at their heads and sends them after the
+    // cached prefix (sidecar/learned-tail.js, issue #105), so a learned change does not move that prefix.
     if (typeof DossierStore !== 'undefined') {
       const cd = DossierStore.composeBlock();
       if (cd) p += '\n\n' + cd;
@@ -486,12 +487,15 @@ const App = (() => {
     if (!a) return false;
     const m = String(model || '').trim();
     const p = String(provider || '').trim();
+    const hadPin = !!a.model;   // an unpin of an agent that never had a pin is a no-op: its class effort stays
     a.model = m || null;
     a.provider = p || null;
-    // effort is OPTIONAL + additive: written only when the 4th arg is passed (older 3-arg callers untouched); a clear also clears it.
+    // effort is OPTIONAL + additive: a pin writes it only when the 4th arg is passed (older 3-arg callers untouched); an
+    // unpin, of any arity, clears it only when there WAS a pin — CLEAR (stationui applyModel('', '', '') passes 4 args) on an
+    // agent that never had one keeps its class effort.
     const hasEffort = (arguments.length >= 4);
     const e = String(effort || '').trim();
-    if (hasEffort) a.reasoningEffort = (m && e) ? e : null;
+    if (m ? hasEffort : hadPin) a.reasoningEffort = (m && e) ? e : null;
     if (agent && a.id === agent.id) {   // focused agent — apply live so the next run reflects the pin at once
       if (m) {
         if (typeof Harness !== 'undefined' && Harness.setModel) Harness.setModel(m);
@@ -783,9 +787,14 @@ const App = (() => {
     saved.reasoningMigrated = REASONING_MIGRATION;
     return true;
   }
+  /* THE PAGE'S COPY of the station's one run-wire rule (sidecar/run-wire.js resolveRunWire): a pin runs its own model, a
+     bare model borrows the station's provider, an unpinned agent follows the station default; the effort is the agent's
+     own (its pin's, else its class loadout's) and the Overseer's only when it follows the station. FOLLOW-UP (needs the
+     shared/ owner): run-wire.js is already UMD and serveShared exists, so moving it into shared/ would let this page call
+     the one implementation instead of keeping this copy — test/run-wire.invariant.test.js holds the two together until then. */
   function focusWire(a) {
     const station = stationDefaultWire();
-    if (!(a && a.model)) return station;
+    if (!(a && a.model)) return Object.assign({}, station, { effort: (a && a.reasoningEffort) || station.effort });
     return { model: a.model, provider: a.provider || station.provider, effort: a.reasoningEffort || '', owner: a.id };
   }
   // The crew agent whose OWN pin the global model wire holds ('' = the station's model). With an Overseer that has no
@@ -814,7 +823,10 @@ const App = (() => {
     else if (wirePinOwner && Harness.setModel) Harness.setModel('');
     wirePinOwner = (w.model && w.owner && w.owner !== 'agent') ? String(w.owner) : '';
     if (w.provider && Harness.setProv) Harness.setProv(w.provider);
+    // the focused agent's own effort, else NONE (the provider default): the per-provider slot must not keep the effort of
+    // the agent focused before (a pinned agent with no effort never borrows another's — the one effort rule, run-wire.js)
     if (w.effort && Harness.setReasoningEffort) Harness.setReasoningEffort(w.effort);
+    else if (!w.effort && Harness.clearReasoningEffort) Harness.clearReasoningEffort(w.provider);
   }
   function focusAgent(id) {
     // P1.2 (UPDATE_STATE_SAFETY_AUDIT) — end silent impersonation. The old `agents.get(id) || agents.get('agent')`
@@ -880,29 +892,7 @@ const App = (() => {
     return map[provider] || String(provider || 'openrouter').toUpperCase();
   }
   function normalizeProviderId(provider) {
-    const p = String(provider || 'openrouter').trim().toLowerCase();
-    if (p === 'codex' || p === 'openai-codex') return 'codex';
-    if (p === 'openai' || p === 'openai-api') return 'openai';
-    if (p === 'anthropic' || p === 'claude') return 'anthropic';
-    if (p === 'gemini' || p === 'google' || p === 'google-ai' || p === 'google-gemini') return 'gemini';
-    // grok/kimi are their OWN keyless OAuth (subscription) providers — never aliases for the API-key ones
-    // (mirrors harness.js + modeldock.js normalize; 'xai' stays the API-key Grok).
-    if (p === 'grok' || p === 'grok-oauth' || p === 'supergrok' || p === 'xai-oauth') return 'grok';
-    if (p === 'kimi' || p === 'moonshot' || p === 'kimi-code' || p === 'kimi-for-coding' || p === 'kimi-oauth') return 'kimi';
-    if (p === 'xai' || p === 'x-ai') return 'xai';
-    if (p === 'groq') return 'groq';
-    if (p === 'mistral' || p === 'mistralai') return 'mistral';
-    if (p === 'deepseek') return 'deepseek';
-    if (p === 'together' || p === 'together-ai') return 'together';
-    if (p === 'fireworks' || p === 'fireworks-ai') return 'fireworks';
-    if (p === 'perplexity' || p === 'pplx' || p === 'sonar') return 'perplexity';
-    if (p === 'cerebras') return 'cerebras';
-    // managed credits — its bearer is the linked device token, never a key the user pastes
-    if (p === 'starnet' || p === 'starnet-cloud' || p === 'managed') return 'starnet';
-    if (p === 'ollama' || p === 'ollama-local') return 'ollama';
-    if (p === 'claude-cli' || p === 'claude-code' || p === 'claude-code-cli') return 'claude-cli';
-    if (p === 'custom' || p === 'openai-compatible' || p === 'local' || p === 'vllm' || p === 'lmstudio') return 'custom';
-    return 'openrouter';
+    return SK.providers.registry.normalizeProviderId(provider || 'openrouter', '');
   }
   function providerNeedsKey(provider) {
     const p = normalizeProviderId(provider);
@@ -1089,7 +1079,7 @@ const App = (() => {
     agent.specialtyId = spec.id;
     const patch = Specialties.compose(spec);
     if (patch) applyAgentConfig(patch);   // folds purpose + manual (+ any new persona) into the live prompt, persists, syncs channels
-    if (typeof StationUI !== 'undefined' && StationUI.rerender) StationUI.rerender('agents');   // refresh an open dossier
+    if (typeof StationUI !== 'undefined' && StationUI.invalidate) StationUI.invalidate('agents', null, { fresh: true });   // refresh an open dossier next frame; its editor shows the new purpose, not the old draft
   }
 
   /* ---------- SUMMON: wake a NEW live agent onto the crew ----------
@@ -1546,10 +1536,13 @@ const App = (() => {
   }
   function pushRoster() {
     try {
-      // An unpinned row follows the STATION DEFAULT (the Overseer's provider), never the global wire — that is the
-      // focused agent's pin, and stamping it onto every unpinned agent sent their routines/channel runs to it (#24).
+      // A PINNED row with no provider of its own pairs its model with the STATION DEFAULT's provider (the Overseer's, the
+      // focusWire rule), never the global wire — that is the focused agent's pin, and stamping it sent other agents' runs to
+      // it (#24). An UNPINNED crew row (no model) carries NO provider: it follows the station default on every surface, and a
+      // stamped provider only went stale the moment the station switched (run-wire-resolver lane; sidecar/run-wire.js). The
+      // Overseer's row always keeps its provider: that IS the station's provider choice, model or not.
       const fallbackProv = stationDefaultWire().provider || ((typeof Harness !== 'undefined' && Harness.getProv) ? Harness.getProv() : 'openrouter');
-      const list = liveAgents().map(a => ({ agentId: a.id, system: a.systemPrompt || '', name: a.name || a.id, model: a.model || '', provider: a.provider || fallbackProv, role: rosterRole(a), approvalMode: (a.approvalMode === 'full' ? 'full' : 'ask'), executionProfile: executionProfileOf(a),
+      const list = liveAgents().map(a => ({ agentId: a.id, system: a.systemPrompt || '', name: a.name || a.id, model: a.model || '', provider: (a.model || a.id === 'agent') ? (a.provider || fallbackProv) : '', role: rosterRole(a), approvalMode: (a.approvalMode === 'full' ? 'full' : 'ask'), executionProfile: executionProfileOf(a),
         track: rosterTrack(a),    // S3: this agent's EARNED track record, so the lead's dispatch briefing can pick on evidence (see rosterTrack)
         workshop: !!a.workshop,   // W3: the away-build grant travels with the roster so the consent broker can honor it
         skills: Array.isArray(a.skills) ? a.skills : [], reasoningEffort: a.reasoningEffort || null }));   // #4: each agent's OWN provider; Class Loadouts S1: per-agent skill package + applied effort
@@ -1628,6 +1621,90 @@ const App = (() => {
       if (seat) { const rm = station.roomById ? station.roomById(station.roomAt(seat.x, seat.y)) : null; deskWhere = (rm && rm.name) ? String(rm.name) : 'the station'; }
     } catch (_) { deskWhere = ''; }
     return { agentId: a.id, desk: deskWhere };
+  }
+
+  /* THE IDLE HYDRATION PASS (save v7, history by reference). A session saved with runs it names by row id boots holding only the reference.
+     Opening one reads its rows back (Chat.load → hydrateHistory); this reads the rest in the background, the most recently active first,
+     HYDRATE_PER_TICK sessions a tick, so the rail, search and every command meet whole conversations without anyone opening them. It never
+     competes with work: while ANY run is live on this page it reads nothing and a run that begins mid-tick ends the tick after the session
+     in hand. A session the station could not return all of is not asked again at once (a doubling wait), so it cannot starve the sessions
+     behind it, and a station that does not answer pauses the whole pass. It stops itself when nothing is left packed. */
+  const HYDRATE_PER_TICK = 20, HYDRATE_BACKOFF_MS = 60000, HYDRATE_BACKOFF_MAX_MS = 15 * 60000, HYDRATE_PAUSE_MS = 30000;
+  const hydrationRetry = new Map();   // session id -> { at, wait }: when a session the station could not return all of may be asked for again
+  let hydrationLoop = null, hydrationWorked = true, hydrationPausedUntil = 0, hydrationTicking = false;
+  async function hydrateTick() {
+    if (hydrationTicking || typeof Workstreams === 'undefined' || !Workstreams.pendingHydration || typeof Chat === 'undefined' || !Chat.hydrateHistory) return false;   // (PollGate abandons a beat past its deadline and starts the next: a slow tick is never joined by a second)
+    const live = () => typeof Channels !== 'undefined' && Channels.anyBusy && Channels.anyBusy();
+    const now = Date.now();
+    if (live() || now < hydrationPausedUntil) return false;
+    const due = Workstreams.pendingHydration().filter(id => { const r = hydrationRetry.get(id); return !r || r.at <= now; }).slice(0, HYDRATE_PER_TICK);
+    let read = 0;
+    hydrationTicking = true;
+    try {
+      for (const id of due) {
+        if (live()) break;
+        const w = Workstreams.get(id);
+        if (!w || !Workstreams.needsHydration(w)) continue;
+        const got = await Chat.hydrateHistory(w, { windowMs: 20000 });
+        read++;
+        if (got.complete || got.stale) hydrationRetry.delete(id);
+        else {
+          const prior = hydrationRetry.get(id), wait = Math.min(HYDRATE_BACKOFF_MAX_MS, prior ? prior.wait * 2 : HYDRATE_BACKOFF_MS);
+          hydrationRetry.set(id, { at: Date.now() + wait, wait });
+        }
+        if (got.silent) { hydrationPausedUntil = Date.now() + HYDRATE_PAUSE_MS; break; }   // the station is not answering: ask nothing more for a while
+      }
+    } finally { hydrationTicking = false; }
+    if (read && typeof renderRail === 'function') renderRail();
+    return read > 0;
+  }
+  function armHistoryHydration() {
+    armSealSweep();   // the other idle pass: a page that has just read a save proves nothing until it asks (below)
+    if (hydrationLoop || typeof Workstreams === 'undefined' || !Workstreams.pendingHydration || !Workstreams.pendingHydration().length) return false;
+    const beat = async () => {
+      hydrationWorked = await hydrateTick();
+      if (!Workstreams.pendingHydration().length && hydrationLoop) { hydrationLoop.stop(); hydrationLoop = null; }
+    };
+    const ms = () => hydrationWorked ? 1500 : 10000;
+    if (typeof PollGate !== 'undefined' && PollGate.every) hydrationLoop = PollGate.every(beat, { ms, gap: true, immediate: false });
+    else { let timer = setInterval(beat, 5000); hydrationLoop = { stop: () => clearInterval(timer) }; }
+    return true;
+  }
+
+  /* THE SEAL SWEEP (save v7, history by reference). A save names a row instead of repeating it only for a row this page has PROVED the
+     station holds, and a page that has just read a save has proved nothing: its seals are page memory. The rows a session saved inline
+     (every row of a v6 save, a last run's rows) are proved the way a hydration reads packed ones — by asking the station for them
+     (POST /api/transcript/rows) — SWEEP_IDS ids across at most SWEEP_STREAMS sessions a tick, the most recently active first. It runs only
+     while the page is idle (nothing while ANY run is live), keeps no cursor (every tick asks the page what is still unproven, so a reload
+     resumes where the page left off and nothing is stored), changes no conversation (a row that no longer equals what the station holds
+     simply stays inline) and saves once it has proved something, so the shorter save lands. A row with no row id is never asked about:
+     nothing is matched by content. It stops itself when nothing is left to ask. */
+  const SWEEP_IDS = 1000, SWEEP_STREAMS = 50, SWEEP_PAUSE_MS = 30000, SWEEP_SAVE_MS = 10000;
+  let sweepLoop = null, sweepWorked = true, sweepPausedUntil = 0, sweepTicking = false, sweepSavedAt = 0;
+  const sweepLeft = () => typeof Workstreams !== 'undefined' && !!Workstreams.sealCandidates && Workstreams.sealCandidates({ any: true }).length > 0;
+  async function sealSweepTick() {
+    if (sweepTicking || typeof Workstreams === 'undefined' || !Workstreams.sealCandidates || typeof Chat === 'undefined' || !Chat.sealRows) return false;
+    const live = () => typeof Channels !== 'undefined' && Channels.anyBusy && Channels.anyBusy();
+    if (live() || Date.now() < sweepPausedUntil) return false;
+    const batch = Workstreams.sealCandidates({ maxIds: SWEEP_IDS, maxStreams: SWEEP_STREAMS });
+    if (!batch.length) return false;
+    sweepTicking = true;
+    let got;
+    try { got = await Chat.sealRows(batch); } finally { sweepTicking = false; }
+    if (got.silent) sweepPausedUntil = Date.now() + SWEEP_PAUSE_MS;   // the station is not answering: ask nothing more for a while
+    if (got.sealed && typeof persist === 'function' && (Date.now() - sweepSavedAt >= SWEEP_SAVE_MS || !sweepLeft())) { sweepSavedAt = Date.now(); persist(); }
+    return got.asked > 0;
+  }
+  function armSealSweep() {
+    if (sweepLoop || !sweepLeft()) return false;
+    const beat = async () => {
+      sweepWorked = await sealSweepTick();
+      if (!sweepLeft() && sweepLoop) { sweepLoop.stop(); sweepLoop = null; }
+    };
+    const ms = () => sweepWorked ? 1500 : 10000;
+    if (typeof PollGate !== 'undefined' && PollGate.every) sweepLoop = PollGate.every(beat, { ms, gap: true, immediate: false });
+    else { let timer = setInterval(beat, 5000); sweepLoop = { stop: () => clearInterval(timer) }; }
+    return true;
   }
 
   let unsubscribeStationSave = null;
@@ -1782,6 +1859,14 @@ const App = (() => {
     }
     if (Harness.sessionStale && Harness.sessionStale()) return 'the station restarted; reload this page';
     return '';
+  }
+  /* #39: did the station's GATE refuse this page's key — one from before a restart that Harness's in-place recovery could not
+     replace, or none at all? Read through the ONE reading of a refused reply (Harness.classifyApiFailure: the gate's own code;
+     the bare status only from a station that names no refusal). A route's own 403 is not one. Only then is a reload this
+     page's way back: the boot path re-reads its key and re-runs every gate. */
+  function gateRefusedPage(reply) {
+    const f = Harness.classifyApiFailure ? Harness.classifyApiFailure(reply) : null;
+    return !!(f && (f.staleSession || f.tokenWithheld));
   }
   async function loadModels(provider) {
     const p = normalizeProviderId(provider || pickedProvider);
@@ -2616,9 +2701,8 @@ const App = (() => {
   function copyClaudeInstall() {
     const cmd = claudeCliInstallCommand().cmd, btn = el('btn-claude-copy');
     const done = ok => { if (!btn) return; btn.textContent = ok ? '✓ COPIED' : 'SELECT IT ABOVE'; setTimeout(() => { btn.textContent = '⧉ COPY INSTALL COMMAND'; }, 2000); };
-    // the shared clipboard helper (Clipboard API, then the execCommand fallback a locked-down WebView still allows)
-    const copy = (typeof Diag !== 'undefined' && Diag.copyText) ? Diag.copyText : (t => navigator.clipboard.writeText(t).then(() => true));
-    try { Promise.resolve(copy(cmd)).then(ok => done(ok !== false), () => done(false)); } catch (_) { done(false); }
+    // the one clipboard (Clipboard API, then the execCommand fallback a locked-down WebView still allows): COPIED only on its true
+    U.copyText(cmd).then(done);
   }
   function wireClaudeCliTile() {
     const on = (id, fn) => { const n = el(id); if (n) n.onclick = fn; };
@@ -2784,7 +2868,7 @@ const App = (() => {
     // local-engine fault, not "the link service"; a sidecar reply carries its classification of the cloud failure.
     const startFail = info => Object.assign(new Error('start failed'), { linkStart: info });
     Harness.api.post('/api/credits/link/start', { deviceName: 'StarNet Station' })
-      .then(r => { if (generation !== _starnetLinkGeneration) return null; if (!r || !r.ok) throw startFail({ status: r && r.status, j: r && r.j }); return r.j; },
+      .then(r => { if (generation !== _starnetLinkGeneration) return null; if (!r || !r.ok) throw startFail({ status: r && r.status, j: r && r.j, why: r ? Harness.api.why(r) : '' }); return r.j; },
         () => { throw startFail({ local: true }); })
       .then(j => {
         if (generation !== _starnetLinkGeneration) return;
@@ -3206,7 +3290,13 @@ const App = (() => {
       // — read that first, or every up-front refusal (billing, sign-in, concurrency) collapses to the
       // useless "the provider returned an error" and the real reason never reaches the screen.
       const reason = (typeof res.error === 'string' && res.error.trim()) ? res.error : String(res.text || '');
-      if (res.error || !String(res.text || '').trim()) return { ok: false, why: (reason.trim() ? reason.replace(/\s+/g, ' ').slice(0, 160) : 'the provider returned an error') };
+      // review 7.2: only a reply whose run SUCCEEDED proves the wire. Harness.chat hands back a reply the provider cut, a limit or a
+      // STOP ended, or a filter refused as { text, outcome } with no error, so a cut or stopped "OK" passed and the awakening began
+      // on it; the terminal's wire test (bin/lib/awaken.js over stationIO.chat) already refused it, in the same words
+      const unfinished = !res.error && res.outcome && res.outcome !== 'succeeded'
+        ? 'the reply did not finish: ' + (typeof RunOutcome !== 'undefined' && RunOutcome.line ? RunOutcome.line({ outcome: res.outcome, failureCode: res.errorCode }) : String(res.outcome)) : '';
+      // review r8: the unfinished reply's OUTCOME rides beside its words (wireTestLine: a stop or a spending limit is no dead model)
+      if (res.error || (res.outcome && res.outcome !== 'succeeded') || !String(res.text || '').trim()) return Object.assign({ ok: false, why: unfinished || (reason.trim() ? reason.replace(/\s+/g, ' ').slice(0, 160) : 'the provider returned an error') }, unfinished ? { outcome: String(res.outcome) } : null);
       return { ok: true };
     } catch (e) { return { ok: false, why: String((e && e.message) || e).slice(0, 140) }; }
   }
@@ -3265,15 +3355,10 @@ const App = (() => {
       if (!(creditState.balanceUsd > 0)) { msg.className = 'msg bad'; msg.textContent = 'your StarNet account has no credits yet — waking your agent uses credits right away. Press ＄ ADD CREDITS above, then WAKE again.'; return false; }
       Harness.setModel(model); Harness.setProv('starnet');
     } else if (pickedProvider === 'claude-cli') {
-      const cst = (claudeCliState && claudeCliState.loggedIn) ? claudeCliState : await refreshClaudeCliStatus();
-      if (!cst || !cst.loggedIn) {
-        msg.textContent = (cst && cst.installed === false) ? 'install Claude Code first — the command is above — then sign in with Claude.' : 'sign in with Claude first — press ⏼ SIGN IN WITH CLAUDE above.';
-        return false;
-      }
+      await refreshClaudeCliStatus();   // collect local status; the common row below decides eligibility (including extra accounts)
       Harness.setModel(model); Harness.setProv('claude-cli');
       wireVia = 'your Claude sign-in';
     } else if (isOAuthProviderId(pickedProvider)) {
-      if (!oauthConnected[pickedProvider]) { msg.textContent = 'sign in with ' + OAUTH_GENESIS[pickedProvider].name + ' first, or switch to OpenRouter.'; return false; }
       Harness.setModel(model); Harness.setProv(pickedProvider);
     } else if (pickedProvider === 'openai' && !el('in-key').value.trim() && codexConnected) {
       // MERGED OPENAI CARD, ChatGPT half: a LIVE sign-in with no key TYPED rides codex. A typed key wins
@@ -3324,6 +3409,13 @@ const App = (() => {
     // wire. One real round-trip to the chosen provider+model, RIGHT NOW — not "configured", not "signed in":
     // ANSWERED. A dead wire keeps the Commander at the console with the honest reason; there is no world where
     // the ceremony silently degrades because the model never actually spoke.
+    await Harness.refreshProviderReadiness();
+    const readiness = Harness.readiness(Harness.getProv());
+    if (!readiness.unattendedReady) {
+      msg.className = 'msg bad';
+      msg.textContent = readiness.reason + (readiness.cached ? ' (cached station status)' : '') + '. check this connection before WAKE.';
+      return false;
+    }
     wakeBtnBusy(true);
     msg.textContent = 'testing the wire — one real call to ' + model + '…';
     const wire = await preflightWire();
@@ -3355,6 +3447,12 @@ const App = (() => {
         refreshStarnetGenesisStatus();
         return false;
       }
+      /* THE WIRE TEST'S HEADLINE (review r8; its terminal twin is bin/lib/awaken.js wireTestLine, word for word): a test that did not FINISH
+         is said as how it ended. A STOP or a spending limit is no dead model, and "fix it here" sent the Commander to the provider form for
+         either; a cut, limited or refused "OK" did not finish; only a failed or empty reply (or none) is "your model didn't answer". */
+      if (wire.outcome === 'stopped') { msg.textContent = 'the wire test was stopped before it finished — nothing is wrong with your model. WAKE again when you’re ready.'; return false; }
+      if (wire.outcome === 'out_of_budget') { msg.textContent = 'the wire test hit a spending limit — your model is not the problem. raise the spending limit (or wait for it to reset), then WAKE again.'; return false; }
+      if (wire.outcome && wire.outcome !== 'failed' && wire.outcome !== 'empty') { msg.textContent = 'the wire test did not finish — ' + wire.why + '. fix it here, then WAKE again; the awakening won’t start on an unproven wire.'; return false; }
       msg.textContent = 'your model didn’t answer' + (wireVia ? ' (via ' + wireVia + ')' : '') + ' — ' + wire.why + '. fix it here, then WAKE again; the awakening won’t start on a dead wire.';
       return false;
     }
@@ -3485,6 +3583,7 @@ const App = (() => {
     const needsAwakening = (agent.onboarded === undefined) ? !agent.purpose : !agent.onboarded;
     enterGame({ awaitingPurpose: needsAwakening, wake: false });
     persist();   // lock any v1->v2 migration to disk now (don't re-migrate every load)
+    armHistoryHydration();   // a save that names its rows by id: read the sessions nobody opens back in the background (save v7)
   }
 
   function enterGame(opts) {
@@ -3740,9 +3839,10 @@ const App = (() => {
     // No surface of its own — it AIMS the earned curiosity question at the weakest dimension and upgrades the
     // COMMANDER panel's familiarity meter. Init AFTER DossierStore/ProfileStore/GoalStore (it reads all three).
     if (typeof UnderstandingStore !== 'undefined') UnderstandingStore.init({ now: () => Date.now() });
-    // R1: the fork directive is BAKED into the cached agent.systemPrompt, so a gate flip (style confidence
-    // crossing the floor — e.g. the first banked fork answer grounds the style model) must recompose the
-    // prompt or the directive would never retire. Flips are rare, so the prefix stays cache-warm between.
+    // R1: the fork directive is BAKED into every agent's stored systemPrompt, so a gate flip (style confidence
+    // crossing the floor — e.g. the first banked fork answer grounds the style model) must recompose the whole
+    // crew and re-push the roster, or the directive would never retire for a worker. The sidecar keeps the block
+    // out of the cached prefix (learned-tail.js), so a flip costs no prefix re-write.
     if (typeof UnderstandingStore !== 'undefined' && typeof Fork !== 'undefined' && UnderstandingStore.subscribe) {
       let forkGate = null;
       UnderstandingStore.subscribe(u => {
@@ -3750,9 +3850,9 @@ const App = (() => {
         if (forkGate === g) return;
         const first = forkGate === null;
         forkGate = g;
-        if (first || !agent) return;   // the initial read only sets the baseline (the boot compose already used it)
-        agent.systemPrompt = composeSystemPrompt(agent);
-        if (typeof Chat !== 'undefined' && Chat.setSystem) Chat.setSystem(agent.systemPrompt);
+        if (first || !agent) return;   // the initial read only sets the baseline (the boot's final recompose reads it too)
+        recomposeAllPrompts();
+        pushRoster();
         persist();   // mirror applyAgentConfig: the recomposed prompt is part of the agent's persisted truth
       });
     }
@@ -3976,10 +4076,12 @@ const App = (() => {
       // B2 — the real-write hand-off. canWriteFiles = the cabinet:write CONSENT (PermissionsStore); hasCabinet = the
       // cabinet CAPABILITY actually placed (World.heroCaps — object=capability); BOTH required (Autopilot.canWrite).
       // writeFile = the token-gated, consent-broker-gated, checkpointed server write (/api/autonomy/write). A failed
-      // or denied write just degrades to a desk draft (the act() branch handles the fallback).
+      // or denied write just degrades to a desk draft (the act() branch handles the fallback); a refusal carries the station's
+      // own code and sentence (Harness.api), never a bare {ok:false} that reads like an empty answer.
       canWriteFiles: () => { try { return (typeof PermissionsStore !== 'undefined' && PermissionsStore.snapshot) ? (PermissionsStore.snapshot().grants || []).indexOf('cabinet:write') >= 0 : false; } catch (_) { return false; } },
       hasCabinet: () => { try { return (typeof World !== 'undefined' && World.heroCaps) ? (World.heroCaps((agent && agent.id) || 'agent') || []).some(c => (c && (c.objectType || c)) === 'cabinet') : false; } catch (_) { return false; } },   // heroCaps returns [{objectType}]: an indexOf('cabinet') never matched
-      writeFile: (req) => fetch('/api/autonomy/write', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agentId: (agent && agent.id) || 'agent', path: req.path, content: req.content }) }).then(r => r.ok ? r.json() : { ok: false }).catch(() => ({ ok: false })),
+      writeFile: (req) => Harness.api.post('/api/autonomy/write', { agentId: (agent && agent.id) || 'agent', path: req.path, content: req.content })
+        .then(r => r.ok ? r.j : { ok: false, code: r.code, error: Harness.api.why(r) }, e => ({ ok: false, code: 'no_answer', error: (e && e.message) || 'the station did not answer' })),
       // leave the result on the Commander's desk: a persistent toast + the live "working" cue + a gentle COMMS beat
       // that, on accept, posts the work into the feed. If it WROTE a real file (B2) the copy says so + names the path;
       // otherwise it's a desk draft. Either way nothing is sent/published/spent.
@@ -4068,6 +4170,10 @@ const App = (() => {
     });
     if (typeof Voice !== 'undefined') Voice.init({ name: agent.name, personaId: agent.personaId, resumeCue: !opts.awaitingPurpose });   // mic + this agent's per-persona voice; offer hands-free resume except during the awakening
     if (typeof ModelDock !== 'undefined') ModelDock.init({ apply: applyQuickModel, identity: () => (agent && agent.id) || '', agentName: () => (agent && agent.name) || '' });
+    // ONE BOOT COMPOSE (issue #105): crew members rehydrate before the dossier and the understanding read exist, and only the
+    // focused agent was recomposed after them. Each relaunch therefore pushed a worker's prompt with no dossier and the fork
+    // block its confidence had not earned. Recomposing the whole crew once they are all up means same inputs, same prompts.
+    recomposeAllPrompts();
     syncChannels();   // if a Telegram bot auto-started from saved config, refresh it to THIS agent's live identity
     pushRoster();     // Stage 2: seed the sidecar with the live crew so the lead can delegate (no-op for a solo station)
     renderRail();
@@ -4389,7 +4495,7 @@ const App = (() => {
   function railReceipt(w) {
     const latest = Workstreams.latestVisibleMessage ? Workstreams.latestVisibleMessage(w)
       : (Workstreams.visibleMessages ? Workstreams.visibleMessages(w) : []).slice().reverse().find(m => m.content.trim());
-    if (!latest) return 'No messages yet';
+    if (!latest) return Workstreams.needsHydration && Workstreams.needsHydration(w) ? '' : 'No messages yet';   // rows named by a saved history, not read back yet: no line beats a false one
     const memo = railExcerpts.get(latest);
     if (memo && memo.content === latest.content && memo.role === latest.role) return memo.out;
     const out = railExcerpt(latest);
@@ -4675,20 +4781,24 @@ const App = (() => {
      moved into the row ⋯ actions menu so it always names its exact target. The pure store
      (workstreams.js) still owns the search/export/scrub invariants; this layer only renders + downloads. */
   function sessionDownload(bundle) {
-    if (!bundle || !bundle.text) return false;
-    try {
-      const blob = new Blob([bundle.text], { type: bundle.mime || 'text/plain' });
-      const url = URL.createObjectURL(blob), a = document.createElement('a');
-      a.href = url; a.download = bundle.filename || 'starnet-conversation.txt';
-      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 0);
-      return true;
-    } catch (_) { return false; }
+    if (!bundle || !bundle.text) return Promise.resolve({ ok: false, line: 'nothing to export in this session' });
+    return U.saveFile({ name: bundle.filename || 'starnet-conversation.txt', text: bundle.text, mime: bundle.mime || 'text/plain' });
   }
   // Export ONE named session from its row menu — never an implicit "the active one".
-  function exportSession(id, format) {
-    const w = Workstreams.get(id), bundle = w && Workstreams.exportConversation(id, format);
-    const ok = sessionDownload(bundle); if (ok) SFX.click(); else SFX.bad();
-    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(ok ? ('exported “' + Workstreams.titleOf(w) + '” — hidden data and secrets excluded') : 'nothing to export in “' + Workstreams.titleOf(w) + '”', ok ? '' : 'warn', undefined, { transient: true });
+  async function exportSession(id, format) {
+    const w = Workstreams.get(id);
+    // a session whose rows are still packed is read back before it is written out: a file of the rows the page happens to hold would be a quiet partial copy
+    if (w && Workstreams.needsHydration(w) && typeof Chat !== 'undefined' && Chat.hydrateHistory) await Chat.hydrateHistory(w, { windowMs: 20000 });
+    // the station's DISPLAY view of the session (what it still shows after any delete); the page's copy is the fallback only for a session the station never held
+    let rows = null;
+    try {
+      const r = w && await Harness.api.get('/api/transcript?agent=' + encodeURIComponent(w.agentId || 'agent') + '&stream=' + encodeURIComponent(id) + '&limit=2000');
+      const j = r || null;
+      if (j && Array.isArray(j.turns) && j.turns.length) rows = j.turns;
+    } catch (_) { rows = null; }
+    const unread = !!w && !rows && Workstreams.needsHydration(w), bundle = w && !unread && Workstreams.exportConversation(id, format, rows ? { rows } : undefined);
+    const receipt = unread ? { ok: false, line: 'conversation history could not be restored' } : await sessionDownload(bundle); if (receipt.ok) SFX.click(); else SFX.bad();
+    if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(receipt.line + (receipt.ok ? ' — hidden data and secrets excluded' : ''), receipt.ok ? '' : 'warn', undefined, { transient: true });
   }
   function renderSessionSearch() {
     const input = el('ws-search'), out = el('ws-search-results'), sessions = el('workstreams'); if (!input || !out) return;
@@ -4738,7 +4848,7 @@ const App = (() => {
     // history / runs / a live run keep their binding and fall through to the switch-or-mint path.
     const cur = Workstreams.active();
     if (cur && cur.id !== Workstreams.generalId() && !isGroupWs(cur) && (cur.agentId || 'agent') !== id
-        && !(cur.history && cur.history.length) && !(cur.runIds && cur.runIds.length)
+        && !(cur.history && cur.history.length) && !(Workstreams.needsHydration && Workstreams.needsHydration(cur)) && !(cur.runIds && cur.runIds.length)
         && !(typeof Channels !== 'undefined' && Channels.isBusy(cur.id))
         && Workstreams.setAgent(cur.id, id)) {
       focusAgent(id); if (typeof World !== 'undefined' && World.lockBody) World.lockBody(id);   // explicit agent pick → camera follow-lock
@@ -4911,9 +5021,16 @@ const App = (() => {
       return false;
     }
     const wasActive = (id === Workstreams.activeId());
+    // what the page itself holds of this session, read BEFORE the delete takes the rows: the runs it held and the uploads its messages name
+    let doomedRuns = [], doomedFiles = [];
+    try { doomedRuns = Workstreams.runIdsOf(id); doomedFiles = Workstreams.attachmentRefs(id); } catch (e) { console.warn('[delete] could not list the derived copies of the session:', (e && e.message) || e); }
     // the Commander's Delete of a conversation: the sidecar forgets it (forget: true — qa/bugs/3e926b6a). DELETE AGENT's
     // removeByAgent and a task card's remove only hide rows.
     if (!Workstreams.del(id, { forget: true })) { SFX.bad(); return false; }
+    // commit 16: the page's own derived copies go with it - the beliefs learned from its runs (the dossier block and the snapshot are pushed
+    // again, complete), its run records and SEND NOW lines, and the uploads no other session names (the sidecar's purge pass is the net)
+    try { if (typeof DossierStore !== 'undefined' && DossierStore.purgeRuns) DossierStore.purgeRuns(doomedRuns); } catch (e) { console.warn('[delete] dossier purge failed:', (e && e.message) || e); }
+    try { if (typeof Chat !== 'undefined' && Chat.forgetSession) Chat.forgetSession(id, { runIds: doomedRuns, files: doomedFiles.filter(f => !Workstreams.attachmentInUse(f.path, f.agent)) }); } catch (e) { console.warn('[delete] session copies not dropped:', (e && e.message) || e); }
     SFX.bad();
     if (wasActive) loadActiveStream();   // deleting the OPEN stream falls back to General
     renderRail(); persist();
@@ -5315,18 +5432,16 @@ const App = (() => {
     const isForget = !r.blessed;
     const endpoint = isForget ? '/api/projects/forget' : '/api/permissions/revoke';
     const body = isForget ? { root: r.root } : { key: 'path:' + r.root };
-    fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-      .then(res => res.ok ? res.json() : { ok: false })
-      .then(j => {
+    // a refusal is the station's answer, said in its own words (Harness.api.why); only no answer at all says so
+    const failure = isForget ? 'could not forget “' : 'could not revoke trust for “';
+    const say = (text, tone) => { if (typeof StationUI !== 'undefined' && StationUI.notify) StationUI.notify(text, tone); };
+    Harness.api.post(endpoint, body)
+      .then(res => {
         SFX.bad();
-        if (typeof StationUI !== 'undefined' && StationUI.notify) {
-          const success = isForget ? 'forgot “' : 'trust revoked for “';
-          const failure = isForget ? 'could not forget “' : 'could not revoke trust for “';
-          StationUI.notify((j && j.ok ? success : failure) + r.name + '”', j && j.ok ? 'warn' : 'bad');
-        }
+        const success = isForget ? 'forgot “' : 'trust revoked for “';
+        say(res.ok ? success + r.name + '”' : failure + r.name + '”: ' + Harness.api.why(res), res.ok ? 'warn' : 'bad');
         renderProjects();
-      })
-      .catch(() => { renderProjects(); });
+      }, () => { say(failure + r.name + '”: the station did not answer', 'bad'); renderProjects(); });
   }
   // ADD A PROJECT: an inline editor row at the top of the projects list — a typed absolute-path field (the honest
   // fallback everywhere) plus a 📁 browse button that opens the REAL OS folder chooser. The picker is served by the
@@ -5674,7 +5789,7 @@ const App = (() => {
       if (sub) { if (reason) sub.textContent = reason; else if (/^(degraded|station service halted)/i.test(sub.textContent)) sub.textContent = notAnswering; }
       if (reason) {
         diagnosis = { code: /owner unavailable/i.test(reason) ? 'SAVE-OWNER · WORKSPACE OWNED BY ANOTHER PROCESS' : /crash-loop/i.test(reason) ? 'SAVE-LOOP · STATION SERVICE CRASH LOOP' : 'SAVE-DEGRADED · STATION SERVICE DEGRADED', text: reason };
-        if (code) code.innerHTML = '<b>RECOVERY CODE: ' + diagnosis.code + '</b><br>' + diagnosis.text.replace(/&/g, '&amp;').replace(/</g, '&lt;') + '<br>Send a screenshot of this code to support.';
+        if (code) code.innerHTML = '<b>RECOVERY CODE: ' + diagnosis.code + '</b><br>' + esc(diagnosis.text) + '<br>Send a screenshot of this code to support.';
       }
       return reason;
     };
@@ -5783,11 +5898,16 @@ const App = (() => {
             }
             browserResetBlocked = false;
             preservedReset = null;
+            // the carry rule's native half: an account link that could not be carried stayed with the old station, and is said
+            const account = result.creditsLeftAside
+              ? ' Your account link could not be carried over, so it stayed with the old station: link your account again. Purchased credits stay on your account.'
+              : ' Your account link and purchased credits were kept.';
             if (result.listening) {
-              setStatus('clean station ready — reopening now. Your account link and purchased credits were kept.' + where);
-              try { location.reload(); } catch (_) {}
+              setStatus('clean station ready — reopening now.' + account + where);
+              if (result.creditsLeftAside) setTimeout(() => { try { location.reload(); } catch (_) {} }, 8000);
+              else try { location.reload(); } catch (_) {}
             } else {
-              setStatus('clean station prepared, but the station service is still blocked. Fully quit StarNet and reopen it. Your account link and purchased credits were kept.' + where);
+              setStatus('clean station prepared, but the station service is still blocked. Fully quit StarNet and reopen it.' + account + where);
             }
           } catch (error) {
             resetting = false;
@@ -5912,9 +6032,9 @@ const App = (() => {
         const timer = setInterval(async () => {
           try {
             const probe = await fetch('/api/save?agent=agent', { cache: 'no-store' });
-            // #39: a 403 that survives Harness's in-place token recovery means only a reload can reconnect — and the
-            // recovery itself is already done. Reload once (the timer dies here, so it can never loop).
-            if (probe.status === 403) { clearInterval(timer); location.reload(); return; }
+            // #39: the gate's refusal of this page's key that survives Harness's in-place token recovery means only a reload
+            // can reconnect — and the recovery itself is already done. Reload once (the timer dies here, so it can never loop).
+            if (gateRefusedPage(probe)) { clearInterval(timer); location.reload(); return; }
             const body = probe.ok ? await probe.json() : null;
             if (body && body.save && body.save.agent) { clearInterval(timer); location.reload(); }
           } catch (_) {}
@@ -5931,11 +6051,8 @@ const App = (() => {
       try {
         const response = await fetch('/api/lineage/report', { cache: 'no-store' });
         if (!response.ok) throw new Error(refusedPageLine() || 'report unavailable');
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob), a = document.createElement('a');
-        a.href = url; a.download = 'starnet-recovery-report.json'; a.style.display = 'none';
-        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-        if (status) status.textContent = '＋ redacted recovery report exported — no credentials or save contents included';
+        const receipt = await U.saveFile({ name: 'starnet-recovery-report.json', ext: 'json', text: await response.text() });
+        if (status) status.textContent = receipt.line + (receipt.ok ? ' — no credentials or save contents included' : '');
       } catch (error) {
         if (status) status.textContent = '＋ report export failed — ' + String(error && error.message || error);
       } finally { report.disabled = false; }
@@ -5970,43 +6087,64 @@ const App = (() => {
     };
     // START FRESH — the third exit. When nothing here is recoverable (a first run whose overseer never woke,
     // then a manual reset — 2026-08-22 report) RESTORE is dead and RETRY loops forever; this is the way out.
-    // Sidecar-backed: prior state is MOVED to a quarantine folder (never deleted) and external evidence is
-    // acknowledged, then the station service restarts into clean onboarding. Two clicks, never one.
+    // Sidecar-backed: this click only asks. As the station service restarts, the whole generation is MOVED to a
+    // quarantine folder (never deleted), external evidence is acknowledged, and the boot lands in clean onboarding.
+    // If that boot could not set it aside, lineage.lastFresh says why and the button re-arms. Two clicks, never one.
     const freshBtn = el('btn-lineage-fresh');
     if (freshBtn) {
       let armed = false;
+      const freshFailed = last => '＋ could not start fresh — ' + String(last.error || 'the station service refused it') + (last.holder ? ' It is held by ' + last.holder + '.' : '');
+      // the gate may open on a request that did not finish (a reload outran the poll below)
+      if (status && lineage && lineage.lastFresh && lineage.lastFresh.ok === false) status.textContent = freshFailed(lineage.lastFresh);
       freshBtn.onclick = async () => {
         SFX.click && SFX.click();
         if (!armed) {
           armed = true;
           freshBtn.textContent = '✦ CONFIRM — START A NEW STATION';
           if (status) status.textContent = validCandidates.length
-            ? '＋ a recoverable station exists above — START FRESH sets it aside in a quarantine folder (nothing is deleted). Press again to confirm.'
-            : '＋ nothing here is recoverable. START FRESH moves the leftover files to a quarantine folder (nothing is deleted) and opens a new station. Press again to confirm.';
+            ? '＋ a recoverable station exists above — START FRESH sets this workspace aside in a quarantine folder (nothing is deleted), including the sign-ins, channel bots and connectors it holds. Press again to confirm.'
+            : '＋ nothing here is recoverable. START FRESH sets this workspace aside in a quarantine folder (nothing is deleted), including the sign-ins, channel bots and connectors it holds, and opens a new station. Press again to confirm.';
           setTimeout(() => { if (armed) { armed = false; freshBtn.textContent = '✦ START FRESH'; } }, 12000);
           return;
         }
         armed = false;
         freshBtn.disabled = true;
-        if (status) status.textContent = '＋ setting prior state aside…';
+        if (status) status.textContent = '＋ closing the station browser…';
         try {
           const response = await fetch('/api/lineage/start-fresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
           const result = await response.json().catch(() => ({}));
           if (!response.ok || !result.ok) throw new Error(result.error || 'start-fresh request refused');
-          if (status) status.textContent = (result.moved && result.moved.length ? '＋ ' + result.moved.length + ' file(s) set aside in ' + result.quarantine + ' — ' : '＋ ') +
-            (result.desktopWillRestart ? 'station service restarting — opening your new station…' : 'restart the manual sidecar; this screen will continue automatically');
+          if (status) status.textContent = result.desktopWillRestart
+            ? '＋ station service restarting — the old station is set aside as it comes back, then your new station opens…'
+            : '＋ restart the manual sidecar — the old station is set aside as it boots, and this screen will continue automatically';
           // poll until the respawned sidecar answers, then reload: boot re-runs every gate and, with the
-          // evidence gone, lands on the first-run ceremony.
+          // evidence gone, lands on the first-run ceremony. A newer lastFresh is that boot's own word on the request.
           const timer = setInterval(async () => {
             try {
               const probe = await fetch('/api/lineage', { cache: 'no-store' });
               // #39: this poll used to swallow a 403 as "not ready yet" — but START FRESH's own restart mints a new token,
               // so the poll could never answer and the button greyed out forever after a SUCCESS. Harness now re-reads
-              // the token and replays; a 403 that still gets here means only a reload can reconnect, and the work is
-              // already done — reload once (the timer dies here, so it can never loop).
-              if (probe.status === 403) { clearInterval(timer); location.reload(); return; }
+              // the token and replays; the gate's refusal of this page's key that still gets here means only a reload can
+              // reconnect, and the work is already done — reload once (the timer dies here, so it can never loop).
+              if (gateRefusedPage(probe)) { clearInterval(timer); location.reload(); return; }
               const body = probe.ok ? await probe.json() : null;
-              if (body && body.lineage && body.lineage.priorInstallEvidence === false) { clearInterval(timer); location.reload(); }
+              const next = body && body.lineage;
+              if (!next) return;
+              const last = next.lastFresh && Number(next.lastFresh.at) >= Number(result.requestedAt) ? next.lastFresh : null;
+              if (next.priorInstallEvidence !== false && !last) return;   // the old service, still going down
+              clearInterval(timer);
+              if (next.priorInstallEvidence !== false && last.ok === false) {
+                freshBtn.disabled = false; freshBtn.textContent = '✦ START FRESH';
+                if (status) status.textContent = freshFailed(last);
+                return;
+              }
+              // the sidecar door's half of the carry rule: an account link that could not be carried is said before the reload
+              if (last && last.creditsLeftAside) {
+                if (status) status.textContent = '＋ clean station ready — your account link could not be carried over, so it stayed with the old station. Link your account again; purchased credits stay on your account.';
+                setTimeout(() => location.reload(), 6000);
+                return;
+              }
+              location.reload();
             } catch (_) {}
           }, 1500);
         } catch (error) {
@@ -6022,7 +6160,7 @@ const App = (() => {
   async function init() {
     if (Harness.init) await Harness.init();   // desktop: load the keychain "configured?" flag first
     if (typeof StationUI !== 'undefined') StationUI.init();   // applies saved theme/CRT settings, wires the bottom bar
-    if (typeof Updates !== 'undefined' && typeof StationUI !== 'undefined') Updates.init({ notify: StationUI.notify, rerender: StationUI.rerender });
+    if (typeof Updates !== 'undefined' && typeof StationUI !== 'undefined') Updates.init({ notify: StationUI.notify, rerender: key => StationUI.invalidate(key, null, { fresh: true }) });   // the Update Center repaints next frame, its controls showing the new state
 
     /* EXTENSIONS AWAITING APPROVAL. Hooks and plugins are opt-in by design: an unapproved one is silently
        inert. That is the correct security posture and the worst possible UX if it is never surfaced — the
@@ -6056,9 +6194,8 @@ const App = (() => {
       SFX.click(); dataStatus('exporting…');
       const r = await Backup.exportAll();
       dataStatus(r && r.ok
-        // #134: the page only HANDS the file over (where it lands is never reported back) — name it, never claim "saved"
-        ? 'handed ' + r.file + ' to your downloads — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
-        : 'export failed');
+        ? r.line + ' — secrets excluded; ' + r.records + ' records' + (r.notes ? ' + ' + r.notes + ' memories' : '')
+        : (r && r.line || 'export failed'));
     };
     const fileImport = el('file-import');
     el('btn-import').onclick = () => { SFX.click(); fileImport.value = ''; fileImport.click(); };

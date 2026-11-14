@@ -53,7 +53,7 @@ const FINAL_CHARS = 60000;
 // transcript, and a packet on disk must never hold it in cleartext (every other durable transcript store redacts).
 function compactPacket(p, redact) {
   p = p || {};
-  const scrub = typeof redact === 'function' ? (t) => { try { return String(redact(t)); } catch (_) { return ''; } } : (t) => t;
+  const scrub = typeof redact === 'function' ? (t) => { try { return String(redact(t)); } catch (e) { failNote('verdict.compact', e); return ''; } } : (t) => t;   // fail closed, never silent
   const learningEvidence = buildLearningEvidence(p, redact);
   const msgs = learningEvidence.trustedOnly ? [] : (Array.isArray(p.messages) ? p.messages : []);
   let finalAt = -1;
@@ -77,11 +77,18 @@ function compactPacket(p, redact) {
     }
   }
   const skillRefs = list => (Array.isArray(list) ? list : []).map(s => s && ({ id: s.id, target: s.target, name: s.name, summary: s.summary, action: s.action })).filter(Boolean);
+  // the run's directive as the station captured it before expansion (TurnDirective.packet: { rowId, text }, text already
+  // safe; re-scrubbed here as a belt) and its stream, so a rating after a restart reads the same directive. Absent on a
+  // packet that never carried them (the persisted shape is then unchanged).
+  const d = p.directive && typeof p.directive === 'object' ? p.directive : null;
+  const directive = d ? { rowId: Number.isSafeInteger(d.rowId) && d.rowId > 0 ? d.rowId : 0, text: scrub(String(d.text == null ? '' : d.text).slice(0, PER_MESSAGE_CHARS)) } : null;
   return {
     learningEvidence,
     agentId: String(p.agentId || 'agent'), messages: keep, model: p.model ? String(p.model) : '',
     loadedSkills: skillRefs(p.loadedSkills), managedSkills: skillRefs(p.managedSkills), unmetered: !!p.unmetered, failed: !!p.failed,
-    reason: String(p.reason || ''), correctionSource: String(p.correctionSource || '')
+    // the run's outcome rides beside its reason (typed outcomes): runOnceCore's stash hands the lead's outcome-aware reason and its outcome
+    reason: String(p.reason || ''), outcome: String(p.outcome || '').slice(0, 40), correctionSource: String(p.correctionSource || ''),
+    ...(directive ? { directive } : {}), ...(p.streamId ? { streamId: String(p.streamId).slice(0, 200) } : {})
   };
 }
 
@@ -333,11 +340,21 @@ function makeVerdictReview(opts) {
     return count;
   }
   function holding(runId) { return held.has(String(runId || '').trim()); }
+  /* forget(match) -> number: the forget registry's purge. Every parked packet and every held review `match(runId, packet, at)` names goes -
+     a held one has its timer cleared first, so a rating given before a session was deleted fires no review of it afterwards (a review
+     already RUNNING finishes on its own copy: completeHeld finds nothing held and returns). Persisted at once, acknowledged. */
+  function forget(match) {
+    let n = 0;
+    for (const [id, row] of Array.from(packets)) if (match(id, row.packet, row.at)) { packets.delete(id); n++; }
+    for (const [id, h] of Array.from(held)) if (match(id, h.packet, h.at)) { clearT(h.timer); h.timer = null; held.delete(id); n++; }
+    if (n) { changed(); changed(); }   // twice: the store keeps the previous value as its .bak, and the second save puts the purged copy there too
+    return n;
+  }
   // peek: read a parked packet WITHOUT consuming it (slice 4: a `great` verdict reads which skills the run loaded
   // to mint a golden; it never spends the packet — praise is not a review).
   function peek(runId) { sweep(); const row = packets.get(String(runId || '').trim()); return row ? row.packet : null; }
 
-  return { stash, shouldTrigger, take, size, has, cap, ttlMs, arm, correct, holding, peek, graceMs, snapshot, restore, resumeHeld };
+  return { stash, shouldTrigger, take, size, has, cap, ttlMs, arm, correct, holding, peek, graceMs, snapshot, restore, resumeHeld, forget };
 }
 
 module.exports = { makeVerdictReview, VERDICTS_THAT_TEACH, compactPacket, reviewPassFinished };

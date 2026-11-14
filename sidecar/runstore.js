@@ -51,12 +51,18 @@
   'use strict';
   // failopen.note — the tagged SYNC swallow (per-tag count + throttled warn): a fail-open catch must never be invisible.
   const { note: failNote } = (typeof require === 'function') ? require('./failopen.js') : { note: function (tag, e) { console.warn('[failopen] ' + tag + ':', (e && e.message) || e); } };
+  // TYPED OUTCOMES: the one outcome resolver (frontend/app/runoutcome.js) — every new row records the code every surface reads
+  const RunOutcome = (typeof require === 'function') ? require('../frontend/app/runoutcome.js') : ((typeof globalThis !== 'undefined' && globalThis.RunOutcome) || null);
+  // TURN IDENTITY: the turnId grammar and the quote capacity (frontend/app/turnkinds.js, the module the page loads too)
+  const TurnKinds = (typeof require === 'function') ? require('../frontend/app/turnkinds.js') : ((typeof globalThis !== 'undefined' && globalThis.TurnKinds) || null);
 
   // Sets, not object literals: `({a:1})['constructor']` is truthy, so an object-literal allowlist
   // silently admits every Object.prototype key — and these keys come off persisted/model-supplied data.
   const REASONS = new Set(['done', 'max_iters', 'budget', 'cancelled', 'error', 'empty', 'refusal', 'clarifying', 'interrupted']);
   const RECOVERY_STATUSES = new Set(['recoverable', 'needs_review', 'resolved', 'recovering', 'continued', 'forensic']);
-  const SETTLED_AS = new Set(['entered', 'limit']);   // how an interrupted run's spend was settled (ledger attestedAs)
+  // how an interrupted run's spend was settled (ledger.js ATTESTED_AS): one vocabulary, or a one-click settlement would never
+  // restamp its row and the history scan would re-append it from the ledger every time
+  const SETTLED_AS = new Set(['entered', 'limit', 'recorded', 'assumed']);
   const ERROR_MAX = 240;
   const DEFAULT_LIMIT = 200;        // a sane cap so list() never returns an unbounded history
   const TITLE_MAX = 120;
@@ -89,6 +95,27 @@
   const COMPLETION_ROWS_MAX = 100;
   const RECOVERY_ATTEMPTS_MAX = 100;
   const ID_RE = /^[A-Za-z0-9_-]{1,80}$/;   // a floor prop id (lineId = its INBOX's id, dockId = the bay's id)
+  /* TURN IDENTITY (additive, turn-identity): which turn a run answered and the transcript rows it stood on, noted while the
+     run is live (runStore.noteIdentity) and merged into that run's next record(). Only these keys, each checked; anything
+     else is dropped and counted. */
+  const IDENTITY_NOTES_MAX = 500;
+  const IDENTITY_KEYS = ['turnId', 'directiveRowId', 'windowRowIds', 'quotes', 'quotesAt', 'quotesSaturatedAt'];
+  const SID_RE = /^[A-Za-z0-9_-]{1,64}$/;   // the workstream grammar transcriptstore.js validates a quoted stream id against
+  const SHA256_RE = /^[a-f0-9]{64}$/;
+  const safeNonNeg = v => Number.isSafeInteger(v) && v >= 0;
+  function windowRowIdsOf(v) {
+    if (!v || typeof v !== 'object' || !safeNonNeg(v.first) || !safeNonNeg(v.last) || !safeNonNeg(v.count) || !SHA256_RE.test(str(v.sha256))) return null;
+    return { first: v.first, last: v.last, count: v.count, sha256: v.sha256 };
+  }
+  // the TurnKinds.quoteStamp form: up to QUOTES_MAX stream ids aligned 1:1 with their read times, or the saturated ['*'] + [satAt]
+  function quoteStampOf(quotes, quotesAt) {
+    if (!Array.isArray(quotes) || !Array.isArray(quotesAt) || !quotes.length || quotes.length !== quotesAt.length) return null;
+    if (!quotesAt.every(safeNonNeg)) return null;
+    if (quotes.length === 1 && quotes[0] === '*') return { quotes: ['*'], quotesAt: [quotesAt[0]] };
+    const max = TurnKinds ? TurnKinds.QUOTES_MAX : 32;
+    if (quotes.length > max || !quotes.every(q => typeof q === 'string' && SID_RE.test(q)) || new Set(quotes).size !== quotes.length) return null;
+    return { quotes: quotes.slice(), quotesAt: quotesAt.slice() };
+  }
   function num(v) { return (typeof v === 'number' && isFinite(v)) ? v : 0; }
   function nonnegative(v) { return Math.max(0, num(v)); }
   function str(v) { return v == null ? '' : String(v); }
@@ -308,11 +335,54 @@
       return out;
     }
 
+    /* noteIdentity(runId, fields): a live run's turn identity, kept until that run's next record() takes it. Admits only
+       turnId (the TurnKinds grammar), directiveRowId (a positive safe integer), windowRowIds ({first, last, count} safe
+       integers + a sha256), quotes/quotesAt (the quote stamp form) and quotesSaturatedAt; any other key, or a value that
+       fails its check, is dropped and counted. Bounded: past IDENTITY_NOTES_MAX runs the oldest note is evicted, counted. */
+    const identities = new Map();   // runId -> admitted identity fields
+    // the one check of a run's identity fields (noteIdentity's note, and the identity a row given to record() already
+    // carries): copies each admissible field into `into`, returns how many it dropped
+    function admitIdentity(fields, into) {
+      let dropped = 0;
+      for (const k of Object.keys(fields)) {
+        const v = fields[k];
+        if (k === 'turnId') { if (TurnKinds && TurnKinds.isTurnId(v)) into.turnId = v; else dropped++; }
+        else if (k === 'directiveRowId') { if (Number.isSafeInteger(v) && v > 0) into.directiveRowId = v; else dropped++; }
+        else if (k === 'windowRowIds') { const w = windowRowIdsOf(v); if (w) into.windowRowIds = w; else dropped++; }
+        else if (k === 'quotesSaturatedAt') { if (safeNonNeg(v)) into.quotesSaturatedAt = v; else dropped++; }
+        else if (k !== 'quotes' && k !== 'quotesAt') dropped++;
+      }
+      if (Object.prototype.hasOwnProperty.call(fields, 'quotes') || Object.prototype.hasOwnProperty.call(fields, 'quotesAt')) {
+        const q = quoteStampOf(fields.quotes, fields.quotesAt);
+        if (q) { into.quotes = q.quotes; into.quotesAt = q.quotesAt; } else dropped++;
+      }
+      return dropped;
+    }
+    function noteIdentity(runId, fields) {
+      const id = str(runId);
+      if (!id || !fields || typeof fields !== 'object') return false;
+      const next = Object.assign({}, identities.get(id) || {});
+      const dropped = admitIdentity(fields, next);
+      if (dropped) failNote('runstore.noteIdentity', new Error(dropped + ' identity field(s) dropped for run ' + id));
+      if (!Object.keys(next).length) return false;
+      identities.delete(id);
+      identities.set(id, next);   // newest last
+      while (identities.size > IDENTITY_NOTES_MAX) {
+        const oldest = identities.keys().next().value;
+        identities.delete(oldest);
+        failNote('runstore.noteIdentity', new Error('identity note evicted unrecorded for run ' + oldest));
+      }
+      return true;
+    }
+
     function record(e) {
       e = e || {};
       const entry = {
         runId: str(e.runId), parentRunId: str(e.parentRunId).slice(0, 100), agentId: str(e.agentId),
         provider: str(e.provider).trim().slice(0, 60),
+        // WIRE SOURCE (additive, run-wire-resolver lane): which level of the one {provider, model} resolution chose this run's
+        // pair (sidecar/run-wire.js: explicit | routine | agent | station | connect | env). Present only when known.
+        ...(/^[a-z]{1,20}$/.test(str(e.wireSource)) ? { wireSource: str(e.wireSource) } : {}),
         // clamp to the known enum (matches agent.run.end). An unknown or missing reason is not proof the run finished, so it
         // records as 'error', never 'done' (bug 812c3bfb: a thrown run read as a finished one in the history)
         reason: REASONS.has(e.reason) ? e.reason : 'error',
@@ -387,6 +457,17 @@
         startedAt: nonnegative(e.startedAt), endedAt: nonnegative(e.endedAt), durationMs: nonnegative(e.durationMs),
         ts: num(e.ts) || clock.now()
       };
+      /* TYPED OUTCOMES (additive, 2026-10-29): the run's outcome code. The one its own agent.run.end carried wins (the host's
+         outcomeOf: that end saw facts this row does not keep, e.g. a provider-cut reply's finishReason); else it is resolved
+         from this row's own facts — the same rule (frontend/app/runoutcome.js). Every reader asks RunOutcome.ofRow. */
+      if (RunOutcome) {
+        let said = null;
+        if (typeof opts.outcomeOf === 'function') { try { said = opts.outcomeOf(entry.runId); } catch (err) { failNote('runstore.outcomeOf', err); said = null; } }
+        if (!(said && RunOutcome.isOutcome(said.outcome))) said = RunOutcome.isOutcome(e.outcome) ? { outcome: e.outcome } : null;
+        const o = RunOutcome.ofRow(Object.assign({}, entry, { finishReason: e.finishReason, outcome: said ? said.outcome : undefined }));
+        entry.outcome = o.outcome;
+        if (!entry.failureCode && said && said.failureCode) entry.failureCode = str(said.failureCode).trim().slice(0, FAILURE_FIELD_MAX);
+      }
       // Interrupted-run/recovery provenance (additive; set only when present so ordinary rows keep their shape).
       if (RECOVERY_STATUSES.has(e.recoveryStatus)) entry.recoveryStatus = e.recoveryStatus;
       const continuedRunId = str(e.continuedRunId).slice(0, 100);
@@ -394,9 +475,25 @@
       if (REASONS.has(e.continuedReason)) entry.continuedReason = e.continuedReason;
       const recoveryOf = str(e.recoveryOf).slice(0, 100);
       if (recoveryOf) entry.recoveryOf = recoveryOf;
+      // TURN IDENTITY (additive): the identity this row was GIVEN (settleSpend's superseding row is built from the run's
+      // served row, so it carries the run's turn), checked exactly as a note is; then what noteIdentity admitted for this
+      // run, consumed here, never over a field this row already holds. With neither, the row is byte-identical.
+      const givenIdentity = {};
+      for (const k of IDENTITY_KEYS) if (e[k] !== undefined) givenIdentity[k] = e[k];
+      if (Object.keys(givenIdentity).length) {
+        const admitted = {};
+        const dropped = admitIdentity(givenIdentity, admitted);
+        if (dropped) failNote('runstore.noteIdentity', new Error(dropped + ' identity field(s) dropped for run ' + (entry.runId || '?')));
+        for (const k of Object.keys(admitted)) if (!Object.prototype.hasOwnProperty.call(entry, k)) entry[k] = admitted[k];
+      }
+      const identity = entry.runId ? identities.get(entry.runId) : null;
+      if (identity) {
+        identities.delete(entry.runId);
+        for (const k of Object.keys(identity)) if (!Object.prototype.hasOwnProperty.call(entry, k)) entry[k] = identity[k];
+      }
       // SETTLED SPEND (additive, 2026-10-08): the Commander settled this interrupted run's unknown spend in SETTINGS ›
-      // SPENDING LIMITS, so `usd` is the booked figure and `spendSettled` says how ('entered' | 'limit' — mirrors the
-      // ledger's attestedAs). A settlement is a fact about money; a later recovery-status update for the same run is
+      // SPENDING LIMITS, so `usd` is the booked figure and `spendSettled` says how ('entered' | 'limit' | 'recorded' |
+      // 'assumed' — mirrors the ledger's attestedAs). A settlement is a fact about money; a later recovery-status update for the same run is
       // not, so it inherits the settlement instead of re-opening the spend as unknown.
       const prior = (e.reason === 'interrupted' && entry.runId) ? chains.get(entry.runId) : null;
       const settledAs = SETTLED_AS.has(e.spendSettled) ? e.spendSettled
@@ -412,6 +509,15 @@
       // untrusted-content taint the run ended with (additive; absent on a clean run) — sec-taint 09-25
       const taintedBy = str(e.taintedBy).replace(/\s+/g, ' ').trim().slice(0, 200);
       if (taintedBy) entry.taintedBy = taintedBy;
+      // ROW STAMP (additive, attachment-rows-and-taint repair 2026-11-04): taintedBy is the FIRST source the run latched, which may be the
+      // bare attachment stamp (decays on replay) even when the run then read a page or the saved file. The stamp that rows written FOR
+      // this run after it ended must carry (a dispatched worker's accepted answer: dispatch-delivery.js) is the first source that is NOT
+      // the bare attachment (run-execution-state rowTaint). Present only when it differs from taintedBy, so every other row stays byte-identical.
+      const rowTaintedBy = str(e.rowTaintedBy).replace(/\s+/g, ' ').trim().slice(0, 200);
+      if (rowTaintedBy && rowTaintedBy !== taintedBy) entry.rowTaintedBy = rowTaintedBy;
+      // WORDLESS (additive, same repair): the run's directive carried files and no typed words, so its title is the label of the files,
+      // a third party's names. Present only when true; the ambient "worked recently" projection (index.js nightshiftRecentRuns) leaves such a run out.
+      if (e.wordless === true) entry.wordless = true;
       const error = str(e.error).replace(/\s+/g, ' ').trim().slice(0, ERROR_MAX);
       if (error) entry.error = error;
       rows.push(entry);
@@ -499,11 +605,11 @@
     }
 
     return {
-      record, list, latest, settleSpend, finalizeDelivery, deliverySource,
+      record, list, latest, settleSpend, finalizeDelivery, deliverySource, noteIdentity,
       all() { return rows.filter(r => !updates.has(r)).map(view); },
       count() { return rows.length - updates.size; }
     };
   }
 
-  return { makeRunStore };
+  return { makeRunStore, DELIVERY_TEXT_MAX };
 });

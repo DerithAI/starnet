@@ -69,9 +69,9 @@ module.exports = (async () => {
     // the import of the module that declares listModelsForProvider (index.js today), not the first such import anywhere
     const home = locateSidecarFunction('listModelsForProvider');
     const homeSrc = home ? sidecarSourceFiles().find(f => f.rel === home.rel).text : '';
-    const imp = /const \{([^}]*)\} = require\('\.\/providers\/provider\.js'\)/.exec(homeSrc);
-    A.ok(!!imp, 'index.js destructures its provider.js helpers in one require');
-    for (const part of (imp ? imp[1].split(',') : [])) {
+    const imports = [...homeSrc.matchAll(/const \{([^}]*)\} = require\('\.\/providers\/provider\.js'\)/g)];
+    A.ok(imports.length > 0, 'index.js destructures its provider.js helpers');
+    for (const part of imports.flatMap(imp => imp[1].split(','))) {
       const [from, as] = part.split(':').map(s => s.trim());
       if (from && typeof provider[from] === 'function') helpers[as || from] = provider[from];
     }
@@ -122,7 +122,8 @@ module.exports = (async () => {
   {
     const core = index.indexOf('async function runOnceCore(o) {');
     A.ok(core >= 0, 'index.js still defines runOnceCore');
-    const at = index.indexOf("let model = String((o && o.model) || '').trim() || (rosterIdent && rosterIdent.model", core);
+    // (run-wire-resolver lane) the model comes from the ONE resolution (runWireOfRun), then the env default model
+    const at = index.indexOf("let model = String(runWire.model || '').trim() || (usingCodex ? CODEX_DEFAULT_MODEL : CRON_DEFAULT_MODEL);", core);
     A.ok(at > core, 'runOnceCore still resolves its model in one place');
     const mapAt = index.indexOf('\n  model = chatModelId(providerId, model);', at);
     A.ok(mapAt > at && mapAt - at < 1600, 'runOnceCore maps a batch-only id to its base model right after resolving it');
@@ -177,21 +178,28 @@ module.exports = (async () => {
     };
     const roster = new Map();
     const env = {};
-    const region = ['function stationDefaultFor(id, ident) {', 'function channelRunConfigFor(agentId, candidate) {',
+    // (run-wire-resolver lane) channelRunConfigFor resolves its pair through the ONE resolver (runWireFor -> run-wire.js)
+    const region = ['function runWireEnv() {', 'function runWireFor(agentId, explicit, fallbacks) {', 'function channelRunConfigFor(agentId, candidate, opts) {',
       'async function probeChannelRunConfig(config, timeoutMs) {', 'function devHubSecrets() {', 'function sampleRunConfigFor(agentId) {',
       'function providerForRunConfig(c, reasoningEffort) {', 'async function stationOneShot(prompt, tag, failLead) {']
       .map(m => sliceTop(index, m, m.replace(/\(.*$/, ''))).join('\n')
       + '\n' + sidecarFunctionSource('ENV');   // devHubSecrets reads its default model through the real ENV() (STARNET_ first)
     const sb = Object.assign({}, helpers, {
       agentRoster: roster, process: { env }, AbortController, setTimeout, clearTimeout, crypto: require('crypto'),
+      RunWire: require('../sidecar/run-wire.js'), normalizeProviderId: p => String(p || '').toLowerCase(),
+      registryProviderUsesCodex: () => false, codexTokens: null, CODEX_DEFAULT_MODEL: 'gpt-codex-default',
       normalizeProvider: p => String(p || 'openrouter').toLowerCase(),
       providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', providerHasCredential: () => true,
       providerCredentialError: () => 'not configured', resolveReasoningEffort: (p, v) => v || 'medium',
       extraAccountProviderFor: () => null, providerUsesCodex: () => false, providerUsesDeviceOAuth: () => false,
       selectProvider: () => fakeProvider, redact: s => s,
-      budget: { check: () => null }, stationOneShots: new Set(), makeCostEngine: () => ({ reconcile: () => ({ usd: 0 }) }),
-      ledger: { record() {} }, getProviderProfile: () => ({}), failNote() {}
+      stationOneShots: new Set(), makeCostEngine: () => ({ reconcile: () => ({ usd: 0 }) }),
+      ledger: { record() {} }, getProviderProfile: () => ({}), failNote() {},
+      BillingClass: require('../sidecar/billing-class.js'),
+      billing: require('../sidecar/billing-class.js').makeBilling({ profileOf: () => ({}) })   // the one-shot's payer (billing-class.js)
     });
+    // the one governor, bound as index.js binds it (a clear budget: this part is about the model id)
+    sb.governor = sb.BillingClass.makeGovernor({ budget: { check: () => null }, auxTokenGate: () => ({ blocked: false }), classOfProvider: id => sb.billing.classOf(id) });
     vm.runInNewContext(region + '\nthis.api = { channelRunConfigFor, probeChannelRunConfig, sampleRunConfigFor, stationOneShot };', sb);
     const api = sb.api;
     roster.set('agent', { provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch', name: 'Overseer' });
@@ -223,22 +231,28 @@ module.exports = (async () => {
   {
     const ld = index.indexOf('async function handleLiveDoctor(req, res) {');
     A.ok(ld >= 0, 'index.js still defines handleLiveDoctor');
-    const s = index.indexOf('  const providerId = normalizeProvider((rec && rec.provider)', ld);
+    // (run-wire-resolver lane) the doctor probes the pair the agent's runs resolve to (runWireFor), never the raw row
+    const s = index.indexOf("  const doctorWire = runWireFor(agentId || 'agent');", ld);
     const e = index.indexOf('\n', index.indexOf('  const model = ', s));
     A.ok(s > ld && e > s && e - s < 600, 'LIVE DOCTOR resolves its selected model in one place');
     const doctor = rec => vm.runInNewContext(index.slice(s, e) + '\n({ providerId, model });',
-      Object.assign({}, helpers, { rec, runtimeKey: 'k', codexTokens: null, normalizeProvider: p => String(p || '').toLowerCase() }));
+      Object.assign({}, helpers, { agentId: 'agent', runWireFor: () => rec, normalizeProvider: p => String(p || '').toLowerCase() }));
     A.eq(doctor({ provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch' }).model, 'anthropic/claude-haiku-4.5', 'LIVE DOCTOR probes the base model a real run uses, never reports the :batch id as failing');
     A.eq(doctor({ provider: 'ollama', model: 'mymodel:batch' }).model, 'mymodel:batch', 'LIVE DOCTOR keeps a local tag');
     const body = index.slice(ld, ld + 4000);
     A.ok(/provider\.stream\(\{ model, messages: \[\{ role: 'user', content: 'Reply exactly OK\.' \}\]/.test(body), 'the doctor\'s probe streams that same resolved model');
 
-    const region = sliceTop(index, 'async function applyVoiceTurnRoute(o) {', 'applyVoiceTurnRoute');
+    // the voice route resolves its main pair through the SAME runWireOfRun runOnceCore reads (run-wire-resolver lane)
+    const region = ['function runWireEnv() {', 'function runWireFor(agentId, explicit, fallbacks) {', 'function runWireOfRun(o) {', 'async function applyVoiceTurnRoute(o) {']
+      .map(m => sliceTop(index, m, m.replace(/\(.*$/, ''))).join('\n');
     const voiceRoster = new Map([['agent', { provider: 'starnet', model: 'anthropic/claude-haiku-4.5:batch' }]]);
     const voice = (setting) => vm.runInNewContext(region + '\napplyVoiceTurnRoute({ agentId: "agent", messages: [] });', Object.assign({}, helpers, {
+      RunWire: require('../sidecar/run-wire.js'), normalizeProviderId: p => String(p || '').toLowerCase(),
+      registryProviderUsesCodex: () => false, codexTokens: null, ENV: () => '',
       effectiveVoiceChat: () => require('../sidecar/voice-chat-route.js').cleanSetting(setting), agentRoster: voiceRoster,
       normalizeProvider: p => String(p || 'openrouter').toLowerCase(), providerUsesCodex: () => false, CODEX_DEFAULT_MODEL: 'gpt-x', CRON_DEFAULT_MODEL: 'cron-x',
       providerRuntimeKey: () => 'k', providerRuntimeBaseUrl: () => '', getProviderProfile: () => ({}), providerHasCredential: () => true,
+      billing: require('../sidecar/billing-class.js').makeBilling({ profileOf: () => ({}) }),   // the voice route's payer (billing-class.js)
       voiceCatalogEntry: async () => null, makeContext: () => ({ estimateMessages: () => 0, estimateTokens: () => 0 }), RUN_CONTEXT_DEFAULTS: {},
       voiceChatRoute: require('../sidecar/voice-chat-route.js'), console: { warn() {}, log() {} },
       promptTierCeiling: require('../sidecar/providers/prices.js').promptTierCeiling   // the price-tier window cap applyVoiceTurnRoute reads (context-cost lane)
@@ -258,7 +272,8 @@ module.exports = (async () => {
       classList: { add() {}, remove() {}, toggle() {}, contains: () => false }, setAttribute() {}, getAttribute: () => null,
       removeAttribute() {}, addEventListener() {}, appendChild() {}, querySelector: () => null, querySelectorAll: () => [], focus() {}, contains: () => false });
     const els = { 'model-dock': el('model-dock'), 'model-dock-toggle': el('model-dock-toggle') };
-    const old = { document: global.document, localStorage: global.localStorage, Harness: global.Harness, U: global.U };
+    const old = { SK: global.SK, document: global.document, localStorage: global.localStorage, Harness: global.Harness, U: global.U };
+    global.SK = { providers: { registry: require('../sidecar/providers/registry.js') } };
     global.document = { getElementById: id => els[id] || null, querySelector: () => null, addEventListener() {}, createElement: () => el(''), createDocumentFragment: () => ({ appendChild() {} }) };
     global.localStorage = { getItem: () => '1', setItem() {} };
     global.U = { esc: s => String(s) };
@@ -321,6 +336,7 @@ module.exports = (async () => {
       fnRegion('listModels', '  async function listModels(provider) {');
     let direct = false;
     const sandbox = {
+      SK: { providers: { registry: require('../sidecar/providers/registry.js') } },
       console: { warn() {}, log() {} }, OR: 'https://openrouter.ai/api/v1', getProv: () => 'openrouter', getBaseUrl: () => '',
       fetchModelCatalog: async url => {
         if (url.indexOf('/api/models/') === 0) { if (direct) throw new Error('station unreachable'); return CATALOG.map(m => Object.assign({}, m)); }
